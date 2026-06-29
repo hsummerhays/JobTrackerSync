@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.0.1 — 2026-06-29
+
+### Deduplication
+- Allow identical jobs (same Company + Position + Location) to be re-imported as new opportunities after 90 days.
+- Appended `Date Added` to the MD5 hash for re-imported older opportunities to generate unique Job IDs and avoid primary key collisions in the SQLite database.
+
+---
+
 ## v1.0.0 — 2026-06-29
 
 Feature-complete initial release.

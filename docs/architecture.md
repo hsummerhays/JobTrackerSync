@@ -21,8 +21,8 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         ├─ 3. Validation          (is_valid_company)
         │       └─ Rejects location-only names, sentences, etc.
         │
-        ├─ 4. Deduplication       (job_id = MD5 of company+title+location)
-        │       └─ Skips jobs already in master_tracker.csv
+        ├─ 4. Deduplication       (job_id = MD5 of company+title+location [+ date if >90 days])
+        │       └─ Skips jobs already in tracker unless older than 90 days (which get unique date-suffixed IDs)
         │
         ├─ 5. Evaluation          (evaluate_job)
         │       ├─ Fit Score (0-100)
@@ -68,7 +68,7 @@ Each job record carries these fields:
 
 | Field | Description |
 |-------|-------------|
-| `Job ID` | MD5 hash of company + title + location (stable dedup key) |
+| `Job ID` | MD5 hash of company + title + location (stable dedup key, with optional date suffix if re-imported after 90 days) |
 | `Review Status` | Workflow state: New, Applied, Imported, Closed |
 | `Job Type` | Software Engineer or Operations (drives scoring criteria) |
 | `Company` | Extracted company name |
@@ -132,5 +132,5 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Local-first**: No cloud dependency. All data stays on disk.
 - **Idempotent**: Re-running the sync is safe -- existing rows are re-scored but never duplicated.
 - **Git-ignored secrets**: `config.json`, `master_tracker.csv`, and `jobs.db` are excluded from version control. Templates are committed instead.
-- **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved.
+- **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved. Jobs can be re-imported after 90 days using a date-suffixed hash to avoid database conflicts.
 - **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run.

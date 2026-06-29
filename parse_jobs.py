@@ -1545,7 +1545,22 @@ def main():
                         job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}".encode('utf-8')).hexdigest()[:12]
                         
                         # Deduplicate before review
-                        if job_id in existing_jobs or job_id in raw_collected_jobs:
+                        is_duplicate = False
+                        if job_id in existing_jobs:
+                            existing_job = existing_jobs[job_id]
+                            existing_date_str = existing_job.get("Date Added", "")
+                            try:
+                                existing_date = date.fromisoformat(existing_date_str)
+                                current_date = date.fromisoformat(date_added)
+                                if (current_date - existing_date).days <= 90:
+                                    is_duplicate = True
+                                else:
+                                    # Over 90 days. We generate a date-distinct job ID to avoid collisions.
+                                    job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added}".encode('utf-8')).hexdigest()[:12]
+                            except (ValueError, TypeError):
+                                is_duplicate = True
+                        
+                        if is_duplicate or job_id in raw_collected_jobs:
                             continue
                         
                         # Store for review phase
