@@ -79,9 +79,14 @@ def is_valid_company(company):
     if len(comp) > 100:
         return False
     # Reject UI element strings captured instead of company names
-    ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more", 
+    ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more",
                    "see more", "read more", "click here", "get started", "sign in", "log in"}
     if comp_lower in ui_elements:
+        return False
+    # Reject if a UI label was concatenated onto the end (PDF parser artifact)
+    ui_label_endings = ["view details", "view detail", "learn more", "apply now", "easy apply",
+                        "save job", "show more", "see more", "read more", "click here"]
+    if any(comp_lower.endswith(suf) for suf in ui_label_endings):
         return False
     # Check for exclusion words
     exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message"]
@@ -103,7 +108,10 @@ def is_valid_company(company):
     if len(comp.split()) > 7:
         return False
     # Check punctuation at the end or typical sentence markers
-    if comp.endswith('.') or '?' in comp or '!' in comp:
+    # Allow trailing period only for short abbreviations like "Ltd.", "Inc.", "Corp."
+    if '?' in comp or '!' in comp:
+        return False
+    if comp.endswith('.') and len(comp.split()[-1]) > 5:
         return False
     return True
 
@@ -161,10 +169,19 @@ def clean_existing_tracker(tracker_path):
             if c:
                 company_counts[c] = company_counts.get(c, 0) + 1
                 
+        ui_label_strip = re.compile(
+            r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)$'
+        )
         for row in rows:
             company = row.get("Company", "")
             position = row.get("Position", "")
             location = row.get("Location", "")
+            # Strip trailing UI labels that were concatenated by the parser (e.g. "Acme Corp.View Details")
+            cleaned_company = ui_label_strip.sub('', company).strip().rstrip('.')
+            if cleaned_company != company:
+                company = cleaned_company.strip()
+                row["Company"] = company
+                cleaned_any = True
             if not company or not is_valid_company(company):
                 cleaned_any = True
                 continue
@@ -1023,7 +1040,13 @@ def classify_job_type(title, context):
     # Check title first
     has_ops_title = any(w in title_lower for w in ops_indicators)
     has_swe_title = any(w in title_lower for w in swe_indicators)
-    
+
+    # Domain-specific ops keywords override the generic "engineer" keyword
+    # e.g. "Manufacturing Engineer" or "Logistics Coordinator" → Operations
+    specific_ops = ["manufacturing", "inventory", "logistics", "production", "warehouse", "procurement"]
+    if any(w in title_lower for w in specific_ops) and not any(w in title_lower for w in ["software", "developer", "backend"]):
+        return "Operations"
+
     if has_ops_title and not has_swe_title:
         return "Operations"
     if has_swe_title:
