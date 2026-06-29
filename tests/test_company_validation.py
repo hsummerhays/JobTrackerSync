@@ -137,7 +137,15 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Looking for a job?"))
 
     def test_rejects_ends_with_period_sentence(self):
-        self.assertFalse(is_valid_company("We are hiring."))
+        self.assertFalse(is_valid_company("We are hiring."))    # --- Should REJECT: slash-containing and pure tech keywords ---
+
+    def test_rejects_slashes(self):
+        self.assertFalse(is_valid_company("Java/Typescript/AWS"))
+        self.assertFalse(is_valid_company("Python\\C#"))
+
+    def test_rejects_pure_tech_keywords(self):
+        self.assertFalse(is_valid_company("Java AWS"))
+        self.assertFalse(is_valid_company("Python .NET Azure"))
 
 
 if __name__ == "__main__":

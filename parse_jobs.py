@@ -124,6 +124,15 @@ def is_valid_company(company):
     if not comp:
         return False
     comp_lower = comp.lower()
+    # Reject if contains slash or backslash (typically indicates a tech stack heading)
+    if "/" in comp or "\\" in comp:
+        return False
+    # Reject if composed entirely of tech keywords
+    tech_keywords = {"java", "typescript", "aws", "python", "c#", ".net", "azure", "react", "angular", "node", "sql", "javascript"}
+    comp_words = [w.strip() for w in re.split(r"[\s,\-|]+", comp_lower) if w.strip()]
+    if comp_words and all(w in tech_keywords for w in comp_words):
+        return False
+
     # Reject placeholders
     if comp_lower in ["unknown", "unknown/other", "undisclosed", "undisclosed company"]:
         return False
