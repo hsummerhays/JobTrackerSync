@@ -289,7 +289,7 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Source PDF"] = row.get("Source PDF", "Unknown")
             migrated_row["Confidence"] = row.get("Confidence", "🟡 Medium")
             status = row.get("Tracker Status", row.get("Status", "New"))
-            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted"]:
+            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]:
                 if status == "Recruiter":
                     status = "Recruiter Submitted"
                 elif status == "Interview":
@@ -306,7 +306,7 @@ def clean_existing_tracker(tracker_path):
             if not review_status:
                 if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
                     review_status = "Applied"
-                elif status in ["Rejected", "Cancelled", "Ghosted"]:
+                elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     review_status = "Closed"
                 else:
                     review_status = "Imported"
@@ -321,7 +321,8 @@ def clean_existing_tracker(tracker_path):
                 "Waiting": "Active",
                 "Rejected": "Closed",
                 "Cancelled": "Closed",
-                "Ghosted": "Closed"
+                "Ghosted": "Closed",
+                "Expired": "Closed"
             }
             disposition = row.get("Disposition", disposition_map.get(status, "Apply"))
             migrated_row["Disposition"] = disposition
@@ -447,7 +448,7 @@ def clean_existing_tracker(tracker_path):
             if status != "New":
                 if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
                     action = "Already Applied"
-                elif status in ["Rejected", "Cancelled", "Ghosted"]:
+                elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     action = "Ignore"
                 else:
                     action = "Ignore"
@@ -465,7 +466,7 @@ def clean_existing_tracker(tracker_path):
                 act = action
             else:
                 act = row.get("Action", action)
-                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
+                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired"]:
                     if "apply" in act.lower():
                         act = "Apply"
                     elif "recruiter" in act.lower():
@@ -1654,7 +1655,7 @@ def main():
         
         # Standardize Tracker Status
         status = row.get("Tracker Status", row.get("Status", "New"))
-        if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted"]:
+        if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]:
             if status == "Recruiter":
                 status = "Recruiter Submitted"
             elif status == "Interview":
@@ -1672,7 +1673,7 @@ def main():
         if not review_status:
             if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
                 review_status = "Applied"
-            elif status in ["Rejected", "Cancelled", "Ghosted"]:
+            elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                 review_status = "Closed"
             else:
                 review_status = "Imported"
@@ -1684,7 +1685,7 @@ def main():
             
         # Standardize existing Action column values
         act = row.get("Action", "Ignore")
-        if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
+        if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired"]:
             if "apply" in act.lower():
                 act = "Apply"
             elif "recruiter" in act.lower():
@@ -1736,7 +1737,7 @@ def main():
     existing_jobs_count = len(existing_jobs)
     
     already_applied_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"])
-    closed_jobs_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted"])
+    closed_jobs_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted", "Expired"])
     need_review_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Review Status") == "Imported")
 
     # Calculate priority breakdown
@@ -1792,6 +1793,7 @@ def main():
     rejected_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Rejected")
     cancelled_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Cancelled")
     ghosted_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Ghosted")
+    expired_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Expired")
 
     # Output Console Pipeline dashboard
     console.print("[bold cyan]=========================================[/bold cyan]")
@@ -1811,6 +1813,7 @@ def main():
     console.print(f"  Rejected:             [bold red]{rejected_count}[/bold red]")
     console.print(f"  Cancelled:            [bold red]{cancelled_count}[/bold red]")
     console.print(f"  Ghosted:              [bold red]{ghosted_count}[/bold red]")
+    console.print(f"  Expired:              [bold red]{expired_count}[/bold red]")
     console.print("[bold cyan]=========================================[/bold cyan]\n")
 
     # For console Table display: show all, or just new recommendations?
