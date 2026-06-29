@@ -54,6 +54,61 @@ TECH_KEYWORDS = [
     "REST APIs", "GraphQL", "React", "Next.js", "Node.js", "AWS", "Azure"
 ]
 
+TITLE_KEYWORDS = [
+    "engineer", "developer", "programmer", "architect", "analyst", "lead",
+    "specialist", "manager", "support", "trainer", "coordinator"
+]
+
+UI_LABEL_PATTERN = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)'
+
+POTENTIAL_SKILLS = [
+    "java", "c#", ".net", "python", "spring boot", "spring", "asp.net core",
+    "react", "next.js", "graphql", "rest", "microservices", "docker",
+    "kubernetes", "aws", "azure", "postgresql", "sql server", "sql",
+    "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture",
+    "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang",
+    "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud",
+    "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++",
+    "ruby", "rails", "php", "zend", "laravel", "django", "flask", "fastapi",
+    "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql",
+    "elasticsearch", "solr", "snowflake", "redshift", "bigquery", "dbt",
+    "airflow", "selenium", "cypress", "jest", "mocha", "manufacturing",
+    "inventory", "logistics", "supply chain", "repair", "reporting",
+    "business automation", "documentation", "workflow automation", "rma",
+    "inventory management", "reconciliation", "compliance", "coordination"
+]
+
+SKILL_DISPLAY_NAMES = {
+    "java": "Java", "c#": "C#", ".net": ".NET", "python": "Python",
+    "spring boot": "Spring Boot", "spring": "Spring", "asp.net core": "ASP.NET Core",
+    "react": "React", "next.js": "Next.js", "graphql": "GraphQL", "rest": "REST",
+    "microservices": "Microservices", "docker": "Docker", "kubernetes": "Kubernetes",
+    "aws": "AWS", "azure": "Azure", "postgresql": "PostgreSQL",
+    "sql server": "SQL Server", "sql": "SQL", "power bi": "Power BI",
+    "cube.js": "Cube.js", "kafka": "Kafka", "rabbitmq": "RabbitMQ",
+    "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git",
+    "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF",
+    "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript",
+    "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js",
+    "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform",
+    "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD",
+    "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby",
+    "rails": "Rails", "php": "PHP", "zend": "Zend", "laravel": "Laravel",
+    "django": "Django", "flask": "Flask", "fastapi": "FastApi",
+    "dynamodb": "DynamoDB", "mongodb": "MongoDB", "cassandra": "Cassandra",
+    "oracle": "Oracle", "mariadb": "MariaDB", "mysql": "MySQL",
+    "elasticsearch": "Elasticsearch", "solr": "Solr", "snowflake": "Snowflake",
+    "redshift": "Redshift", "bigquery": "BigQuery", "dbt": "dbt",
+    "airflow": "Airflow", "selenium": "Selenium", "cypress": "Cypress",
+    "jest": "Jest", "mocha": "Mocha", "manufacturing": "Manufacturing",
+    "inventory": "Inventory", "logistics": "Logistics", "supply chain": "Supply Chain",
+    "repair": "Repair", "reporting": "Reporting",
+    "business automation": "Business Automation", "documentation": "Documentation",
+    "workflow automation": "Workflow Automation", "rma": "RMA",
+    "inventory management": "Inventory Management", "reconciliation": "Reconciliation",
+    "compliance": "Compliance", "coordination": "Coordination"
+}
+
 # Rule 11 Legacy keywords
 LEGACY_KEYWORDS = [
     "FileMaker", "Perl", "Monolith", "Legacy Java", "Enterprise modernization"
@@ -327,8 +382,10 @@ def clean_existing_tracker(tracker_path):
             # 3. Backend / Full Stack / Leadership (15 points)
             if job_type == "Software Engineer":
                 score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
-                has_dotnet = any(w in pos_lower or w in notes_lower for w in [".net", "c#"])
-                has_java = any(w in pos_lower or w in notes_lower for w in ["java", "spring"])
+                title_skill_names = _find_skills(position)
+                stack_search = pos_lower if title_skill_names else f"{position} {notes}".lower()
+                has_dotnet = any(w in stack_search for w in [".net", "c#"])
+                has_java = any(w in stack_search for w in ["java", "spring"])
                 if has_dotnet:
                     score_dotnet_java = 20
                 elif has_java:
@@ -471,17 +528,10 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Reason"] = reason
             
             # Matched Skills & Missing Skills
-            potential_skills = ["java", "c#", ".net", "python", "spring boot", "spring", "asp.net core", "react", "next.js", "graphql", "rest", "microservices", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "sql", "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture", "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang", "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud", "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++", "ruby", "rails", "php", "django", "flask", "fastapi", "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql", "elasticsearch", "solr", "snowflake", "redshift", "bigquery", "dbt", "airflow", "selenium", "cypress", "jest", "mocha", "manufacturing", "inventory", "logistics", "supply chain", "repair", "reporting", "business automation", "documentation", "workflow automation", "rma", "inventory management", "reconciliation", "compliance", "coordination"]
-            
-            norm_map = {"java": "Java", "c#": "C#", ".net": ".NET", "python": "Python", "spring boot": "Spring Boot", "spring": "Spring", "asp.net core": "ASP.NET Core", "react": "React", "next.js": "Next.js", "graphql": "GraphQL", "rest": "REST", "microservices": "Microservices", "docker": "Docker", "kubernetes": "Kubernetes", "aws": "AWS", "azure": "Azure", "postgresql": "PostgreSQL", "sql server": "SQL Server", "sql": "SQL", "power bi": "Power BI", "cube.js": "Cube.js", "kafka": "Kafka", "rabbitmq": "RabbitMQ", "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git", "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF", "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript", "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js", "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform", "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD", "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby", "rails": "Rails", "php": "PHP", "django": "Django", "flask": "Flask", "fastapi": "FastApi", "dynamodb": "DynamoDB", "mongodb": "MongoDB", "cassandra": "Cassandra", "oracle": "Oracle", "mariadb": "MariaDB", "mysql": "MySQL", "elasticsearch": "Elasticsearch", "solr": "Solr", "snowflake": "Snowflake", "redshift": "Redshift", "bigquery": "BigQuery", "dbt": "dbt", "airflow": "Airflow", "selenium": "Selenium", "cypress": "Cypress", "jest": "Jest", "mocha": "Mocha", "manufacturing": "Manufacturing", "inventory": "Inventory", "logistics": "Logistics", "supply chain": "Supply Chain", "repair": "Repair", "reporting": "Reporting", "business automation": "Business Automation", "documentation": "Documentation", "workflow automation": "Workflow Automation", "rma": "RMA", "inventory management": "Inventory Management", "reconciliation": "Reconciliation", "compliance": "Compliance", "coordination": "Coordination"}
-            
-            search_str = f"{position} {notes}".lower()
-            found_skills = [s for s in potential_skills if s in search_str]
-            matched_list = [s for s in found_skills if s in resume_skills]
-            missing_list = [s for s in found_skills if s not in resume_skills]
-            
-            matched_skills = ", ".join([norm_map[s] for s in matched_list])
-            missing_skills = ", ".join([norm_map[s] for s in missing_list])
+            found_skills = _title_preferred_skills(position, notes)
+            if job_type == "Operations":
+                found_skills = [s for s in found_skills if s in resume_skills or s in criteria.get("tech_keywords", [])]
+            matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
             migrated_row["Matched Skills"] = matched_skills
             migrated_row["Missing Skills"] = missing_skills
             rows_to_keep.append(migrated_row)
@@ -879,6 +929,38 @@ def perform_ocr(pdf_path):
         console.print("[red]easyocr is not fully configured or missing dependencies for OCR.[/red]")
         return ""
 
+def _looks_like_title(line):
+    return any(kw in line.lower() for kw in TITLE_KEYWORDS)
+
+def _find_skills(text):
+    text_lower = text.lower()
+    return [skill for skill in POTENTIAL_SKILLS if skill in text_lower]
+
+def _title_preferred_skills(title, context):
+    title_skills = _find_skills(title)
+    if title_skills:
+        return title_skills
+    return _find_skills(context)
+
+def _format_skill_lists(found_skills, resume_skills):
+    matched_list = [s for s in found_skills if s in resume_skills]
+    missing_list = [s for s in found_skills if s not in resume_skills]
+    matched_skills = ", ".join([SKILL_DISPLAY_NAMES[s] for s in matched_list])
+    missing_skills = ", ".join([SKILL_DISPLAY_NAMES[s] for s in missing_list])
+    return matched_skills, missing_skills
+
+def _clean_location(location):
+    location = re.sub(r'[,\sâ€¢•]+$', '', location).strip()
+    location = re.sub(r'\s+', ' ', location).strip()
+    location = re.sub(r',\s*,', ',', location).strip()
+    location = location.strip(', ')
+
+    location = re.split(UI_LABEL_PATTERN, location, maxsplit=1)[0].strip()
+    location = re.split(r'(?i)1-Click Apply|Quick Apply|Apply Now', location, maxsplit=1)[0].strip()
+    if _looks_like_title(location):
+        return ""
+    return location.strip(', ')
+
 def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknown"):
     """
     Parse potential job cards from extracted text.
@@ -914,7 +996,7 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
         line = filtered_lines[i]
         
         # Look for a line that looks like a Job Title
-        is_title = any(kw in line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
+        is_title = _looks_like_title(line)
         
         if is_title:
             title = line
@@ -927,11 +1009,11 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             if has_next:
                 next_line = filtered_lines[i+1]
                 # Is the next line actually another title?
-                next_is_title = any(kw in next_line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
+                next_is_title = _looks_like_title(next_line)
                 next_has_salary = bool(re.search(r'\$\d+K', next_line)) or "/ virtual" in next_line.lower() or "/ travel" in next_line.lower()
                 
                 # Check if the next line looks like a location instead of a company
-                is_next_location = bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line))
+                is_next_location = not next_is_title and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line)))
                 
                 if next_is_title or next_has_salary:
                     # The next line is another job title! Don't consume it as company.
@@ -939,7 +1021,7 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                     next_idx = i + 1
                 elif is_next_location:
                     # The next line is actually the location, so the company is likely the line before the title!
-                    location = next_line
+                    location = _clean_location(next_line)
                     found_location = True
                     if i > 0:
                         potential_company = filtered_lines[i-1]
@@ -964,12 +1046,12 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             while next_idx < min(i + 6, len(filtered_lines)):
                 next_line = filtered_lines[next_idx]
                 # If we hit another title, stop looking ahead
-                is_next_title = any(kw in next_line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
+                is_next_title = _looks_like_title(next_line)
                 next_has_salary = bool(re.search(r'\$\d+K', next_line)) or "/ virtual" in next_line.lower() or "/ travel" in next_line.lower()
                 if is_next_title or next_has_salary:
                     break
                 if state_city_pattern.search(next_line) or "remote" in next_line.lower():
-                    location = next_line
+                    location = _clean_location(next_line)
                     found_location = True
                 if "http" in next_line or "www." in next_line or next_line.startswith("linkedin.com"):
                     url = next_line
@@ -981,8 +1063,8 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             if not found_location and i + 2 < next_idx and i + 2 < len(filtered_lines):
                 # Only fallback if i+2 was not already processed/skipped
                 potential_loc = filtered_lines[i+2]
-                if not any(kw in potential_loc.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"]):
-                    location = potential_loc
+                if not _looks_like_title(potential_loc):
+                    location = _clean_location(potential_loc)
                 
             # Smart split for Company • Location separated by bullet
             if "•" in company:
@@ -1005,13 +1087,10 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             # Clean up trailing punctuation / bullets
             company = re.sub(r'[,\s•]+$', '', company).strip()
             # Strip UI labels that may have been concatenated onto the company name
-            ui_label_pattern = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)$'
+            ui_label_pattern = rf'{UI_LABEL_PATTERN}$'
             company = re.sub(ui_label_pattern, '', company).strip()
             company = company.strip()
-            location = re.sub(r'[,\s•]+$', '', location).strip()
-            location = re.sub(r'\s+', ' ', location).strip()
-            location = re.sub(r',\s*,', ',', location).strip()
-            location = location.strip(', ')
+            location = _clean_location(location)
                 
             jobs.append({
                 "title": title,
@@ -1125,8 +1204,11 @@ def evaluate_job(job):
             if not compelling_reason:
                 return False, "🔴 Low", f"Rule 8: Excluded role type ({pattern})", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Excluded role", "", "", job_type
                 
-    # Check technology fits (Rule 10)
-    matched_techs = [tech for tech in tech_keywords if tech.lower() in context or tech.lower() in title.lower()]
+    # Check technology fits (Rule 10). If the title declares a specific stack,
+    # prefer it over nearby posting text that may belong to another card.
+    title_skill_names = _find_skills(title)
+    tech_search = title.lower() if title_skill_names else f"{title} {context}".lower()
+    matched_techs = [tech for tech in tech_keywords if tech.lower() in tech_search]
     if matched_techs:
         notes = [f"Tech matches: {', '.join(matched_techs)}"]
     else:
@@ -1188,8 +1270,10 @@ def evaluate_job(job):
     # Role-specific backend/fullstack indicator
     if job_type == "Software Engineer":
         score_backend_fs = 15 if any(w in title.lower() or w in context for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
-        has_dotnet = any(w in title.lower() or w in context for w in [".net", "c#"])
-        has_java = any(w in title.lower() or w in context for w in ["java", "spring"])
+        explicit_title_stack = bool(title_skill_names)
+        stack_search = title.lower() if explicit_title_stack else f"{title} {context}".lower()
+        has_dotnet = any(w in stack_search for w in [".net", "c#"])
+        has_java = any(w in stack_search for w in ["java", "spring"])
         if has_dotnet:
             score_dotnet_java = 20
         elif has_java:
@@ -1243,7 +1327,7 @@ def evaluate_job(job):
 
         
     matched_skills_list = []
-    search_str = f"{title} {context}".lower()
+    search_str = tech_search
     if job_type == "Software Engineer":
         if any(w in search_str for w in [".net", "c#"]): matched_skills_list.append(".NET")
         if "java" in search_str: matched_skills_list.append("Java")
@@ -1270,18 +1354,10 @@ def evaluate_job(job):
         
     reason = " + ".join(reasons)
     
-    # Matched Skills & Missing Skills calculation
-    potential_skills = ["java", "c#", ".net", "python", "spring boot", "spring", "asp.net core", "react", "next.js", "graphql", "rest", "microservices", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "sql", "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture", "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang", "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud", "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++", "ruby", "rails", "php", "django", "flask", "fastapi", "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql", "elasticsearch", "solr", "snowflake", "redshift", "bigquery", "dbt", "airflow", "selenium", "cypress", "jest", "mocha", "manufacturing", "inventory", "logistics", "supply chain", "repair", "reporting", "business automation", "documentation", "workflow automation", "rma", "inventory management", "reconciliation", "compliance", "coordination"]
-    
-    # Normalize skill names for display
-    norm_map = {"java": "Java", "c#": "C#", ".net": ".NET", "python": "Python", "spring boot": "Spring Boot", "spring": "Spring", "asp.net core": "ASP.NET Core", "react": "React", "next.js": "Next.js", "graphql": "GraphQL", "rest": "REST", "microservices": "Microservices", "docker": "Docker", "kubernetes": "Kubernetes", "aws": "AWS", "azure": "Azure", "postgresql": "PostgreSQL", "sql server": "SQL Server", "sql": "SQL", "power bi": "Power BI", "cube.js": "Cube.js", "kafka": "Kafka", "rabbitmq": "RabbitMQ", "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git", "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF", "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript", "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js", "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform", "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD", "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby", "rails": "Rails", "php": "PHP", "django": "Django", "flask": "Flask", "fastapi": "FastApi", "dynamodb": "DynamoDB", "mongodb": "MongoDB", "cassandra": "Cassandra", "oracle": "Oracle", "mariadb": "MariaDB", "mysql": "MySQL", "elasticsearch": "Elasticsearch", "solr": "Solr", "snowflake": "Snowflake", "redshift": "Redshift", "bigquery": "BigQuery", "dbt": "dbt", "airflow": "Airflow", "selenium": "Selenium", "cypress": "Cypress", "jest": "Jest", "mocha": "Mocha", "manufacturing": "Manufacturing", "inventory": "Inventory", "logistics": "Logistics", "supply chain": "Supply Chain", "repair": "Repair", "reporting": "Reporting", "business automation": "Business Automation", "documentation": "Documentation", "workflow automation": "Workflow Automation", "rma": "RMA", "inventory management": "Inventory Management", "reconciliation": "Reconciliation", "compliance": "Compliance", "coordination": "Coordination"}
-    
-    found_skills = [s for s in potential_skills if s in search_str]
-    matched_list = [s for s in found_skills if s in resume_skills]
-    missing_list = [s for s in found_skills if s not in resume_skills]
-    
-    matched_skills = ", ".join([norm_map[s] for s in matched_list])
-    missing_skills = ", ".join([norm_map[s] for s in missing_list])
+    found_skills = _title_preferred_skills(title, context)
+    if job_type == "Operations":
+        found_skills = [s for s in found_skills if s in resume_skills or s in tech_keywords]
+    matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
             
     # Rule 16: Low confidence jobs are never recommended
     should_recommend = confidence in ["🟢 High", "🟡 Medium"]

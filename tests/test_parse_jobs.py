@@ -464,6 +464,35 @@ class TestEvaluateJob(unittest.TestCase):
         _, _, _, dotnet_score, *_ = evaluate_job(dotnet_job)
         self.assertLess(java_score, dotnet_score)
 
+    def test_title_stack_takes_precedence_over_noisy_context(self):
+        job = _make_job(
+            title="PHP / Zend / Laravel",
+            company="Integrity Resources",
+            location="Remote",
+            context="php zend laravel integrity resources remote unrelated nearby text mentions .net azure",
+        )
+        _, _, _, fit_score, _, _, _, _, matched, missing, _ = evaluate_job(job)
+        self.assertNotIn(".NET", matched)
+        self.assertNotIn("Azure", matched)
+        self.assertIn("PHP", missing)
+        self.assertIn("Zend", missing)
+        self.assertIn("Laravel", missing)
+        self.assertLess(fit_score, 80)
+
+    def test_operations_profile_ignores_software_noise(self):
+        job = _make_job(
+            title="Operations Manager",
+            company="Capstone Logistics LLC",
+            location="Salt Lake City, UT",
+            context="operations manager logistics inventory salt lake city ut nearby text mentions .net c# azure",
+        )
+        _, _, _, _, _, _, _, reason, matched, missing, job_type = evaluate_job(job)
+        self.assertEqual(job_type, "Operations")
+        self.assertIn("Logistics", matched)
+        self.assertNotIn(".NET", missing)
+        self.assertNotIn("Azure", missing)
+        self.assertIn("Operations role", reason)
+
 
 # ---------------------------------------------------------------------------
 # parse_job_cards_from_text
@@ -503,6 +532,31 @@ class TestParseJobCards(unittest.TestCase):
         jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="test.pdf")
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["company"], "Futran Tech Solutions Pvt. Ltd.")
+
+    def test_cleans_location_when_next_card_is_glued_to_ui_label(self):
+        text = (
+            "Full Stack Project Lead\n"
+            "Citi\n"
+            "Irving, TX View Details Belva.ai • Bellevue, WA • Remote1-Click Apply\n"
+        )
+        jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="test.pdf")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["company"], "Citi")
+        self.assertEqual(jobs[0]["location"], "Irving, TX")
+
+    def test_does_not_use_next_title_as_location(self):
+        text = (
+            "Senior Software Engineer, Backend (AI Agent)\n"
+            "Jobright.ai\n"
+            "Sr. Software Engineer - Provider Access (Remote)\n"
+            "Provider Access Co\n"
+            "Remote\n"
+        )
+        jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="test.pdf")
+        self.assertGreaterEqual(len(jobs), 2)
+        self.assertEqual(jobs[0]["company"], "Jobright.ai")
+        self.assertEqual(jobs[0]["location"], "")
+        self.assertNotIn("Provider Access", jobs[0]["location"])
 
     def test_consecutive_titles_parsed_separately(self):
         text = "Senior Software Engineer\nLead Developer\nAcme Corp\nSalt Lake City, UT\n"
