@@ -177,7 +177,7 @@ def clean_existing_tracker(tracker_path):
             position = row.get("Position", "")
             location = row.get("Location", "")
             # Strip trailing UI labels that were concatenated by the parser (e.g. "Acme Corp.View Details")
-            cleaned_company = ui_label_strip.sub('', company).strip().rstrip('.')
+            cleaned_company = ui_label_strip.sub('', company).strip()
             if cleaned_company != company:
                 company = cleaned_company.strip()
                 row["Company"] = company
@@ -1006,9 +1006,7 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             company = re.sub(r'[,\s•]+$', '', company).strip()
             # Strip UI labels that may have been concatenated onto the company name
             ui_label_pattern = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)$'
-            company = re.sub(ui_label_pattern, '', company).strip().rstrip('.')
-            # Restore trailing period if the name is an abbreviation (e.g. 'Pvt. Ltd.')
-            # by re-adding if original ended with period before the label
+            company = re.sub(ui_label_pattern, '', company).strip()
             company = company.strip()
             location = re.sub(r'[,\s•]+$', '', location).strip()
             location = re.sub(r'\s+', ' ', location).strip()

@@ -8,10 +8,14 @@ or:
 """
 import sys
 import os
+import csv
+import tempfile
 import unittest
 
 # Allow importing from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import parse_jobs
 
 from parse_jobs import (
     is_valid_company,
@@ -149,6 +153,37 @@ class TestIsValidCompany(unittest.TestCase):
 
     def test_rejects_ends_with_period_sentence(self):
         self.assertFalse(is_valid_company("We are hiring."))
+
+
+# ---------------------------------------------------------------------------
+# clean_existing_tracker
+# ---------------------------------------------------------------------------
+
+class TestCleanExistingTracker(unittest.TestCase):
+
+    def test_strips_ui_label_without_losing_abbreviation_period(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tracker_path = os.path.join(tmp_dir, "master_tracker.csv")
+            with open(tracker_path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["Company", "Position", "Location"])
+                writer.writeheader()
+                writer.writerow({
+                    "Company": "Futran Tech Solutions Pvt. Ltd.View Details",
+                    "Position": ".NET Full Stack Engineer - Remote",
+                    "Location": "Remote",
+                })
+
+            original_save_to_sqlite = parse_jobs.save_to_sqlite
+            parse_jobs.save_to_sqlite = lambda *_args, **_kwargs: None
+            try:
+                parse_jobs.clean_existing_tracker(tracker_path)
+            finally:
+                parse_jobs.save_to_sqlite = original_save_to_sqlite
+
+            with open(tracker_path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+
+            self.assertEqual(rows[0]["Company"], "Futran Tech Solutions Pvt. Ltd.")
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +497,12 @@ class TestParseJobCards(unittest.TestCase):
         jobs = parse_job_cards_from_text(text, provider="Indeed", source_pdf="jobs.pdf")
         self.assertEqual(jobs[0]["provider"], "Indeed")
         self.assertEqual(jobs[0]["source_pdf"], "jobs.pdf")
+
+    def test_strips_ui_label_from_company_without_losing_abbreviation_period(self):
+        text = ".NET Full Stack Engineer - Remote\nFutran Tech Solutions Pvt. Ltd.View Details\nRemote\n"
+        jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="test.pdf")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["company"], "Futran Tech Solutions Pvt. Ltd.")
 
     def test_consecutive_titles_parsed_separately(self):
         text = "Senior Software Engineer\nLead Developer\nAcme Corp\nSalt Lake City, UT\n"
