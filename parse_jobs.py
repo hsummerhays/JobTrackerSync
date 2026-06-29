@@ -4,7 +4,7 @@ import re
 import csv
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, date
 import pypdf
 from rich.console import Console
 from rich.table import Table
@@ -78,6 +78,11 @@ def is_valid_company(company):
     # Check length
     if len(comp) > 100:
         return False
+    # Reject UI element strings captured instead of company names
+    ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more", 
+                   "see more", "read more", "click here", "get started", "sign in", "log in"}
+    if comp_lower in ui_elements:
+        return False
     # Check for exclusion words
     exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message"]
     if any(w in comp_lower for w in exclude_words):
@@ -105,20 +110,20 @@ def is_valid_company(company):
 
 def compute_priority(recommendation, action):
     if action == "Apply" and recommendation == "★★★★★ Apply Now":
-        return "P1 - Apply today"
+        return "P1 – Apply today"
     elif action in ["Apply", "Contact Recruiter"]:
-        return "P2 - Apply this week"
+        return "P2 – Apply this week"
     elif action == "Review":
-        return "P3 - Investigate"
+        return "P3 – Investigate"
     else:
-        return "P4 - Ignore"
+        return "P4 – Ignore"
 
 def initialize_tracker(tracker_path):
     """Ensure the tracker CSV exists and has the correct headers."""
     if not os.path.exists(tracker_path):
         with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"])
+            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"])
         console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
 
 def clean_existing_tracker(tracker_path):
@@ -133,8 +138,8 @@ def clean_existing_tracker(tracker_path):
     expected_headers = [
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
-        "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", 
-        "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
     ]
     
     try:
@@ -271,24 +276,23 @@ def clean_existing_tracker(tracker_path):
             criteria = criteria_map.get(job_type, criteria_map.get("Software Engineer", {}))
             resume_skills = criteria.get("resume_skills", [])
             
-            # Company Type calculation
-            comp_type = row.get("Company Type")
-            if not comp_type:
-                c_type = "Small / Medium"
-                c_search = f"{company} {notes}".lower()
-                if any(k in c_search for k in ["recruiting", "staffing", "search", "placement", "resources", "navigators", "personnel", "hired"]):
-                    c_type = "Recruiting Firm"
-                elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
-                    c_type = "Consulting"
-                elif any(k in c_search for k in ["defense", "leidos", "harris", "lockheed", "raytheon", "boeing", "northrop", "military"]):
-                    c_type = "Defense"
-                elif any(k in c_search for k in ["health", "medical", "hosp", "care", "pharm", "optum", "clinical", "dental"]):
-                    c_type = "Healthcare"
-                elif any(k in c_search for k in ["finance", "wealth", "bank", "capital", "valuations", "investment", "insurance", "insurtech", "credit", "fidelity"]):
-                    c_type = "Financial"
-                elif any(faang.lower() in company.lower() for faang in FAANG_COMPANIES):
-                    c_type = "Enterprise"
-                comp_type = c_type
+            # Company Type calculation (always recomputed to fix stale values)
+            comp_lower = company.lower()
+            c_search = f"{company} {notes}".lower()
+            if any(k in comp_lower for k in ["recruiting", "staffing", "placement", "navigators", "personnel", "robert half", "binit", "headhunters", "recruiter", "search partners"]):
+                comp_type = "Recruiting Firm"
+            elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
+                comp_type = "Consulting"
+            elif any(k in c_search for k in ["defense", "leidos", "harris", "lockheed", "raytheon", "boeing", "northrop", "military"]):
+                comp_type = "Defense"
+            elif any(k in c_search for k in ["health", "medical", "hosp", "care", "pharm", "optum", "clinical", "dental"]):
+                comp_type = "Healthcare"
+            elif any(k in c_search for k in ["finance", "wealth", "bank", "capital", "valuations", "investment", "insurance", "insurtech", "credit", "fidelity"]):
+                comp_type = "Financial"
+            elif any(faang.lower() in comp_lower for faang in FAANG_COMPANIES):
+                comp_type = "Enterprise"
+            else:
+                comp_type = "Small / Medium"
             migrated_row["Company Type"] = comp_type
 
             # Unconditionally recalculate derived metrics to stay in sync with resume updates
@@ -306,7 +310,14 @@ def clean_existing_tracker(tracker_path):
             # 3. Backend / Full Stack / Leadership (15 points)
             if job_type == "Software Engineer":
                 score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
-                score_dotnet_java = 20 if any(w in pos_lower or w in notes_lower for w in [".net", "c#", "java", "spring"]) else 0
+                has_dotnet = any(w in pos_lower or w in notes_lower for w in [".net", "c#"])
+                has_java = any(w in pos_lower or w in notes_lower for w in ["java", "spring"])
+                if has_dotnet:
+                    score_dotnet_java = 20
+                elif has_java:
+                    score_dotnet_java = 10  # Priority adjustment: 10 points for Java-only Software Engineer roles
+                else:
+                    score_dotnet_java = 0
             else:
                 score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["director", "supervisor", "manager", "lead"]) else 0
                 score_dotnet_java = 20 if any(w in pos_lower or w in notes_lower for w in ["manufacturing", "logistics", "inventory", "supply chain"]) else 0
@@ -333,6 +344,10 @@ def clean_existing_tracker(tracker_path):
                 if "Local/Onsite restriction detected" not in notes:
                     notes = notes + "; Local/Onsite restriction detected" if notes else "Local/Onsite restriction detected"
                     migrated_row["Notes"] = notes
+            
+            # Operations type penalty: -15 pts to keep SE roles ranked above Ops roles
+            if job_type == "Operations":
+                score = max(0, score - 15)
                 
             fit_score = score
             migrated_row["Fit Score"] = int(fit_score)
@@ -372,31 +387,37 @@ def clean_existing_tracker(tracker_path):
                 else:
                     action = "Ignore"
                     
-            act = row.get("Action", action)
-            if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
-                if "apply" in act.lower():
-                    act = "Apply"
-                elif "recruiter" in act.lower():
-                    act = "Contact Recruiter"
-                elif "review" in act.lower():
-                    act = "Review"
-                else:
-                    act = "Ignore"
+            if status == "New":
+                act = action
+            else:
+                act = row.get("Action", action)
+                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
+                    if "apply" in act.lower():
+                        act = "Apply"
+                    elif "recruiter" in act.lower():
+                        act = "Contact Recruiter"
+                    elif "review" in act.lower():
+                        act = "Review"
+                    else:
+                        act = "Ignore"
+                # Correct stale Contact Recruiter for non-recruiting-firm companies
+                if act == "Contact Recruiter" and comp_type != "Recruiting Firm":
+                    act = "Apply" if rec in ["★★★★★ Apply Now", "★★★★☆ Strong"] else "Review"
             migrated_row["Action"] = act
             
-            # Priority calculation
-            migrated_row["Priority"] = row.get("Priority", compute_priority(rec, act))
+            # Priority calculation (always recalculated to standardize formatting)
+            migrated_row["Priority"] = compute_priority(rec, act)
             
-            # Already in Tracker
+            # Existing Company (same employer already tracked)
             known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
             comp_cleaned = company.strip().lower()
-            current_val = row.get("Already in Tracker")
+            current_val = row.get("Existing Company", row.get("Already in Tracker"))
             if comp_cleaned in known_tracker_companies:
-                migrated_row["Already in Tracker"] = "Yes"
+                migrated_row["Existing Company"] = "Yes"
             elif company_counts.get(comp_cleaned, 0) <= 1:
-                migrated_row["Already in Tracker"] = "No"
+                migrated_row["Existing Company"] = "No"
             else:
-                migrated_row["Already in Tracker"] = current_val if current_val in ["Yes", "No"] else "No"
+                migrated_row["Existing Company"] = current_val if current_val in ["Yes", "No"] else "No"
             
             # Reason calculation
             reasons = []
@@ -487,7 +508,7 @@ def save_to_sqlite(db_path, jobs_list):
                 tracker_status TEXT,
                 disposition TEXT,
                 action TEXT,
-                already_in_tracker TEXT,
+                existing_company TEXT,
                 reason TEXT,
                 matched_skills TEXT,
                 missing_skills TEXT,
@@ -503,7 +524,7 @@ def save_to_sqlite(db_path, jobs_list):
                     INSERT INTO jobs (
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
-                        recommendation, tracker_status, disposition, action, already_in_tracker,
+                        recommendation, tracker_status, disposition, action, existing_company,
                         reason, matched_skills, missing_skills, date_added, notes
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
@@ -523,7 +544,7 @@ def save_to_sqlite(db_path, jobs_list):
                         tracker_status=excluded.tracker_status,
                         disposition=excluded.disposition,
                         action=excluded.action,
-                        already_in_tracker=excluded.already_in_tracker,
+                        existing_company=excluded.existing_company,
                         reason=excluded.reason,
                         matched_skills=excluded.matched_skills,
                         missing_skills=excluded.missing_skills,
@@ -547,7 +568,7 @@ def save_to_sqlite(db_path, jobs_list):
                     job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
                     job.get("Disposition", job.get("disposition")), 
                     job.get("Action", job.get("action")),
-                    job.get("Already in Tracker", job.get("already_in_tracker")),
+                    job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
                     job.get("Reason", job.get("reason")),
                     job.get("Matched Skills", job.get("matched_skills")),
                     job.get("Missing Skills", job.get("missing_skills")),
@@ -578,7 +599,7 @@ def save_to_sqlite(db_path, jobs_list):
                     tracker_status TEXT,
                     disposition TEXT,
                     action TEXT,
-                    already_in_tracker TEXT,
+                    existing_company TEXT,
                     reason TEXT,
                     matched_skills TEXT,
                     missing_skills TEXT,
@@ -591,7 +612,7 @@ def save_to_sqlite(db_path, jobs_list):
                     INSERT INTO jobs (
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
-                        recommendation, tracker_status, disposition, action, already_in_tracker,
+                        recommendation, tracker_status, disposition, action, existing_company,
                         reason, matched_skills, missing_skills, date_added, notes
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
@@ -611,7 +632,7 @@ def save_to_sqlite(db_path, jobs_list):
                         tracker_status=excluded.tracker_status,
                         disposition=excluded.disposition,
                         action=excluded.action,
-                        already_in_tracker=excluded.already_in_tracker,
+                        existing_company=excluded.existing_company,
                         reason=excluded.reason,
                         matched_skills=excluded.matched_skills,
                         missing_skills=excluded.missing_skills,
@@ -635,7 +656,7 @@ def save_to_sqlite(db_path, jobs_list):
                     job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
                     job.get("Disposition", job.get("disposition")), 
                     job.get("Action", job.get("action")),
-                    job.get("Already in Tracker", job.get("already_in_tracker")),
+                    job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
                     job.get("Reason", job.get("reason")),
                     job.get("Matched Skills", job.get("matched_skills")),
                     job.get("Missing Skills", job.get("missing_skills")),
@@ -966,6 +987,12 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             
             # Clean up trailing punctuation / bullets
             company = re.sub(r'[,\s•]+$', '', company).strip()
+            # Strip UI labels that may have been concatenated onto the company name
+            ui_label_pattern = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)$'
+            company = re.sub(ui_label_pattern, '', company).strip().rstrip('.')
+            # Restore trailing period if the name is an abbreviation (e.g. 'Pvt. Ltd.')
+            # by re-adding if original ended with period before the label
+            company = company.strip()
             location = re.sub(r'[,\s•]+$', '', location).strip()
             location = re.sub(r'\s+', ' ', location).strip()
             location = re.sub(r',\s*,', ',', location).strip()
@@ -1118,8 +1145,9 @@ def evaluate_job(job):
     
     # Company type classification
     company_type = "Small / Medium"
+    comp_lower = company.lower()
     c_search = f"{company} {context}".lower()
-    if any(k in c_search for k in ["recruiting", "staffing", "search", "placement", "resources", "navigators", "personnel", "hired"]):
+    if any(k in comp_lower for k in ["recruiting", "staffing", "placement", "navigators", "personnel", "robert half", "binit", "headhunters", "recruiter", "search partners"]):
         company_type = "Recruiting Firm"
     elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
         company_type = "Consulting"
@@ -1139,7 +1167,14 @@ def evaluate_job(job):
     # Role-specific backend/fullstack indicator
     if job_type == "Software Engineer":
         score_backend_fs = 15 if any(w in title.lower() or w in context for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
-        score_dotnet_java = 20 if any(w in title.lower() or w in context for w in [".net", "c#", "java", "spring"]) else 0
+        has_dotnet = any(w in title.lower() or w in context for w in [".net", "c#"])
+        has_java = any(w in title.lower() or w in context for w in ["java", "spring"])
+        if has_dotnet:
+            score_dotnet_java = 20
+        elif has_java:
+            score_dotnet_java = 10  # Priority adjustment: 10 points for Java-only Software Engineer roles
+        else:
+            score_dotnet_java = 0
     else:
         # For Operations: points for supervisor/director/manager leadership or automation experience
         score_backend_fs = 15 if any(w in title.lower() or w in context for w in ["director", "supervisor", "manager", "lead"]) else 0
@@ -1152,6 +1187,11 @@ def evaluate_job(job):
     fit_score = score_remote_utah + score_senior + score_backend_fs + score_dotnet_java + score_no_degree + score_small_med + score_legacy
     if has_restriction:
         fit_score = max(0, fit_score - 30)
+    
+    # Operations type penalty: deduct 15 pts when primary focus is Software Engineering
+    # This prevents Operations Manager roles from ranking alongside senior engineering roles
+    if job_type == "Operations":
+        fit_score = max(0, fit_score - 15)
         
     # Recommendation calculation (normalized)
     if confidence == "🔴 Low":
@@ -1170,6 +1210,8 @@ def evaluate_job(job):
             
     # Reason calculation
     reasons = []
+    if job_type == "Operations":
+        reasons.append("Operations role (-15 pts)")
     if is_remote:
         reasons.append("Remote")
     elif is_utah:
@@ -1236,11 +1278,78 @@ def evaluate_job(job):
     
     return should_recommend, confidence, notes_str, fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type
 
+def _print_dashboard(tracker_path="master_tracker.csv"):
+    """Print a daily action dashboard from the master tracker CSV."""
+    if not os.path.exists(tracker_path):
+        console.print(f"[red]Tracker not found: {tracker_path}[/red]")
+        return
+    
+    with open(tracker_path, encoding='utf-8') as f:
+        rows = list(csv.DictReader(f))
+    
+    today = date.today()
+
+    def fmt_row(r):
+        age = r.get("Age (days)", "")
+        age_str = f"  [dim](+{age}d)[/dim]" if str(age).isdigit() and int(age) > 0 else ""
+        return f"  • [bold]{r['Company']}[/bold] — {r.get('Position','')[:55]}{age_str}"
+
+    p1 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P1")]
+    p2 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P2")]
+    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]]
+    follow_up = [r for r in rows if r.get("Tracker Status") == "Waiting"]
+    recent_rejected = [r for r in rows if r.get("Tracker Status") in ["Rejected", "Ghosted"]]
+
+    date_str = today.strftime('%A, %B %d, %Y').replace(' 0', ' ')
+    console.print(f"\n[bold green]=========================================[/bold green]")
+    console.print(f"[bold green]   TODAY'S WORK — {date_str}[/bold green]")
+    console.print(f"[bold green]=========================================[/bold green]\n")
+
+    console.print(f"[bold cyan]Apply Today ({len(p1)})[/bold cyan]")
+    if p1:
+        for r in p1: console.print(fmt_row(r))
+    else:
+        console.print("  [dim]None[/dim]")
+
+    console.print(f"\n[bold cyan]Apply This Week ({len(p2)})[/bold cyan]")
+    if p2:
+        for r in p2[:10]: console.print(fmt_row(r))
+        if len(p2) > 10:
+            console.print(f"  [dim]... and {len(p2)-10} more[/dim]")
+    else:
+        console.print("  [dim]None[/dim]")
+
+    console.print(f"\n[bold green]Active Pipeline ({len(active)})[/bold green]")
+    if active:
+        for r in active:
+            console.print(f"  • [bold]{r['Company']}[/bold] — {r.get('Tracker Status','')} [{r.get('Position','')[:40]}]")
+    else:
+        console.print("  [dim]None[/dim]")
+
+    if follow_up:
+        console.print(f"\n[bold yellow]Follow Up ({len(follow_up)})[/bold yellow]")
+        for r in follow_up:
+            console.print(fmt_row(r))
+
+    if recent_rejected:
+        console.print(f"\n[bold red]Recently Rejected / Ghosted ({len(recent_rejected)})[/bold red]")
+        for r in recent_rejected[:5]:
+            console.print(fmt_row(r))
+
+    console.print(f"\n[bold green]=========================================[/bold green]\n")
+
+
 def main():
+
     import argparse
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
+    parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
     args = parser.parse_args()
+    
+    if args.dashboard:
+        _print_dashboard()
+        return
     
     pdf_dir = args.pdf_dir
     if not pdf_dir:
@@ -1400,7 +1509,7 @@ def main():
                 "Tracker Status": tracker_status,
                 "Disposition": disposition,
                 "Action": action,
-                "Already in Tracker": already_in,
+                "Existing Company": already_in,
                 "Reason": reason,
                 "Matched Skills": matched_skills,
                 "Missing Skills": missing_skills,
@@ -1413,16 +1522,19 @@ def main():
     existing_list = []
     known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
     for jid, row in existing_jobs.items():
-        # Keep original "Already in Tracker" or compute if missing
-        current_val = row.get("Already in Tracker")
+        # Keep original "Existing Company" or compute if missing
+        current_val = row.get("Existing Company", row.get("Already in Tracker"))
+        if "Already in Tracker" in row:
+            del row["Already in Tracker"]
+            
         if current_val in ["Yes", "No"]:
-            row["Already in Tracker"] = current_val
+            row["Existing Company"] = current_val
         else:
             comp = row.get("Company", "")
             if comp.strip().lower() in known_tracker_companies:
-                row["Already in Tracker"] = "Yes"
+                row["Existing Company"] = "Yes"
             else:
-                row["Already in Tracker"] = "No"
+                row["Existing Company"] = "No"
                 
         # Classify if missing
         if "Job Type" not in row or not row["Job Type"]:
@@ -1485,12 +1597,22 @@ def main():
     expected_headers = [
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
-        "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", 
-        "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
     ]
     
+    # Compute Age (days) for every row before writing
+    today = date.today()
+    for row in combined_jobs:
+        date_added = row.get("Date Added", "")
+        try:
+            added = date.fromisoformat(date_added)
+            row["Age (days)"] = (today - added).days
+        except (ValueError, TypeError):
+            row["Age (days)"] = ""
+    
     with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=expected_headers)
+        writer = csv.DictWriter(f, fieldnames=expected_headers, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(combined_jobs)
         
@@ -1505,16 +1627,79 @@ def main():
     closed_jobs_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted"])
     need_review_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Review Status") == "Imported")
 
+    # Calculate priority breakdown
+    p1_new = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P1"))
+    p2_new = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P2"))
+    p3_new = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P3"))
+    p4_new = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P4"))
+
+    # Calculate top missing skills across all new/imported jobs
+    from collections import Counter
+    missing_counter = Counter()
+    for row in combined_jobs:
+        if row.get("Tracker Status") == "New":
+            for skill in row.get("Missing Skills", "").split(","):
+                skill = skill.strip()
+                if skill:
+                    missing_counter[skill] += 1
+    top_missing = missing_counter.most_common(5)
+
     # Output Console summary report
     console.print("\n[bold green]=========================================[/bold green]")
     console.print("[bold green]          JOB TRACKER SYNC REPORT        [/bold green]")
     console.print("[bold green]=========================================[/bold green]")
-    console.print(f"New jobs: [bold cyan]{new_jobs_count}[/bold cyan]")
-    console.print(f"Existing jobs: [bold cyan]{existing_jobs_count}[/bold cyan]")
-    console.print(f"Already applied: [bold green]{already_applied_count}[/bold green]")
-    console.print(f"Closed jobs: [bold red]{closed_jobs_count}[/bold red]")
-    console.print(f"Need review: [bold yellow]{need_review_count}[/bold yellow]")
+    console.print(f"Jobs tracked:        [bold cyan]{len(combined_jobs)}[/bold cyan]")
+    console.print(f"New this run:        [bold cyan]{new_jobs_count}[/bold cyan]")
+    console.print(f"")
+    console.print(f"P1 \u2013 Apply today:     [bold cyan]{p1_new}[/bold cyan]")
+    console.print(f"P2 \u2013 Apply this week: [bold cyan]{p2_new}[/bold cyan]")
+    console.print(f"P3 \u2013 Investigate:     [bold yellow]{p3_new}[/bold yellow]")
+    console.print(f"P4 \u2013 Ignore:          [dim]{p4_new}[/dim]")
+    console.print(f"")
+    console.print(f"Applied:             [bold green]{already_applied_count}[/bold green]")
+    console.print(f"Closed:              [bold red]{closed_jobs_count}[/bold red]")
+    console.print(f"Need review:         [bold yellow]{need_review_count}[/bold yellow]")
+    if top_missing:
+        console.print(f"")
+        console.print("[bold]Top Missing Skills:[/bold]")
+        for skill, count in top_missing:
+            console.print(f"  [red]{skill}[/red] ({count} roles)")
     console.print("[bold green]=========================================[/bold green]\n")
+
+    # Calculate pipeline metrics
+    phone_screens = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Phone Screen")
+    technical_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Technical Interview")
+    recruiter_contacts = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Recruiter Submitted" or row.get("Action") == "Contact Recruiter")
+    waiting_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Waiting")
+
+    p1_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P1"))
+    p2_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P2"))
+    p3_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Priority", "").startswith("P3"))
+
+    applied_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Applied")
+    rejected_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Rejected")
+    cancelled_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Cancelled")
+    ghosted_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Ghosted")
+
+    # Output Console Pipeline dashboard
+    console.print("[bold cyan]=========================================[/bold cyan]")
+    console.print("[bold cyan]          APPLICATION PIPELINE           [/bold cyan]")
+    console.print("[bold cyan]=========================================[/bold cyan]")
+    console.print("[bold underline]Active Pipeline[/bold underline]")
+    console.print(f"  Phone Screen:         [bold green]{phone_screens}[/bold green]")
+    console.print(f"  Technical Interview:  [bold green]{technical_interviews}[/bold green]")
+    console.print(f"  Recruiter Contact:    [bold green]{recruiter_contacts}[/bold green]")
+    console.print(f"  Waiting:              [bold yellow]{waiting_count}[/bold yellow]")
+    console.print("\n[bold underline]New Opportunities[/bold underline]")
+    console.print(f"  P1 \u2013 Apply Today:     [bold cyan]{p1_count}[/bold cyan]")
+    console.print(f"  P2 \u2013 Apply This Week:  [bold cyan]{p2_count}[/bold cyan]")
+    console.print(f"  P3 \u2013 Investigate:     [bold yellow]{p3_count}[/bold yellow]")
+    console.print("\n[bold underline]Closed / History[/bold underline]")
+    console.print(f"  Applied (Pending):    [bold white]{applied_count}[/bold white]")
+    console.print(f"  Rejected:             [bold red]{rejected_count}[/bold red]")
+    console.print(f"  Cancelled:            [bold red]{cancelled_count}[/bold red]")
+    console.print(f"  Ghosted:              [bold red]{ghosted_count}[/bold red]")
+    console.print("[bold cyan]=========================================[/bold cyan]\n")
 
     # For console Table display: show all, or just new recommendations?
     if all_recommendations:
