@@ -1,17 +1,24 @@
+import sys
 import os
 import re
 import csv
 import json
+import sqlite3
 from datetime import datetime
 import pypdf
 from rich.console import Console
 from rich.table import Table
 
+# Set console encoding to UTF-8 to prevent emoji errors on Windows
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 # Initialize Rich Console for beautiful outputs
 console = Console()
 
 # Rules and configuration constants
-TRACKER_PATH = "job_tracker.csv"
 CONFIG_PATH = "config.json"
 
 # Rule 8 Skip list (compiled regex patterns)
@@ -55,110 +62,652 @@ LEGACY_KEYWORDS = [
 # FAANG scale companies for Rule 12 comparison
 FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "Microsoft"]
 
-def initialize_tracker():
-    """Ensure the tracker CSV exists and has the correct headers."""
-    if not os.path.exists(TRACKER_PATH):
-        with open(TRACKER_PATH, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            writer.writerow(["Company", "Position", "Location", "Link", "Provider", "Source PDF", "Confidence", "Status", "Date Added", "Notes"])
-        console.print(f"[green]Initialized new tracker at {TRACKER_PATH}[/green]")
+def is_valid_company(company):
+    if not company:
+        return False
+    comp = company.strip()
+    if not comp:
+        return False
+    comp_lower = comp.lower()
+    # Reject placeholders
+    if comp_lower in ["unknown", "unknown/other", "undisclosed", "undisclosed company"]:
+        return False
+    # Check if starts with lowercase letter or number
+    if comp[0].islower() or comp[0].isdigit():
+        return False
+    # Check length
+    if len(comp) > 100:
+        return False
+    # Check for exclusion words
+    exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message"]
+    if any(w in comp_lower for w in exclude_words):
+        return False
+    # Reject if it matches location-only terms
+    location_names = {
+        "salt lake city", "salt lake", "slc", "lehi", "provo", "ogden", "sandy", "draper", "murray", "west valley", 
+        "west valley city", "eagle mountain", "richmond", "virginia", "utah", "california", "texas", "colorado", 
+        "denver", "seattle", "washington", "new york", "boston", "remote", "hybrid", "on-site", "onsite", "coast",
+        "east coast", "west coast", "coast)", "charlotte", "atlanta", "austin", "dallas", "houston", "phoenix"
+    }
+    if comp_lower in location_names:
+        return False
+    # Reject if ends with state/location suffix or abbreviation (e.g. , UT, , CA, or ending in UT/CA/VA/Coast)
+    if re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast|Remote|Hybrid)\)?$', comp):
+        return False
+    # Check if it looks like a sentence (e.g., contains multiple words with lowercase verbs/pronouns or too many words)
+    if len(comp.split()) > 7:
+        return False
+    # Check punctuation at the end or typical sentence markers
+    if comp.endswith('.') or '?' in comp or '!' in comp:
+        return False
+    return True
 
-def clean_existing_tracker():
+
+def compute_priority(recommendation, action):
+    if action == "Apply" and recommendation == "★★★★★ Apply Now":
+        return "P1 - Apply today"
+    elif action in ["Apply", "Contact Recruiter"]:
+        return "P2 - Apply this week"
+    elif action == "Review":
+        return "P3 - Investigate"
+    else:
+        return "P4 - Ignore"
+
+def initialize_tracker(tracker_path):
+    """Ensure the tracker CSV exists and has the correct headers."""
+    if not os.path.exists(tracker_path):
+        with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"])
+        console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
+
+def clean_existing_tracker(tracker_path):
     """Clean up any existing rows in the tracker that fail the company name rules and migrate schema if needed."""
-    if not os.path.exists(TRACKER_PATH):
+    if not os.path.exists(tracker_path):
         return
     
     rows_to_keep = []
     cleaned_any = False
     migrated_schema = False
     
-    expected_headers = ["Company", "Position", "Location", "Link", "Provider", "Source PDF", "Confidence", "Status", "Date Added", "Notes"]
+    expected_headers = [
+        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
+        "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", 
+        "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+    ]
     
     try:
-        with open(TRACKER_PATH, mode='r', newline='', encoding='utf-8') as f:
+        import hashlib
+        with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             if not fieldnames:
                 return
+            rows = list(reader)
             
-            if "Source PDF" not in fieldnames or "Link" not in fieldnames:
-                migrated_schema = True
+        # Check if any expected header is missing
+        if any(h not in fieldnames for h in expected_headers):
+            migrated_schema = True
+            
+        company_counts = {}
+        for row in rows:
+            c = row.get("Company", "").strip().lower()
+            if c:
+                company_counts[c] = company_counts.get(c, 0) + 1
                 
-            for row in reader:
-                company = row.get("Company", "")
-                position = row.get("Position", "")
-                if not company:
-                    continue
-                comp_lower = company.strip().lower()
-                generic_roles = {
-                    "software developer", "software engineer", "java developer", 
-                    "backend developer", "backend engineer", "developer", "engineer",
-                    "full stack developer", "full stack engineer", "java software developer",
-                    "java software engineer", "j2ee developer", "j2ee software developer",
-                    "software developer", "c developer", "react js developer", ".net developer"
-                }
-                if (comp_lower.startswith("hugh summerhays") or
-                    "gmail" in comp_lower or
-                    comp_lower.startswith("1 message") or
-                    comp_lower.startswith("looking for") or
-                    comp_lower.startswith("https://") or
-                    comp_lower == "(remote)" or
-                    comp_lower in generic_roles or
-                    "create" in comp_lower or
-                    "create" in position.lower()):
-                    cleaned_any = True
-                    continue
+        for row in rows:
+            company = row.get("Company", "")
+            position = row.get("Position", "")
+            location = row.get("Location", "")
+            if not company or not is_valid_company(company):
+                cleaned_any = True
+                continue
+            comp_lower = company.strip().lower()
+            generic_roles = {
+                "software developer", "software engineer", "java developer", 
+                "backend developer", "backend engineer", "developer", "engineer",
+                "full stack developer", "full stack engineer", "java software developer",
+                "java software engineer", "j2ee developer", "j2ee software developer",
+                "software developer", "c developer", "react js developer", ".net developer"
+            }
+            conversational_phrases = [
+                "could be", "with your", "your background", "your experience", 
+                "is hiring", "apply now", "feel free", "hiring for", "interested in", 
+                "you're interested", "you would be", "contribute to", "opportunities you", 
+                "great fit", "little different", "looking for", "would be a", 
+                "could contribute", "background as a", "expertise with", "offers remote",
+                "flexibility of", "competitive pay"
+            ]
+            pos_lower = position.lower()
+            loc_lower = location.lower()
+            is_conversational = any(phrase in comp_lower or phrase in pos_lower or phrase in loc_lower for phrase in conversational_phrases)
+            
+            # Check for invalid company names starting with punctuation or containing generic terms
+            bad_company = (
+                re.match(r'^[\W_]', comp_lower) or  # starts with punctuation/symbol
+                any(phrase in comp_lower for phrase in ["based compensation", "no salary", "remote", "hybrid", "salary", "compensation", "apply now", "hourly", "contract"])
+            )
+            
+            if (comp_lower.startswith("hugh summerhays") or
+                "gmail" in comp_lower or
+                comp_lower.startswith("1 message") or
+                comp_lower.startswith("looking for") or
+                comp_lower.startswith("https://") or
+                comp_lower == "(remote)" or
+                comp_lower in generic_roles or
+                "create" in comp_lower or
+                "create" in position.lower() or
+                is_conversational or
+                bad_company):
+                cleaned_any = True
+                continue
+            
+            migrated_row = {}
+            migrated_row["Company"] = company
+            migrated_row["Position"] = position
+            migrated_row["Location"] = location
+            migrated_row["URL"] = row.get("URL", row.get("Link", ""))
+            migrated_row["Provider"] = row.get("Provider", "Unknown")
+            migrated_row["Source PDF"] = row.get("Source PDF", "Unknown")
+            migrated_row["Confidence"] = row.get("Confidence", "🟡 Medium")
+            status = row.get("Tracker Status", row.get("Status", "New"))
+            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted"]:
+                if status == "Recruiter":
+                    status = "Recruiter Submitted"
+                elif status == "Interview":
+                    status = "Phone Screen"
+                elif status == "Technical":
+                    status = "Technical Interview"
+                elif status in ["Skip", "Duplicate"]:
+                    status = "Cancelled"
+                else:
+                    status = "New"
+            migrated_row["Tracker Status"] = status
+            
+            review_status = row.get("Review Status")
+            if not review_status:
+                if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+                    review_status = "Applied"
+                elif status in ["Rejected", "Cancelled", "Ghosted"]:
+                    review_status = "Closed"
+                else:
+                    review_status = "Imported"
+            migrated_row["Review Status"] = review_status
+            
+            disposition_map = {
+                "New": "Apply",
+                "Applied": "Waiting",
+                "Phone Screen": "Active",
+                "Technical Interview": "Active",
+                "Recruiter Submitted": "Active",
+                "Waiting": "Active",
+                "Rejected": "Closed",
+                "Cancelled": "Closed",
+                "Ghosted": "Closed"
+            }
+            disposition = row.get("Disposition", disposition_map.get(status, "Apply"))
+            migrated_row["Disposition"] = disposition
+            migrated_row["Date Added"] = row.get("Date Added", datetime.now().strftime("%Y-%m-%d"))
+            
+            notes = row.get("Notes", "")
+            migrated_row["Notes"] = notes
+            
+            # Job ID
+            job_id = row.get("Job ID")
+            if not job_id:
+                job_id = hashlib.md5(f"{company.strip().lower()}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()[:12]
+            migrated_row["Job ID"] = job_id
+            
+            # Job Type
+            job_type = row.get("Job Type")
+            if not job_type:
+                job_type = classify_job_type(position, notes)
+            migrated_row["Job Type"] = job_type
+            
+            # Load criteria from config for this job type
+            config = load_config()
+            criteria_map = config.get("job_type_criteria", {})
+            criteria = criteria_map.get(job_type, criteria_map.get("Software Engineer", {}))
+            resume_skills = criteria.get("resume_skills", [])
+            
+            # Company Type calculation
+            comp_type = row.get("Company Type")
+            if not comp_type:
+                c_type = "Small / Medium"
+                c_search = f"{company} {notes}".lower()
+                if any(k in c_search for k in ["recruiting", "staffing", "search", "placement", "resources", "navigators", "personnel", "hired"]):
+                    c_type = "Recruiting Firm"
+                elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
+                    c_type = "Consulting"
+                elif any(k in c_search for k in ["defense", "leidos", "harris", "lockheed", "raytheon", "boeing", "northrop", "military"]):
+                    c_type = "Defense"
+                elif any(k in c_search for k in ["health", "medical", "hosp", "care", "pharm", "optum", "clinical", "dental"]):
+                    c_type = "Healthcare"
+                elif any(k in c_search for k in ["finance", "wealth", "bank", "capital", "valuations", "investment", "insurance", "insurtech", "credit", "fidelity"]):
+                    c_type = "Financial"
+                elif any(faang.lower() in company.lower() for faang in FAANG_COMPANIES):
+                    c_type = "Enterprise"
+                comp_type = c_type
+            migrated_row["Company Type"] = comp_type
+
+            # Unconditionally recalculate derived metrics to stay in sync with resume updates
+            score = 0
+            notes_lower = notes.lower()
+            
+            # 1. Remote or Utah (20 points)
+            if "remote" in pos_lower or "remote" in location.lower() or any(w in location.lower() for w in ["ut", "utah", "salt lake", "slc", "lehi", "provo", "ogden"]):
+                score += 20
                 
-                # Migrate row structure
-                migrated_row = {}
-                for h in expected_headers:
-                    if h == "Link":
-                        migrated_row[h] = row.get("Link", row.get("URL", ""))
-                    elif h == "Source PDF":
-                        migrated_row[h] = row.get("Source PDF", "Unknown")
-                    else:
-                        migrated_row[h] = row.get(h, "")
-                rows_to_keep.append(migrated_row)
+            # 2. Senior (15 points)
+            if any(w in pos_lower for w in ["senior", "lead", "principal", "sme", "staff", "architect", "manager"]):
+                score += 15
                 
-        if cleaned_any or migrated_schema:
-            with open(TRACKER_PATH, mode='w', newline='', encoding='utf-8') as f:
+            # 3. Backend / Full Stack / Leadership (15 points)
+            if job_type == "Software Engineer":
+                score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
+                score_dotnet_java = 20 if any(w in pos_lower or w in notes_lower for w in [".net", "c#", "java", "spring"]) else 0
+            else:
+                score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["director", "supervisor", "manager", "lead"]) else 0
+                score_dotnet_java = 20 if any(w in pos_lower or w in notes_lower for w in ["manufacturing", "logistics", "inventory", "supply chain"]) else 0
+                
+            score += score_backend_fs + score_dotnet_java
+            
+            # 5. No degree requirement known (10 points)
+            degree_required = "degree requirement" in notes_lower or "bachelor" in notes_lower or "bs required" in notes_lower
+            score += 10 if not degree_required else 0
+            
+            # 6. Small/medium company (10 points)
+            if comp_type == "Small / Medium":
+                score += 10
+                
+            # 7. Legacy modernization (10 points)
+            if "legacy modernization" in notes_lower or "legacy" in notes_lower or "modernization" in notes_lower:
+                score += 10
+                
+            # Check for local candidate/onsite restrictions
+            restriction_phrases = ["local candidate", "onsite only", "on-site only", "must relocate", "no remote"]
+            has_restriction = any(p in pos_lower or p in notes_lower for p in restriction_phrases)
+            if has_restriction:
+                score = max(0, score - 30)
+                if "Local/Onsite restriction detected" not in notes:
+                    notes = notes + "; Local/Onsite restriction detected" if notes else "Local/Onsite restriction detected"
+                    migrated_row["Notes"] = notes
+                
+            fit_score = score
+            migrated_row["Fit Score"] = int(fit_score)
+            
+            # Recommendation calculation (normalized)
+            conf = migrated_row["Confidence"]
+            if conf == "🔴 Low":
+                rec = "★☆☆☆☆ Skip"
+            else:
+                if fit_score >= 80 and conf == "🟢 High":
+                    rec = "★★★★★ Apply Now"
+                elif fit_score >= 60:
+                    rec = "★★★★☆ Strong"
+                elif fit_score >= 40:
+                    rec = "★★★☆☆ Maybe"
+                elif fit_score >= 20:
+                    rec = "★★☆☆☆ Low"
+                else:
+                    rec = "★☆☆☆☆ Skip"
+            migrated_row["Recommendation"] = rec
+            
+            # Action calculation
+            if status != "New":
+                if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+                    action = "Already Applied"
+                elif status in ["Rejected", "Cancelled", "Ghosted"]:
+                    action = "Ignore"
+                else:
+                    action = "Ignore"
+            else:
+                if comp_type == "Recruiting Firm" and rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                    action = "Contact Recruiter"
+                elif rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                    action = "Apply"
+                elif rec == "★★★☆☆ Maybe":
+                    action = "Review"
+                else:
+                    action = "Ignore"
+                    
+            act = row.get("Action", action)
+            if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
+                if "apply" in act.lower():
+                    act = "Apply"
+                elif "recruiter" in act.lower():
+                    act = "Contact Recruiter"
+                elif "review" in act.lower():
+                    act = "Review"
+                else:
+                    act = "Ignore"
+            migrated_row["Action"] = act
+            
+            # Priority calculation
+            migrated_row["Priority"] = row.get("Priority", compute_priority(rec, act))
+            
+            # Already in Tracker
+            known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
+            comp_cleaned = company.strip().lower()
+            current_val = row.get("Already in Tracker")
+            if comp_cleaned in known_tracker_companies:
+                migrated_row["Already in Tracker"] = "Yes"
+            elif company_counts.get(comp_cleaned, 0) <= 1:
+                migrated_row["Already in Tracker"] = "No"
+            else:
+                migrated_row["Already in Tracker"] = current_val if current_val in ["Yes", "No"] else "No"
+            
+            # Reason calculation
+            reasons = []
+            if "remote" in pos_lower or "remote" in location.lower():
+                reasons.append("Remote")
+            elif any(w in location.lower() for w in ["ut", "utah", "salt lake"]):
+                reasons.append("Utah")
+                
+            if has_restriction:
+                reasons.append("Onsite/Local Restriction")
+            
+            matched_skills_list = []
+            search_str = f"{position} {notes}".lower()
+            if job_type == "Software Engineer":
+                if ".net" in search_str or "c#" in search_str: matched_skills_list.append(".NET")
+                if "java" in search_str: matched_skills_list.append("Java")
+                if "spring" in search_str: matched_skills_list.append("Spring")
+            else:
+                if "manufacturing" in search_str: matched_skills_list.append("Manufacturing")
+                if "logistics" in search_str: matched_skills_list.append("Logistics")
+                if "inventory" in search_str: matched_skills_list.append("Inventory")
+            
+            if matched_skills_list:
+                reasons.append(" + ".join(matched_skills_list))
+                
+            if comp_type == "Small / Medium":
+                reasons.append("Small company")
+            elif comp_type == "Recruiting Firm":
+                reasons.append("Recruiter")
+            else:
+                reasons.append(comp_type)
+            
+            reason = " + ".join(reasons)
+            migrated_row["Reason"] = reason
+            
+            # Matched Skills & Missing Skills
+            potential_skills = ["java", "c#", ".net", "python", "spring boot", "spring", "asp.net core", "react", "next.js", "graphql", "rest", "microservices", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "sql", "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture", "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang", "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud", "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++", "ruby", "rails", "php", "django", "flask", "fastapi", "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql", "elasticsearch", "solr", "snowflake", "redshift", "bigquery", "dbt", "airflow", "selenium", "cypress", "jest", "mocha", "manufacturing", "inventory", "logistics", "supply chain", "repair", "reporting", "business automation", "documentation", "workflow automation", "rma", "inventory management", "reconciliation", "compliance", "coordination"]
+            
+            norm_map = {"java": "Java", "c#": "C#", ".net": ".NET", "python": "Python", "spring boot": "Spring Boot", "spring": "Spring", "asp.net core": "ASP.NET Core", "react": "React", "next.js": "Next.js", "graphql": "GraphQL", "rest": "REST", "microservices": "Microservices", "docker": "Docker", "kubernetes": "Kubernetes", "aws": "AWS", "azure": "Azure", "postgresql": "PostgreSQL", "sql server": "SQL Server", "sql": "SQL", "power bi": "Power BI", "cube.js": "Cube.js", "kafka": "Kafka", "rabbitmq": "RabbitMQ", "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git", "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF", "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript", "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js", "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform", "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD", "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby", "rails": "Rails", "php": "PHP", "django": "Django", "flask": "Flask", "fastapi": "FastApi", "dynamodb": "DynamoDB", "mongodb": "MongoDB", "cassandra": "Cassandra", "oracle": "Oracle", "mariadb": "MariaDB", "mysql": "MySQL", "elasticsearch": "Elasticsearch", "solr": "Solr", "snowflake": "Snowflake", "redshift": "Redshift", "bigquery": "BigQuery", "dbt": "dbt", "airflow": "Airflow", "selenium": "Selenium", "cypress": "Cypress", "jest": "Jest", "mocha": "Mocha", "manufacturing": "Manufacturing", "inventory": "Inventory", "logistics": "Logistics", "supply chain": "Supply Chain", "repair": "Repair", "reporting": "Reporting", "business automation": "Business Automation", "documentation": "Documentation", "workflow automation": "Workflow Automation", "rma": "RMA", "inventory management": "Inventory Management", "reconciliation": "Reconciliation", "compliance": "Compliance", "coordination": "Coordination"}
+            
+            search_str = f"{position} {notes}".lower()
+            found_skills = [s for s in potential_skills if s in search_str]
+            matched_list = [s for s in found_skills if s in resume_skills]
+            missing_list = [s for s in found_skills if s not in resume_skills]
+            
+            matched_skills = ", ".join([norm_map[s] for s in matched_list])
+            missing_skills = ", ".join([norm_map[s] for s in missing_list])
+            migrated_row["Matched Skills"] = matched_skills
+            migrated_row["Missing Skills"] = missing_skills
+            rows_to_keep.append(migrated_row)
+                
+        # Always sync with SQLite database 'jobs.db' on launch
+        save_to_sqlite("jobs.db", rows_to_keep)
+        
+        # Always save CSV back to disk to preserve updated skills/scores calculations
+        if True:
+            with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=expected_headers)
                 writer.writeheader()
                 writer.writerows(rows_to_keep)
-            if cleaned_any:
-                console.print(f"[green]Cleaned up invalid rows from existing tracker at {TRACKER_PATH}[/green]")
-            if migrated_schema:
-                console.print(f"[green]Migrated tracker schema to include 'Link' and 'Source PDF' columns.[/green]")
+            console.print(f"[green]Synchronized and recalculated all tracking rows in {tracker_path}[/green]")
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
 
-def load_tracker():
+def save_to_sqlite(db_path, jobs_list):
+    """Save or upsert a list of jobs to the SQLite database."""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create table if not exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                review_status TEXT,
+                job_type TEXT,
+                company TEXT,
+                position TEXT,
+                location TEXT,
+                url TEXT,
+                provider TEXT,
+                source_pdf TEXT,
+                confidence TEXT,
+                fit_score INTEGER,
+                priority TEXT,
+                company_type TEXT,
+                recommendation TEXT,
+                tracker_status TEXT,
+                disposition TEXT,
+                action TEXT,
+                already_in_tracker TEXT,
+                reason TEXT,
+                matched_skills TEXT,
+                missing_skills TEXT,
+                date_added TEXT,
+                notes TEXT
+            )
+        """)
+        
+        try:
+            # Upsert jobs
+            for job in jobs_list:
+                cursor.execute("""
+                    INSERT INTO jobs (
+                        job_id, review_status, job_type, company, position, location, url, provider, 
+                        source_pdf, confidence, fit_score, priority, company_type, 
+                        recommendation, tracker_status, disposition, action, already_in_tracker,
+                        reason, matched_skills, missing_skills, date_added, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET
+                        review_status=excluded.review_status,
+                        job_type=excluded.job_type,
+                        company=excluded.company,
+                        position=excluded.position,
+                        location=excluded.location,
+                        url=excluded.url,
+                        provider=excluded.provider,
+                        source_pdf=excluded.source_pdf,
+                        confidence=excluded.confidence,
+                        fit_score=excluded.fit_score,
+                        priority=excluded.priority,
+                        company_type=excluded.company_type,
+                        recommendation=excluded.recommendation,
+                        tracker_status=excluded.tracker_status,
+                        disposition=excluded.disposition,
+                        action=excluded.action,
+                        already_in_tracker=excluded.already_in_tracker,
+                        reason=excluded.reason,
+                        matched_skills=excluded.matched_skills,
+                        missing_skills=excluded.missing_skills,
+                        date_added=excluded.date_added,
+                        notes=excluded.notes
+                """, (
+                    job.get("Job ID", job.get("job_id")), 
+                    job.get("Review Status", job.get("review_status")), 
+                    job.get("Job Type", job.get("job_type")), 
+                    job.get("Company", job.get("company")), 
+                    job.get("Position", job.get("position")), 
+                    job.get("Location", job.get("location")),
+                    job.get("URL", job.get("url")), 
+                    job.get("Provider", job.get("provider")), 
+                    job.get("Source PDF", job.get("source_pdf")), 
+                    job.get("Confidence", job.get("confidence")),
+                    job.get("Fit Score", job.get("fit_score")), 
+                    job.get("Priority", job.get("priority")), 
+                    job.get("Company Type", job.get("company_type")), 
+                    job.get("Recommendation", job.get("recommendation")),
+                    job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
+                    job.get("Disposition", job.get("disposition")), 
+                    job.get("Action", job.get("action")),
+                    job.get("Already in Tracker", job.get("already_in_tracker")),
+                    job.get("Reason", job.get("reason")),
+                    job.get("Matched Skills", job.get("matched_skills")),
+                    job.get("Missing Skills", job.get("missing_skills")),
+                    job.get("Date Added", job.get("date_added")), 
+                    job.get("Notes", job.get("notes"))
+                ))
+            conn.commit()
+        except sqlite3.OperationalError as oe:
+            # Table schema mismatch - drop and recreate
+            conn.rollback()
+            cursor.execute("DROP TABLE IF EXISTS jobs")
+            cursor.execute("""
+                CREATE TABLE jobs (
+                    job_id TEXT PRIMARY KEY,
+                    review_status TEXT,
+                    job_type TEXT,
+                    company TEXT,
+                    position TEXT,
+                    location TEXT,
+                    url TEXT,
+                    provider TEXT,
+                    source_pdf TEXT,
+                    confidence TEXT,
+                    fit_score INTEGER,
+                    priority TEXT,
+                    company_type TEXT,
+                    recommendation TEXT,
+                    tracker_status TEXT,
+                    disposition TEXT,
+                    action TEXT,
+                    already_in_tracker TEXT,
+                    reason TEXT,
+                    matched_skills TEXT,
+                    missing_skills TEXT,
+                    date_added TEXT,
+                    notes TEXT
+                )
+            """)
+            for job in jobs_list:
+                cursor.execute("""
+                    INSERT INTO jobs (
+                        job_id, review_status, job_type, company, position, location, url, provider, 
+                        source_pdf, confidence, fit_score, priority, company_type, 
+                        recommendation, tracker_status, disposition, action, already_in_tracker,
+                        reason, matched_skills, missing_skills, date_added, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET
+                        review_status=excluded.review_status,
+                        job_type=excluded.job_type,
+                        company=excluded.company,
+                        position=excluded.position,
+                        location=excluded.location,
+                        url=excluded.url,
+                        provider=excluded.provider,
+                        source_pdf=excluded.source_pdf,
+                        confidence=excluded.confidence,
+                        fit_score=excluded.fit_score,
+                        priority=excluded.priority,
+                        company_type=excluded.company_type,
+                        recommendation=excluded.recommendation,
+                        tracker_status=excluded.tracker_status,
+                        disposition=excluded.disposition,
+                        action=excluded.action,
+                        already_in_tracker=excluded.already_in_tracker,
+                        reason=excluded.reason,
+                        matched_skills=excluded.matched_skills,
+                        missing_skills=excluded.missing_skills,
+                        date_added=excluded.date_added,
+                        notes=excluded.notes
+                """, (
+                    job.get("Job ID", job.get("job_id")), 
+                    job.get("Review Status", job.get("review_status")), 
+                    job.get("Job Type", job.get("job_type")), 
+                    job.get("Company", job.get("company")), 
+                    job.get("Position", job.get("position")), 
+                    job.get("Location", job.get("location")),
+                    job.get("URL", job.get("url")), 
+                    job.get("Provider", job.get("provider")), 
+                    job.get("Source PDF", job.get("source_pdf")), 
+                    job.get("Confidence", job.get("confidence")),
+                    job.get("Fit Score", job.get("fit_score")), 
+                    job.get("Priority", job.get("priority")), 
+                    job.get("Company Type", job.get("company_type")), 
+                    job.get("Recommendation", job.get("recommendation")),
+                    job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
+                    job.get("Disposition", job.get("disposition")), 
+                    job.get("Action", job.get("action")),
+                    job.get("Already in Tracker", job.get("already_in_tracker")),
+                    job.get("Reason", job.get("reason")),
+                    job.get("Matched Skills", job.get("matched_skills")),
+                    job.get("Missing Skills", job.get("missing_skills")),
+                    job.get("Date Added", job.get("date_added")), 
+                    job.get("Notes", job.get("notes"))
+                ))
+            conn.commit()
+        conn.close()
+    except Exception as e:
+        console.print(f"[red]Failed to save to SQLite database: {e}[/red]")
+
+def load_tracker(tracker_path):
     """Load existing jobs from tracker to prevent duplicates."""
-    existing_jobs = set()
-    if os.path.exists(TRACKER_PATH):
-        with open(TRACKER_PATH, mode='r', newline='', encoding='utf-8') as f:
+    existing_jobs = {}
+    if os.path.exists(tracker_path):
+        with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Key based on normalized Company + Position
-                key = (row["Company"].strip().lower(), row["Position"].strip().lower())
-                existing_jobs.add(key)
+                job_id = row.get("Job ID")
+                if not job_id:
+                    import hashlib
+                    comp = row.get("Company", "").strip().lower()
+                    pos = row.get("Position", "").strip().lower()
+                    loc = row.get("Location", "").strip().lower()
+                    job_id = hashlib.md5(f"{comp}|{pos}|{loc}".encode('utf-8')).hexdigest()[:12]
+                existing_jobs[job_id] = row
     return existing_jobs
 
 def load_config():
-    """Load config file to retrieve last used folder."""
+    """Load config file to retrieve last used folder and job type criteria."""
+    config = {}
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                config = json.load(f)
         except Exception:
             pass
-    return {}
+            
+    # Default job type criteria if not present
+    if "job_type_criteria" not in config:
+        config["job_type_criteria"] = {
+            "Software Engineer": {
+                "tech_keywords": [".net", "c#", "java", "spring", "react", "graphql", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "cube.js", "kafka", "rabbitmq", "redis", "ssis", "etl", "wcf"],
+                "legacy_keywords": ["modernization", "legacy", "migration", "porting", "upgrade", "conversion", "evolution"],
+                "skip_keywords": ["\\bAI\\s+Trainer\\b", "\\bAI\\s+Tutor\\b", "\\bData\\s+Quality\\s+Specialist\\b", "\\bAnnotation\\b", "\\bSearch\\s+Evaluator\\b", "\\bAI\\s+Content\\b", "\\bAI\\s+Writer\\b", "\\bAI\\s+Editor\\b", "\\bAI\\s+Quality\\b", "\\bprompt\\b", "\\bhuman\\s+in\\s+the\\s+loop\\b", "\\bAI\\s+Trainer\\b", "\\bAI\\s+Tutor\\b", "\\bAI\\s+Data\\b", "\\bAI\\s+Feedback\\b", "\\bAI\\s+Reviewer\\b", "\\bAI\\s+Evaluator\\b"],
+                "priority_keywords": ["\\.net", "c#", "java", "spring", "react", "graphql"],
+                "resume_skills": ["java", "c#", ".net", "python", "spring boot", "spring", "asp.net core", "react", "next.js", "graphql", "rest", "microservices", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "sql", "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture", "git", "linux", "ssis", "etl", "wcf"]
+            },
+            "Operations": {
+                "tech_keywords": ["operations", "manufacturing", "inventory", "logistics", "supply chain", "repair", "quality assurance", "production", "warehouse", "procurement", "maintenance", "billing", "reconciliation", "compliance", "coordination", "safety"],
+                "legacy_keywords": ["modernization", "improvement", "optimization", "standards", "efficiency", "streamlining"],
+                "skip_keywords": ["\\bAI\\s+Trainer\\b", "\\bAI\\s+Tutor\\b", "\\bData\\s+Quality\\s+Specialist\\b", "\\bAnnotation\\b", "\\bSearch\\s+Evaluator\\b", "\\bAI\\s+Content\\b", "\\bAI\\s+Writer\\b", "\\bAI\\s+Editor\\b", "\\bAI\\s+Quality\\b", "\\bprompt\\b", "\\bhuman\\s+in\\s+the\\s+loop\\b", "\\bAI\\s+Trainer\\b", "\\bAI\\s+Tutor\\b", "\\bAI\\s+Data\\b", "\\bAI\\s+Feedback\\b", "\\bAI\\s+Reviewer\\b", "\\bAI\\s+Evaluator\\b"],
+                "priority_keywords": ["operations", "manager", "supervisor", "director", "coordinator", "lead"],
+                "resume_skills": ["manufacturing", "inventory", "logistics", "repair", "reporting", "business automation", "documentation", "workflow automation", "rma", "inventory management", "reconciliation", "compliance", "coordination"]
+            }
+        }
+        # Save config back to disk
+        try:
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4)
+        except Exception:
+            pass
+            
+    return config
 
 def save_config(pdf_dir):
     """Save the selected folder to the config file."""
     try:
+        config = load_config()
+        config["last_pdf_dir"] = pdf_dir
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-            json.dump({"last_pdf_dir": pdf_dir}, f, indent=4)
+            json.dump(config, f, indent=4)
     except Exception as e:
         console.print(f"[yellow]Failed to save config: {e}[/yellow]")
 
@@ -203,6 +752,52 @@ def select_pdf_directory():
         save_config(selected_dir)
         
     return selected_dir
+
+def extract_job_urls_from_page(page):
+    """Extract all job-related URI links from page annotations, sorted from top to bottom."""
+    urls_with_y = []
+    if page.annotations:
+        for annot in page.annotations:
+            try:
+                obj = annot.get_object()
+                if not obj:
+                    continue
+                rect = obj.get('/Rect')
+                if not rect:
+                    continue
+                
+                uri = ""
+                if '/A' in obj:
+                    action = obj['/A'].get_object()
+                    if '/URI' in action:
+                        uri = action['/URI']
+                
+                if uri:
+                    uri_lower = uri.lower()
+                    # Filter out non-job links
+                    ignore_patterns = [
+                        "privacy", "terms", "unsubscribe", "help", "google.com/maps", 
+                        "facebook.com", "twitter.com", "instagram.com", "linkedin.com/company",
+                        "support", "cookie", "preferences", "optout", "feedback", "about"
+                    ]
+                    if any(pat in uri_lower for pat in ignore_patterns):
+                        continue
+                    
+                    y_coord = rect[1]  # y_bottom coordinate of annotation bounding box
+                    urls_with_y.append((uri, y_coord))
+            except Exception:
+                pass
+                
+    # Sort by Y-coordinate in descending order (top of page to bottom)
+    urls_with_y.sort(key=lambda x: x[1], reverse=True)
+    
+    # Deduplicate consecutive identical URLs
+    deduped_urls = []
+    for uri, y in urls_with_y:
+        if not deduped_urls or deduped_urls[-1] != uri:
+            deduped_urls.append(uri)
+            
+    return deduped_urls
 
 def detect_provider(text, filename=""):
     """Detect job board provider from PDF content or filename."""
@@ -283,18 +878,57 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
         # Look for a line that looks like a Job Title
         is_title = any(kw in line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
         
-        if is_title and i + 1 < len(filtered_lines):
+        if is_title:
             title = line
-            company = filtered_lines[i+1]
+            company = "Unknown/Other"
             location = ""
             url = ""
             
+            # Check the next line to see if it's the company or actually a location/another job listing
+            has_next = i + 1 < len(filtered_lines)
+            if has_next:
+                next_line = filtered_lines[i+1]
+                # Is the next line actually another title?
+                next_is_title = any(kw in next_line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
+                next_has_salary = bool(re.search(r'\$\d+K', next_line)) or "/ virtual" in next_line.lower() or "/ travel" in next_line.lower()
+                
+                # Check if the next line looks like a location instead of a company
+                is_next_location = bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line))
+                
+                if next_is_title or next_has_salary:
+                    # The next line is another job title! Don't consume it as company.
+                    company = "Unknown/Other"
+                    next_idx = i + 1
+                elif is_next_location:
+                    # The next line is actually the location, so the company is likely the line before the title!
+                    location = next_line
+                    found_location = True
+                    if i > 0:
+                        potential_company = filtered_lines[i-1]
+                        potential_company = re.split(r'\s+·\s+|\s+\d\.\d', potential_company)[0].strip()
+                        potential_company = re.sub(r'[,\s•]+$', '', potential_company).strip()
+                        if is_valid_company(potential_company):
+                            company = potential_company
+                        else:
+                            company = "Unknown/Other"
+                    else:
+                        company = "Unknown/Other"
+                    next_idx = i + 2
+                else:
+                    # It's a company name!
+                    company = next_line
+                    next_idx = i + 2
+            else:
+                next_idx = i + 1
+                
             # Look ahead for location and URL
-            next_idx = i + 2
             found_location = False
             while next_idx < min(i + 6, len(filtered_lines)):
                 next_line = filtered_lines[next_idx]
-                if any(kw in next_line.lower() for kw in ["engineer", "developer", "programmer", "architect", "lead"]) and next_line != title:
+                # If we hit another title, stop looking ahead
+                is_next_title = any(kw in next_line.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"])
+                next_has_salary = bool(re.search(r'\$\d+K', next_line)) or "/ virtual" in next_line.lower() or "/ travel" in next_line.lower()
+                if is_next_title or next_has_salary:
                     break
                 if state_city_pattern.search(next_line) or "remote" in next_line.lower():
                     location = next_line
@@ -303,11 +937,39 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                     url = next_line
                 next_idx += 1
             
-            # Clean up company name
+            # Clean up company name ending characters
             company = re.split(r'\s+·\s+|\s+\d\.\d', company)[0].strip()
             
-            if not found_location and i + 2 < len(filtered_lines):
-                location = filtered_lines[i+2]
+            if not found_location and i + 2 < next_idx and i + 2 < len(filtered_lines):
+                # Only fallback if i+2 was not already processed/skipped
+                potential_loc = filtered_lines[i+2]
+                if not any(kw in potential_loc.lower() for kw in ["engineer", "developer", "programmer", "architect", "analyst", "lead", "specialist", "manager", "support", "trainer"]):
+                    location = potential_loc
+                
+            # Smart split for Company • Location separated by bullet
+            if "•" in company:
+                parts = company.split("•")
+                company = parts[0].strip()
+                loc_prefix = parts[1].strip()
+                
+                # Combine loc_prefix with parsed location
+                if location:
+                    if loc_prefix.lower() in location.lower():
+                        pass
+                    elif location.lower() in loc_prefix.lower():
+                        location = loc_prefix
+                    else:
+                        sep = " "
+                        location = f"{loc_prefix}{sep}{location}"
+                else:
+                    location = loc_prefix
+            
+            # Clean up trailing punctuation / bullets
+            company = re.sub(r'[,\s•]+$', '', company).strip()
+            location = re.sub(r'[,\s•]+$', '', location).strip()
+            location = re.sub(r'\s+', ' ', location).strip()
+            location = re.sub(r',\s*,', ',', location).strip()
+            location = location.strip(', ')
                 
             jobs.append({
                 "title": title,
@@ -323,71 +985,107 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
         
     return jobs
 
+def classify_job_type(title, context):
+    """Determine if a job is a Software Engineer or Operations role."""
+    title_lower = title.lower()
+    context_lower = context.lower()
+    
+    ops_indicators = ["operations", "manufacturing", "inventory", "logistics", "repair", "production", "warehouse", "procurement", "manager", "supervisor", "coordinator", "billing", "reconciliation"]
+    swe_indicators = ["software", "developer", "engineer", "programmer", "architect", ".net", "java", "c#", "spring", "react"]
+    
+    # Check title first
+    has_ops_title = any(w in title_lower for w in ops_indicators)
+    has_swe_title = any(w in title_lower for w in swe_indicators)
+    
+    if has_ops_title and not has_swe_title:
+        return "Operations"
+    if has_swe_title:
+        return "Software Engineer"
+        
+    # Check context
+    has_ops_context = any(w in context_lower for w in ops_indicators)
+    has_swe_context = any(w in context_lower for w in swe_indicators)
+    
+    if has_ops_context and not has_swe_context:
+        return "Operations"
+        
+    return "Software Engineer"
+
 def evaluate_job(job):
     """
     Apply Job Review Rules v1.0 to decide if the job should be recommended.
-    Returns: (should_recommend: bool, confidence: str, notes: str)
+    Returns: (should_recommend: bool, confidence: str, notes: str, fit_score: int, company_type: str, recommendation: str, reason: str, matched_skills: str, missing_skills: str, job_type: str)
     """
     title = job["title"]
     company = job["company"]
     location = job["location"]
     context = job["raw_context"].lower()
     
+    # Classify Job Type first
+    job_type = classify_job_type(title, context)
+    
+    # Load config and criteria dynamically based on job type
+    config = load_config()
+    criteria_map = config.get("job_type_criteria", {})
+    criteria = criteria_map.get(job_type, criteria_map.get("Software Engineer", {}))
+    
+    tech_keywords = criteria.get("tech_keywords", [])
+    legacy_keywords = criteria.get("legacy_keywords", [])
+    skip_keywords = criteria.get("skip_keywords", [])
+    priority_keywords = criteria.get("priority_keywords", [])
+    resume_skills = criteria.get("resume_skills", [])
+    
     # Rule 3 & 4: Must have company and title
     if not title or not company:
-        return False, "🔴 Low", "Rule 4: Missing company or title"
+        return False, "🔴 Low", "Rule 4: Missing company or title", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Missing details", "", "", job_type
         
-    # User rejects: company name filters
+    if not is_valid_company(company):
+        return False, "🔴 Low", "Failed company name validation rules", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Failed criteria", "", "", job_type
+        
     comp_lower = company.strip().lower()
-    # List of generic role titles that sometimes get incorrectly parsed as company names
-    generic_roles = {
-        "software developer", "software engineer", "java developer", 
-        "backend developer", "backend engineer", "developer", "engineer",
-        "full stack developer", "full stack engineer", "java software developer",
-        "java software engineer", "j2ee developer", "j2ee software developer",
-        "software developer", "c developer", "react js developer", ".net developer"
-    }
-    if (comp_lower.startswith("hugh summerhays") or
-        "gmail" in comp_lower or
-        comp_lower.startswith("1 message") or
-        comp_lower.startswith("looking for") or
-        comp_lower.startswith("https://") or
-        comp_lower == "(remote)" or
-        comp_lower in generic_roles or
-        "create" in comp_lower or
-        "create" in title.lower()):
-        return False, "🔴 Low", "Failed company name or title exclusion criteria"
+        
+    # Reject conversational text fragments from email templates
+    conversational_phrases = [
+        "could be", "with your", "your background", "your experience", 
+        "is hiring", "apply now", "feel free", "hiring for", "interested in", 
+        "you're interested", "you would be", "contribute to", "opportunities you", 
+        "great fit", "little different", "looking for", "would be a", 
+        "could contribute", "background as a", "expertise with", "offers remote",
+        "flexibility of", "competitive pay"
+    ]
+    title_lower = title.lower()
+    loc_lower = location.lower()
+    if any(phrase in comp_lower or phrase in title_lower or phrase in loc_lower for phrase in conversational_phrases):
+        return False, "🔴 Low", "Excluding conversational email text fragment", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Text fragment", "", "", job_type
         
     # Rule 6: Relocation check (Utah or Remote only)
     is_utah = any(kw in location.lower() for kw in ["ut", "utah", "salt lake", "slc", "lehi", "provo", "ogden"])
     is_remote = "remote" in location.lower() or "remote" in title.lower()
     if not (is_utah or is_remote):
-        return False, "🔴 Low", f"Rule 6: Relocation required (Location: {location})"
+        return False, "🔴 Low", f"Rule 6: Relocation required (Location: {location})", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Out of state", "", "", job_type
         
     # Rule 7: Hard bachelor's degree requirement
     degree_required = re.search(r"bachelor'?s?\s+degree\s+required", context) or re.search(r"\bbs\b.*\brequired\b", context)
     degree_preferred = re.search(r"bachelor'?s?\s+degree\s+preferred", context) or re.search(r"\bbs\b.*\bpreferred\b", context)
     if degree_required and not degree_preferred:
-        return False, "🔴 Low", "Rule 7: Hard bachelor's degree requirement detected"
+        return False, "🔴 Low", "Rule 7: Hard bachelor's degree requirement detected", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Degree requirement", "", "", job_type
         
     # Rule 8: Skip list unless compelling reason
-    compelling_reason = any(tech.lower() in context for tech in TECH_KEYWORDS)
-    for pattern in SKIP_KEYWORDS:
+    compelling_reason = any(tech.lower() in context for tech in tech_keywords)
+    for pattern in skip_keywords:
         if re.search(pattern, title, re.IGNORECASE):
             if not compelling_reason:
-                return False, "🔴 Low", f"Rule 8: Excluded role type ({pattern})"
+                return False, "🔴 Low", f"Rule 8: Excluded role type ({pattern})", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Excluded role", "", "", job_type
                 
-    # Rule 16: Confidence determination
-    confidence = "🔴 Low"
-    notes = []
-    
     # Check technology fits (Rule 10)
-    matched_techs = [tech for tech in TECH_KEYWORDS if tech.lower() in context or tech.lower() in title.lower()]
+    matched_techs = [tech for tech in tech_keywords if tech.lower() in context or tech.lower() in title.lower()]
     if matched_techs:
-        notes.append(f"Tech matches: {', '.join(matched_techs)}")
+        notes = [f"Tech matches: {', '.join(matched_techs)}"]
+    else:
+        notes = []
         
     # Check legacy modernization fits (Rule 11)
-    matched_legacy = [legacy for legacy in LEGACY_KEYWORDS if legacy.lower() in context]
+    matched_legacy = [legacy for legacy in legacy_keywords if legacy.lower() in context]
     if matched_legacy:
         notes.append(f"Legacy modernization: {', '.join(matched_legacy)}")
         
@@ -399,18 +1097,144 @@ def evaluate_job(job):
         notes.append("Small-to-mid-sized (preferred)")
         
     # Determine confidence level
-    is_priority = any(re.search(pat, title, re.IGNORECASE) for pat in PRIORITY_KEYWORDS)
-    if is_priority and matched_techs:
-        confidence = "🟢 High"
-    elif matched_techs or is_priority:
-        confidence = "🟡 Medium"
+    is_priority = any(re.search(pat, title, re.IGNORECASE) for pat in priority_keywords)
+    has_valid_url = job.get("url") and job.get("url") != "N/A" and job.get("url").startswith("http")
+    
+    if (is_priority or matched_techs):
+        if is_priority and matched_techs and has_valid_url:
+            confidence = "🟢 High"
+        else:
+            confidence = "🟡 Medium"
+    else:
+        confidence = "🔴 Low"
+        
+    # Check for local candidate/onsite restrictions
+    restriction_phrases = ["local candidate", "onsite only", "on-site only", "must relocate", "no remote"]
+    has_restriction = any(p in title.lower() or p in context for p in restriction_phrases)
+    if has_restriction:
+        notes.append("Local/Onsite restriction detected")
         
     notes_str = "; ".join(notes)
     
+    # Company type classification
+    company_type = "Small / Medium"
+    c_search = f"{company} {context}".lower()
+    if any(k in c_search for k in ["recruiting", "staffing", "search", "placement", "resources", "navigators", "personnel", "hired"]):
+        company_type = "Recruiting Firm"
+    elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
+        company_type = "Consulting"
+    elif any(k in c_search for k in ["defense", "leidos", "harris", "lockheed", "raytheon", "boeing", "northrop", "military"]):
+        company_type = "Defense"
+    elif any(k in c_search for k in ["health", "medical", "hosp", "care", "pharm", "optum", "clinical", "dental"]):
+        company_type = "Healthcare"
+    elif any(k in c_search for k in ["finance", "wealth", "bank", "capital", "valuations", "investment", "insurance", "insurtech", "credit", "fidelity"]):
+        company_type = "Financial"
+    elif any(faang.lower() in company.lower() for faang in FAANG_COMPANIES):
+        company_type = "Enterprise"
+
+    # Normalized Fit Score calculation (0-100)
+    score_remote_utah = 20 if (is_utah or is_remote) else 0
+    score_senior = 15 if any(w in title.lower() for w in ["senior", "lead", "principal", "sme", "staff", "architect", "manager"]) else 0
+    
+    # Role-specific backend/fullstack indicator
+    if job_type == "Software Engineer":
+        score_backend_fs = 15 if any(w in title.lower() or w in context for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
+        score_dotnet_java = 20 if any(w in title.lower() or w in context for w in [".net", "c#", "java", "spring"]) else 0
+    else:
+        # For Operations: points for supervisor/director/manager leadership or automation experience
+        score_backend_fs = 15 if any(w in title.lower() or w in context for w in ["director", "supervisor", "manager", "lead"]) else 0
+        score_dotnet_java = 20 if any(w in title.lower() or w in context for w in ["manufacturing", "logistics", "inventory", "supply chain"]) else 0
+        
+    score_no_degree = 10 if not degree_required else 0
+    score_small_med = 10 if company_type == "Small / Medium" else 0
+    score_legacy = 10 if bool(matched_legacy) else 0
+    
+    fit_score = score_remote_utah + score_senior + score_backend_fs + score_dotnet_java + score_no_degree + score_small_med + score_legacy
+    if has_restriction:
+        fit_score = max(0, fit_score - 30)
+        
+    # Recommendation calculation (normalized)
+    if confidence == "🔴 Low":
+        recommendation = "★☆☆☆☆ Skip"
+    else:
+        if fit_score >= 80 and confidence == "🟢 High":
+            recommendation = "★★★★★ Apply Now"
+        elif fit_score >= 60:
+            recommendation = "★★★★☆ Strong"
+        elif fit_score >= 40:
+            recommendation = "★★★☆☆ Maybe"
+        elif fit_score >= 20:
+            recommendation = "★★☆☆☆ Low"
+        else:
+            recommendation = "★☆☆☆☆ Skip"
+            
+    # Reason calculation
+    reasons = []
+    if is_remote:
+        reasons.append("Remote")
+    elif is_utah:
+        reasons.append("Utah")
+        
+    if has_restriction:
+        reasons.append("Onsite/Local Restriction")
+
+        
+    matched_skills_list = []
+    search_str = f"{title} {context}".lower()
+    if job_type == "Software Engineer":
+        if any(w in search_str for w in [".net", "c#"]): matched_skills_list.append(".NET")
+        if "java" in search_str: matched_skills_list.append("Java")
+        if "spring" in search_str: matched_skills_list.append("Spring")
+    else:
+        if "manufacturing" in search_str: matched_skills_list.append("Manufacturing")
+        if "logistics" in search_str: matched_skills_list.append("Logistics")
+        if "inventory" in search_str: matched_skills_list.append("Inventory")
+        
+    if matched_skills_list:
+        reasons.append(" + ".join(matched_skills_list))
+        
+    if company_type == "Small / Medium":
+        reasons.append("Small company")
+    elif company_type == "Recruiting Firm":
+        reasons.append("Recruiter")
+    else:
+        reasons.append(company_type)
+        
+    if degree_required:
+        reasons.append("Degree requirement detected")
+    elif is_faang:
+        reasons.append("Enterprise scale")
+        
+    reason = " + ".join(reasons)
+    
+    # Matched Skills & Missing Skills calculation
+    potential_skills = ["java", "c#", ".net", "python", "spring boot", "spring", "asp.net core", "react", "next.js", "graphql", "rest", "microservices", "docker", "kubernetes", "aws", "azure", "postgresql", "sql server", "sql", "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture", "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang", "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud", "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++", "ruby", "rails", "php", "django", "flask", "fastapi", "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql", "elasticsearch", "solr", "snowflake", "redshift", "bigquery", "dbt", "airflow", "selenium", "cypress", "jest", "mocha", "manufacturing", "inventory", "logistics", "supply chain", "repair", "reporting", "business automation", "documentation", "workflow automation", "rma", "inventory management", "reconciliation", "compliance", "coordination"]
+    
+    # Normalize skill names for display
+    norm_map = {"java": "Java", "c#": "C#", ".net": ".NET", "python": "Python", "spring boot": "Spring Boot", "spring": "Spring", "asp.net core": "ASP.NET Core", "react": "React", "next.js": "Next.js", "graphql": "GraphQL", "rest": "REST", "microservices": "Microservices", "docker": "Docker", "kubernetes": "Kubernetes", "aws": "AWS", "azure": "Azure", "postgresql": "PostgreSQL", "sql server": "SQL Server", "sql": "SQL", "power bi": "Power BI", "cube.js": "Cube.js", "kafka": "Kafka", "rabbitmq": "RabbitMQ", "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git", "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF", "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript", "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js", "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform", "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD", "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby", "rails": "Rails", "php": "PHP", "django": "Django", "flask": "Flask", "fastapi": "FastApi", "dynamodb": "DynamoDB", "mongodb": "MongoDB", "cassandra": "Cassandra", "oracle": "Oracle", "mariadb": "MariaDB", "mysql": "MySQL", "elasticsearch": "Elasticsearch", "solr": "Solr", "snowflake": "Snowflake", "redshift": "Redshift", "bigquery": "BigQuery", "dbt": "dbt", "airflow": "Airflow", "selenium": "Selenium", "cypress": "Cypress", "jest": "Jest", "mocha": "Mocha", "manufacturing": "Manufacturing", "inventory": "Inventory", "logistics": "Logistics", "supply chain": "Supply Chain", "repair": "Repair", "reporting": "Reporting", "business automation": "Business Automation", "documentation": "Documentation", "workflow automation": "Workflow Automation", "rma": "RMA", "inventory management": "Inventory Management", "reconciliation": "Reconciliation", "compliance": "Compliance", "coordination": "Coordination"}
+    
+    found_skills = [s for s in potential_skills if s in search_str]
+    matched_list = [s for s in found_skills if s in resume_skills]
+    missing_list = [s for s in found_skills if s not in resume_skills]
+    
+    matched_skills = ", ".join([norm_map[s] for s in matched_list])
+    missing_skills = ", ".join([norm_map[s] for s in missing_list])
+            
     # Rule 16: Low confidence jobs are never recommended
     should_recommend = confidence in ["🟢 High", "🟡 Medium"]
     
-    return should_recommend, confidence, notes_str
+    # Map temporary action for priority calculation
+    if company_type == "Recruiting Firm" and recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+        temp_action = "Contact Recruiter"
+    elif recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+        temp_action = "Apply"
+    elif recommendation == "★★★☆☆ Maybe":
+        temp_action = "Review"
+    else:
+        temp_action = "Ignore"
+    priority = compute_priority(recommendation, temp_action)
+    
+    return should_recommend, confidence, notes_str, fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type
 
 def main():
     import argparse
@@ -430,12 +1254,29 @@ def main():
         console.print(f"[red]Directory not found: {pdf_dir}[/red]")
         return
         
-    initialize_tracker()
-    clean_existing_tracker()
-    existing_jobs = load_tracker()
+    tracker_path = "master_tracker.csv"
+    
+    # Seed master tracker from any existing local CSV if master_tracker.csv doesn't exist yet
+    if not os.path.exists(tracker_path):
+        csv_files = [f for f in os.listdir(".") if f.endswith(".csv") and f != "master_tracker.csv"]
+        if csv_files:
+            seed_file = csv_files[0]
+            try:
+                import shutil
+                shutil.copy(seed_file, tracker_path)
+                console.print(f"[green]Seeded new master_tracker.csv from {seed_file}[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Failed to seed master tracker: {e}[/yellow]")
+        
+    initialize_tracker(tracker_path)
+    clean_existing_tracker(tracker_path)
+    existing_jobs = load_tracker(tracker_path)
     
     all_recommendations = []
     found_any_pdf = False
+    
+    # Store all unique job cards collected during the scan before reviewing
+    raw_collected_jobs = {}  # job_id -> job dict
     
     for root, dirs, files in os.walk(pdf_dir):
         pdf_files = [f for f in files if f.lower().endswith('.pdf')]
@@ -464,64 +1305,251 @@ def main():
             pdf_path = os.path.join(root, pdf_file)
             console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
             
-            text = extract_pdf_text(pdf_path)
-            if not text.strip():
-                continue
-                
-            provider = detect_provider(text, pdf_file)
-            jobs = parse_job_cards_from_text(text, provider=provider, source_pdf=pdf_file)
-            console.print(f"  Extracted {len(jobs)} potential job cards (Provider: {provider}).")
-            
-            for job in jobs:
-                key = (job["company"].strip().lower(), job["title"].strip().lower())
-                if key in existing_jobs:
-                    continue
+            try:
+                reader = pypdf.PdfReader(pdf_path)
+                full_text = ""
+                for page in reader.pages:
+                    t = page.extract_text()
+                    if t:
+                        full_text += t + "\n"
+                        
+                if not full_text.strip():
+                    console.print(f"[yellow]No selectable text in {pdf_file}. Falling back to OCR...[/yellow]")
+                    full_text = perform_ocr(pdf_path)
                     
-                should_rec, confidence, notes = evaluate_job(job)
+                provider = detect_provider(full_text, pdf_file)
                 
-                if should_rec:
-                    job_rec = {
-                        "Company": job["company"],
-                        "Position": job["title"],
-                        "Location": job["location"],
-                        "Link": job["url"] or "N/A",
-                        "Provider": job["provider"],
-                        "Source PDF": job["source_pdf"],
-                        "Confidence": confidence,
-                        "Status": "New",
-                        "Date Added": date_added,
-                        "Notes": notes
-                    }
-                    all_recommendations.append(job_rec)
+                for page_num, page in enumerate(reader.pages):
+                    page_text = page.extract_text()
+                    if not page_text or not page_text.strip():
+                        continue
+                        
+                    page_urls = extract_job_urls_from_page(page)
+                    jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=pdf_file)
+                    
+                    for idx, job in enumerate(jobs):
+                        # Map parsed job to top-to-bottom page annotation URL
+                        if idx < len(page_urls):
+                            job["url"] = page_urls[idx]
+                        else:
+                            job["url"] = "N/A"
+                            
+                        # Compute Job ID
+                        import hashlib
+                        job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}".encode('utf-8')).hexdigest()[:12]
+                        
+                        # Deduplicate before review
+                        if job_id in existing_jobs or job_id in raw_collected_jobs:
+                            continue
+                        
+                        # Store for review phase
+                        raw_collected_jobs[job_id] = {
+                            "job": job,
+                            "job_id": job_id,
+                            "date_added": date_added
+                        }
+            except Exception as e:
+                console.print(f"[red]Error parsing {pdf_file}: {e}[/red]")
                 
     if not found_any_pdf:
         console.print(f"[yellow]No PDF files found in {pdf_dir}[/yellow]")
         return
 
+    # Extract existing companies in the tracker to determine duplicate status
+    existing_companies = {row.get("Company", "").strip().lower() for row in existing_jobs.values() if row.get("Company")}
+
+    # Review Phase (Deduplicated)
+    for job_id, item in raw_collected_jobs.items():
+        job = item["job"]
+        date_added = item["date_added"]
+        
+        should_rec, confidence, notes, fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type = evaluate_job(job)
+        
+        if should_rec:
+            tracker_status = "New"
+            review_status = "Imported"
+            disposition = "Apply"
+            
+            # Action mapping
+            if company_type == "Recruiting Firm" and recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                action = "Contact Recruiter"
+            elif recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                action = "Apply"
+            elif recommendation == "★★★☆☆ Maybe":
+                action = "Review"
+            else:
+                action = "Ignore"
+                
+            already_in = "Yes" if job["company"].strip().lower() in existing_companies else "No"
+            
+            job_rec = {
+                "Job ID": job_id,
+                "Review Status": review_status,
+                "Job Type": job_type,
+                "Company": job["company"],
+                "Position": job["title"],
+                "Location": job["location"],
+                "URL": job["url"],
+                "Provider": job["provider"],
+                "Source PDF": job["source_pdf"],
+                "Confidence": confidence,
+                "Fit Score": fit_score,
+                "Priority": priority,
+                "Company Type": company_type,
+                "Recommendation": recommendation,
+                "Tracker Status": tracker_status,
+                "Disposition": disposition,
+                "Action": action,
+                "Already in Tracker": already_in,
+                "Reason": reason,
+                "Matched Skills": matched_skills,
+                "Missing Skills": missing_skills,
+                "Date Added": date_added,
+                "Notes": notes
+            }
+            all_recommendations.append(job_rec)
+
+    # Load all existing rows, preserve custom state fields, and map legacy fields
+    existing_list = []
+    known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
+    for jid, row in existing_jobs.items():
+        # Keep original "Already in Tracker" or compute if missing
+        current_val = row.get("Already in Tracker")
+        if current_val in ["Yes", "No"]:
+            row["Already in Tracker"] = current_val
+        else:
+            comp = row.get("Company", "")
+            if comp.strip().lower() in known_tracker_companies:
+                row["Already in Tracker"] = "Yes"
+            else:
+                row["Already in Tracker"] = "No"
+                
+        # Classify if missing
+        if "Job Type" not in row or not row["Job Type"]:
+            row["Job Type"] = classify_job_type(row.get("Position", ""), row.get("Notes", ""))
+        
+        # Standardize Tracker Status
+        status = row.get("Tracker Status", row.get("Status", "New"))
+        if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted"]:
+            if status == "Recruiter":
+                status = "Recruiter Submitted"
+            elif status == "Interview":
+                status = "Phone Screen"
+            elif status == "Technical":
+                status = "Technical Interview"
+            elif status in ["Skip", "Duplicate"]:
+                status = "Cancelled"
+            else:
+                status = "New"
+        row["Tracker Status"] = status
+        
+        # Standardize Review Status
+        review_status = row.get("Review Status")
+        if not review_status:
+            if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+                review_status = "Applied"
+            elif status in ["Rejected", "Cancelled", "Ghosted"]:
+                review_status = "Closed"
+            else:
+                review_status = "Imported"
+        row["Review Status"] = review_status
+        
+        # Compute Priority if missing
+        if "Priority" not in row or not row["Priority"]:
+            row["Priority"] = compute_priority(row.get("Recommendation", "★☆☆☆☆ Skip"), row.get("Action", "Ignore"))
+            
+        # Standardize existing Action column values
+        act = row.get("Action", "Ignore")
+        if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled"]:
+            if "apply" in act.lower():
+                act = "Apply"
+            elif "recruiter" in act.lower():
+                act = "Contact Recruiter"
+            elif "review" in act.lower():
+                act = "Review"
+            else:
+                act = "Ignore"
+        row["Action"] = act
+        existing_list.append(row)
+        
+    combined_jobs = existing_list + all_recommendations
+    
+    # Sort combined jobs: Fit Score desc, Recommendation desc, Company asc
+    combined_jobs.sort(key=lambda x: (
+        -int(x.get("Fit Score", 0) if x.get("Fit Score") else 0),
+        x.get("Recommendation", ""),
+        x.get("Company", "").lower()
+    ))
+    
+    # Write combined sorted jobs back to tracker CSV
+    expected_headers = [
+        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
+        "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Already in Tracker", 
+        "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+    ]
+    
+    with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=expected_headers)
+        writer.writeheader()
+        writer.writerows(combined_jobs)
+        
+    # Synchronize all combined jobs to SQLite database 'jobs.db'
+    save_to_sqlite("jobs.db", combined_jobs)
+
+    # Calculate summary metrics
+    new_jobs_count = len(all_recommendations)
+    existing_jobs_count = len(existing_jobs)
+    
+    already_applied_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"])
+    closed_jobs_count = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted"])
+    need_review_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "New" and row.get("Review Status") == "Imported")
+
+    # Output Console summary report
+    console.print("\n[bold green]=========================================[/bold green]")
+    console.print("[bold green]          JOB TRACKER SYNC REPORT        [/bold green]")
+    console.print("[bold green]=========================================[/bold green]")
+    console.print(f"New jobs: [bold cyan]{new_jobs_count}[/bold cyan]")
+    console.print(f"Existing jobs: [bold cyan]{existing_jobs_count}[/bold cyan]")
+    console.print(f"Already applied: [bold green]{already_applied_count}[/bold green]")
+    console.print(f"Closed jobs: [bold red]{closed_jobs_count}[/bold red]")
+    console.print(f"Need review: [bold yellow]{need_review_count}[/bold yellow]")
+    console.print("[bold green]=========================================[/bold green]\n")
+
+    # For console Table display: show all, or just new recommendations?
     if all_recommendations:
-        table = Table(title="New Job Recommendations")
+        all_recommendations.sort(key=lambda x: (
+            -int(x["Fit Score"]),
+            x["Recommendation"],
+            x["Company"].lower()
+        ))
+        table = Table(title="New Job Recommendations (Sorted by Fit Score)")
+        table.add_column("Job ID", style="dim")
+        table.add_column("Review Status", style="blue")
+        table.add_column("Job Type", style="cyan")
         table.add_column("Company", style="cyan")
         table.add_column("Position", style="magenta")
         table.add_column("Location", style="green")
-        table.add_column("Link", style="blue")
-        table.add_column("Provider", style="yellow")
-        table.add_column("Source PDF", style="blue")
+        table.add_column("Fit Score", style="cyan")
+        table.add_column("Priority", style="bold yellow")
+        table.add_column("Recommendation", style="bold green")
         table.add_column("Confidence", style="bold")
-        table.add_column("Notes", style="white")
+        table.add_column("Action", style="yellow")
+        table.add_column("Reason", style="blue")
+        table.add_column("Matched Skills", style="green")
+        table.add_column("Missing Skills", style="red")
         
-        with open(TRACKER_PATH, mode='a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            for rec in all_recommendations:
-                table.add_row(rec["Company"], rec["Position"], rec["Location"], rec["Link"], rec["Provider"], rec["Source PDF"], rec["Confidence"], rec["Notes"])
-                writer.writerow([
-                    rec["Company"], rec["Position"], rec["Location"], rec["Link"],
-                    rec["Provider"], rec["Source PDF"], rec["Confidence"], rec["Status"], rec["Date Added"], rec["Notes"]
-                ])
-                
+        for rec in all_recommendations:
+            table.add_row(
+                rec["Job ID"], rec["Review Status"], rec["Job Type"], rec["Company"], rec["Position"], rec["Location"], 
+                str(rec["Fit Score"]), rec["Priority"], rec["Recommendation"], rec["Confidence"], 
+                rec["Action"], rec["Reason"], rec["Matched Skills"], rec["Missing Skills"]
+            )
+            
         console.print(table)
-        console.print(f"[green]Added {len(all_recommendations)} new recommendations to {TRACKER_PATH}[/green]")
+        console.print(f"[green]Successfully synced and sorted {len(combined_jobs)} total jobs (including {len(all_recommendations)} new) in {tracker_path} and jobs.db.[/green]")
     else:
-        console.print("[yellow]No new recommendations found matching the criteria.[/yellow]")
+        console.print("[yellow]No new recommendations found matching the criteria. Database is up to date.[/yellow]")
 
 if __name__ == "__main__":
     main()
