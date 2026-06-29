@@ -113,6 +113,20 @@ Resume skill lists drive both skill matching and fit scoring. Editing `config.js
 
 ---
 
+## Known Parsing Challenges
+
+Job alert PDFs are semi-structured documents, not stable APIs. The parser is designed around repeatable provider patterns, but it also expects messy extraction artifacts:
+
+- Providers format job cards differently, including title-first and company-first layouts.
+- Some alerts concatenate card UI text, such as `View Details` or `1-Click Apply`, into company or location fields.
+- Adjacent cards can bleed together when extracted text loses visual boundaries.
+- OCR is only used when embedded PDF text is unavailable.
+- Some providers require reverse-layout parsing because the company can appear before the title.
+
+These cases are covered incrementally with parser regression tests so provider-specific fixes do not break existing layouts.
+
+---
+
 ## Design Decisions
 
 - **Local-first**: No cloud dependency. All data stays on disk.
