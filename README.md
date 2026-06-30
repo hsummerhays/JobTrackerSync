@@ -126,6 +126,16 @@ Built a Python application that extracts job postings from PDFs using native tex
 
 ---
 
+## Interesting Findings
+
+JobTrackerSync reconstructs job postings from PDF layout rather than relying on filenames or simple text searches. During development, it successfully extracted job cards from Gmail-generated PDF digests that were not found using Windows Search or raw PDF text searches, highlighting the value of layout-aware parsing for semi-structured documents.
+
+Indeed digest emails frequently contain multiple independent job cards, even though the email subject and PDF filename reference only the primary listing. For example, a digest named after a Foureyes position also contained a Planetary Talent Senior Backend .NET Developer opportunity on page two. JobTrackerSync identified both jobs as separate opportunities and added them independently to the tracker.
+
+This discovery reinforced an important architectural principle: job providers often package multiple independent opportunities into a single document. Treating each detected job card as a separate record produced a more accurate and resilient synchronization pipeline.
+
+---
+
 ## Future Roadmap
 
 - [ ] Unit tests for parsing and scoring logic
