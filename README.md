@@ -75,7 +75,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 - **Idempotent re-scoring** — editing `config.json` and re-running automatically recalculates all historic rows
 - **Company type detection** — classifies Recruiting Firm, Consulting, Defense, Healthcare, Financial, Enterprise, or Small/Medium from the company name
 - **Local/onsite warnings** — 30-point deduction when postings contain "local candidates", "onsite only", "must relocate", or "no remote"
-- **Dual persistence** — CSV for human editing, SQLite for querying
+- **Persistent workflow state** — Parsed job data is regenerated on every sync while user-managed workflow state (status, notes, actions, follow-up dates, etc.) is preserved independently in SQLite and restored automatically during imports.
 
 ---
 
