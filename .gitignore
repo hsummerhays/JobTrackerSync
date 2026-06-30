@@ -156,6 +156,7 @@ cython_debug/
 
 # Local database, configuration, and tracking files
 jobs.db
+jobs.db.session.sql
 jobs.db-journal
 config.json
 master_tracker.csv

@@ -40,9 +40,10 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         ├─ 7. Merge & Sort
         │       └─ New + existing rows sorted by Fit Score desc
         │
-        ├─ 8. CSV Write           (master_tracker.csv)
+        ├─ 8. SQLite Sync         (save_to_sqlite -> jobs.db)
+        │       └─ Restores persisted workflow state from job_workflow
         │
-        └─ 9. SQLite Sync         (save_to_sqlite -> jobs.db)
+        └─ 9. CSV Write           (master_tracker.csv)
 ```
 
 ---
@@ -56,7 +57,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 | `config.json.example` | Template for new installations |
 | `master_tracker.csv` | Primary working spreadsheet (git-ignored) |
 | `master_tracker.csv.example` | Schema reference committed to git |
-| `jobs.db` | SQLite mirror of the tracker (git-ignored) |
+| `jobs.db` | SQLite mirror containing `jobs` and `job_workflow` tables (git-ignored) |
 | `docs/scoring.md` | Scoring algorithm documentation |
 | `docs/screenshots/` | CLI and CSV screenshots for README |
 
@@ -64,7 +65,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 
 ## Data Model
 
-Each job record carries these fields:
+Each job record in the main `jobs` table carries these fields:
 
 | Field | Description |
 |-------|-------------|
@@ -91,6 +92,23 @@ Each job record carries these fields:
 | `Missing Skills` | Desired keywords not found |
 | `Date Added` | ISO date first seen |
 | `Notes` | Parser-generated analyst comments |
+
+### Persistent User Workflow Table (`job_workflow`)
+
+To ensure user-managed workflow state is never lost even if the main `jobs` table list is cleared, we maintain a separate `job_workflow` table:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `job_id` | TEXT PRIMARY KEY | Relates to the unique `Job ID` |
+| `tracker_status` | TEXT | Current workflow status (e.g. Applied, Rejected) |
+| `review_status` | TEXT | Review status (e.g. Imported, Applied, Closed) |
+| `action` | TEXT | Current action (e.g. Apply, Contact Recruiter) |
+| `disposition` | TEXT | Free-text outcome/disposition |
+| `updated_at` | TEXT | ISO timestamp when the workflow was last changed |
+| `updated_by` | TEXT | Who changed it (e.g. `'system'` or a user name) |
+| `notes` | TEXT | Custom user notes (preserved on import) |
+| `follow_up_date` | TEXT | User-managed follow up date (preserved on import) |
+| `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
 
 ---
 
@@ -133,4 +151,5 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Idempotent**: Re-running the sync is safe -- existing rows are re-scored but never duplicated.
 - **Git-ignored secrets**: `config.json`, `master_tracker.csv`, and `jobs.db` are excluded from version control. Templates are committed instead.
 - **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved. Jobs can be re-imported after 90 days using a date-suffixed hash to avoid database conflicts.
-- **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run.
+- **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine.
+- **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run, and SQLite schema migrations are applied dynamically to add new user-state columns if they are missing.
