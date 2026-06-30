@@ -147,6 +147,35 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Java AWS"))
         self.assertFalse(is_valid_company("Python .NET Azure"))
 
+    # --- New Validation Checks (UI Elements / Header leaks / Normalization) ---
+
+    def test_rejects_be_seen_first(self):
+        self.assertFalse(is_valid_company("Be Seen First"))
+
+    def test_rejects_easy(self):
+        self.assertFalse(is_valid_company("Easy"))
+
+    def test_rejects_do_not_share_this_email(self):
+        self.assertFalse(is_valid_company("Do not share this email"))
+
+    def test_rejects_date_timestamps(self):
+        self.assertFalse(is_valid_company("6/30/26"))
+        self.assertFalse(is_valid_company("8:17 AM"))
+
+    def test_accepts_double_spaces_normalized(self):
+        self.assertTrue(is_valid_company("Alivia  Analytics"))
+        self.assertTrue(is_valid_company("Cox  Automotive"))
+
+    def test_rejects_be_seen_first_fragmented(self):
+        self.assertFalse(is_valid_company("Be Seen Firs t"))
+
+    def test_accepts_insurance_office_fragmented(self):
+        self.assertTrue(is_valid_company("Insurance Of fice of America"))
+
+    def test_accepts_foureyes_fragmented(self):
+        self.assertTrue(is_valid_company("Fourey es"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

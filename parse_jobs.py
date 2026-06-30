@@ -120,7 +120,10 @@ FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "
 def is_valid_company(company):
     if not company:
         return False
-    comp = company.strip()
+    # Normalize OCR spacing first
+    comp = normalize_ocr_spacing(company)
+    # Collapse multiple spaces to a single space
+    comp = re.sub(r'\s+', ' ', comp.strip())
     if not comp:
         return False
     comp_lower = comp.lower()
@@ -144,17 +147,21 @@ def is_valid_company(company):
         return False
     # Reject UI element strings captured instead of company names
     ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more",
-                   "see more", "read more", "click here", "get started", "sign in", "log in"}
+                   "see more", "read more", "click here", "get started", "sign in", "log in",
+                   "easy", "be seen first", "do not share this email", "1-click apply"}
     if comp_lower in ui_elements:
         return False
     # Reject if a UI label was concatenated onto the end (PDF parser artifact)
     ui_label_endings = ["view details", "view detail", "learn more", "apply now", "easy apply",
-                        "save job", "show more", "see more", "read more", "click here"]
+                        "save job", "show more", "see more", "read more", "click here", "be seen first", "do not share this email", "1-click apply"]
     if any(comp_lower.endswith(suf) for suf in ui_label_endings):
         return False
     # Check for exclusion words
-    exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message"]
+    exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message", "do not share this email", "be seen first", "1-click apply"]
     if any(w in comp_lower for w in exclude_words):
+        return False
+    # Reject if contains date/time timestamp pattern
+    if re.search(r'\b\d{1,2}/\d{1,2}/\d{2,4}\b', comp) or re.search(r'\b\d{1,2}:\d{2}\s*(AM|PM|am|pm)?\b', comp):
         return False
     # Reject if it matches location-only terms
     location_names = {
@@ -242,8 +249,10 @@ def clean_existing_tracker(tracker_path):
             location = row.get("Location", "")
             # Strip trailing UI labels that were concatenated by the parser (e.g. "Acme Corp.View Details")
             cleaned_company = ui_label_strip.sub('', company).strip()
+            # Collapse multiple spaces to a single space
+            cleaned_company = re.sub(r'\s+', ' ', cleaned_company).strip()
             if cleaned_company != company:
-                company = cleaned_company.strip()
+                company = cleaned_company
                 row["Company"] = company
                 cleaned_any = True
             if not company or not is_valid_company(company):
@@ -593,10 +602,128 @@ def save_to_sqlite(db_path, jobs_list):
                 notes TEXT
             )
         """)
+
+        # Drop old statuses table if it exists
+        cursor.execute("DROP TABLE IF EXISTS statuses")
+
+        # Create job_workflow table to store persistent user workflow state
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS job_workflow (
+                job_id TEXT PRIMARY KEY,
+                tracker_status TEXT,
+                review_status TEXT,
+                action TEXT,
+                disposition TEXT,
+                updated_at TEXT,
+                updated_by TEXT,
+                notes TEXT,
+                follow_up_date TEXT,
+                last_contact_date TEXT
+            )
+        """)
+
+        # Migrate data from old job_status table if it exists
+        try:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='job_status'")
+            if cursor.fetchone():
+                cursor.execute("""
+                    INSERT OR IGNORE INTO job_workflow (job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date)
+                    SELECT job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date FROM job_status
+                """)
+                cursor.execute("DROP TABLE IF EXISTS job_status")
+        except sqlite3.OperationalError:
+            pass
+
+        # Add columns dynamically to job_workflow in case the table already existed without them
+        for col, col_type in [
+            ("review_status", "TEXT"),
+            ("action", "TEXT"),
+            ("disposition", "TEXT"),
+            ("updated_at", "TEXT"),
+            ("updated_by", "TEXT"),
+            ("notes", "TEXT"),
+            ("follow_up_date", "TEXT"),
+            ("last_contact_date", "TEXT")
+        ]:
+            try:
+                cursor.execute(f"ALTER TABLE job_workflow ADD COLUMN {col} {col_type}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Populate job_workflow table with existing status data from jobs table if available
+        try:
+            cursor.execute("""
+                INSERT OR IGNORE INTO job_workflow (job_id, tracker_status, review_status, action, disposition)
+                SELECT job_id, tracker_status, review_status, action, disposition FROM jobs WHERE job_id IS NOT NULL
+            """)
+        except sqlite3.OperationalError:
+            pass
+
+        # Retrieve persisted workflow values
+        cursor.execute("SELECT job_id, tracker_status, review_status, action, disposition FROM job_workflow")
+        persisted_workflows = {row[0]: {
+            "tracker_status": row[1],
+            "review_status": row[2],
+            "action": row[3],
+            "disposition": row[4]
+        } for row in cursor.fetchall()}
+
+        # Update jobs in-memory with their persisted workflow state if they are default 'New'
+        for job in jobs_list:
+            jid = job.get("Job ID", job.get("job_id"))
+            if jid and jid in persisted_workflows:
+                pw = persisted_workflows[jid]
+                current_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
+                if (not current_status or current_status == "New"):
+                    for target_key, source_key in [
+                        ("Tracker Status", "tracker_status"),
+                        ("Review Status", "review_status"),
+                        ("Action", "action"),
+                        ("Disposition", "disposition")
+                    ]:
+                        val = pw[source_key]
+                        if val:
+                            job[target_key] = val
+                            lower_key = target_key.lower().replace(" ", "_")
+                            if lower_key in job:
+                                job[lower_key] = val
         
         try:
-            # Upsert jobs
+            # Upsert jobs and job_workflow
             for job in jobs_list:
+                jid = job.get("Job ID", job.get("job_id"))
+                tracker_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
+                review_status = job.get("Review Status", job.get("review_status"))
+                action = job.get("Action", job.get("action"))
+                disposition = job.get("Disposition", job.get("disposition"))
+                
+                if jid:
+                    cursor.execute("""
+                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by)
+                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system')
+                        ON CONFLICT(job_id) DO UPDATE SET
+                            updated_at = CASE 
+                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
+                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
+                                     OR coalesce(action, '') != coalesce(excluded.action, '')
+                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
+                                THEN excluded.updated_at 
+                                ELSE updated_at 
+                            END,
+                            updated_by = CASE 
+                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
+                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
+                                     OR coalesce(action, '') != coalesce(excluded.action, '')
+                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
+                                THEN excluded.updated_by 
+                                ELSE updated_by 
+                            END,
+                            tracker_status = excluded.tracker_status,
+                            review_status = excluded.review_status,
+                            action = excluded.action,
+                            disposition = excluded.disposition
+                    """, (jid, tracker_status, review_status, action, disposition))
+
                 cursor.execute("""
                     INSERT INTO jobs (
                         job_id, review_status, job_type, company, position, location, url, provider, 
@@ -628,7 +755,7 @@ def save_to_sqlite(db_path, jobs_list):
                         date_added=excluded.date_added,
                         notes=excluded.notes
                 """, (
-                    job.get("Job ID", job.get("job_id")), 
+                    jid, 
                     job.get("Review Status", job.get("review_status")), 
                     job.get("Job Type", job.get("job_type")), 
                     job.get("Company", job.get("company")), 
@@ -642,7 +769,7 @@ def save_to_sqlite(db_path, jobs_list):
                     job.get("Priority", job.get("priority")), 
                     job.get("Company Type", job.get("company_type")), 
                     job.get("Recommendation", job.get("recommendation")),
-                    job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
+                    tracker_status, 
                     job.get("Disposition", job.get("disposition")), 
                     job.get("Action", job.get("action")),
                     job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
@@ -654,7 +781,7 @@ def save_to_sqlite(db_path, jobs_list):
                 ))
             conn.commit()
         except sqlite3.OperationalError as oe:
-            # Table schema mismatch - drop and recreate
+            # Table schema mismatch - drop and recreate jobs table only
             conn.rollback()
             cursor.execute("DROP TABLE IF EXISTS jobs")
             cursor.execute("""
@@ -685,6 +812,39 @@ def save_to_sqlite(db_path, jobs_list):
                 )
             """)
             for job in jobs_list:
+                jid = job.get("Job ID", job.get("job_id"))
+                tracker_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
+                review_status = job.get("Review Status", job.get("review_status"))
+                action = job.get("Action", job.get("action"))
+                disposition = job.get("Disposition", job.get("disposition"))
+                
+                if jid:
+                    cursor.execute("""
+                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by)
+                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system')
+                        ON CONFLICT(job_id) DO UPDATE SET
+                            updated_at = CASE 
+                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
+                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
+                                     OR coalesce(action, '') != coalesce(excluded.action, '')
+                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
+                                THEN excluded.updated_at 
+                                ELSE updated_at 
+                            END,
+                            updated_by = CASE 
+                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
+                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
+                                     OR coalesce(action, '') != coalesce(excluded.action, '')
+                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
+                                THEN excluded.updated_by 
+                                ELSE updated_by 
+                            END,
+                            tracker_status = excluded.tracker_status,
+                            review_status = excluded.review_status,
+                            action = excluded.action,
+                            disposition = excluded.disposition
+                    """, (jid, tracker_status, review_status, action, disposition))
+
                 cursor.execute("""
                     INSERT INTO jobs (
                         job_id, review_status, job_type, company, position, location, url, provider, 
@@ -716,7 +876,7 @@ def save_to_sqlite(db_path, jobs_list):
                         date_added=excluded.date_added,
                         notes=excluded.notes
                 """, (
-                    job.get("Job ID", job.get("job_id")), 
+                    jid, 
                     job.get("Review Status", job.get("review_status")), 
                     job.get("Job Type", job.get("job_type")), 
                     job.get("Company", job.get("company")), 
@@ -730,7 +890,7 @@ def save_to_sqlite(db_path, jobs_list):
                     job.get("Priority", job.get("priority")), 
                     job.get("Company Type", job.get("company_type")), 
                     job.get("Recommendation", job.get("recommendation")),
-                    job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status")))), 
+                    tracker_status, 
                     job.get("Disposition", job.get("disposition")), 
                     job.get("Action", job.get("action")),
                     job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
@@ -916,7 +1076,7 @@ def extract_pdf_text(pdf_path):
     try:
         reader = pypdf.PdfReader(pdf_path)
         for page in reader.pages:
-            t = page.extract_text()
+            t = page.extract_text(extraction_mode='layout')
             if t:
                 text += t + "\n"
     except Exception as e:
@@ -959,6 +1119,26 @@ def _format_skill_lists(found_skills, resume_skills):
     missing_skills = ", ".join([SKILL_DISPLAY_NAMES[s] for s in missing_list])
     return matched_skills, missing_skills
 
+def normalize_ocr_spacing(text):
+    if not text:
+        return ""
+    # Specific common corrections
+    text = re.sub(r'(?i)\bfourey\s+es\b', 'Foureyes', text)
+    text = re.sub(r'(?i)\bof\s+fice\b', 'office', text)
+    text = re.sub(r'(?i)\bfirs\s+t\b', 'first', text)
+    text = re.sub(r'(?i)\blak\s+e\b', 'lake', text)
+    text = re.sub(r'(?i)\bseen\s+firs\s+t\b', 'seen first', text)
+    text = re.sub(r'(?i)\bpac\s+k\s+yak\b', 'pack yak', text)
+    text = re.sub(r'(?i)\binsurance\s+of\s+fice\b', 'Insurance Office', text)
+    
+    # General heuristics:
+    # 1. End of word separated by space: "firs t" -> "first" (length >=2 followed by consonant)
+    text = re.sub(r'\b([a-zA-Z]{2,})\s+([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\b', r'\1\2', text)
+    # 2. Start of word separated by space: "p hoto" -> "photo" (consonant followed by length >=2)
+    text = re.sub(r'\b([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\s+([a-zA-Z]{2,})\b', r'\1\2', text)
+    
+    return text
+
 def _clean_location(location):
     location = re.sub(r'[,\sâ€¢•]+$', '', location).strip()
     location = re.sub(r'\s+', ' ', location).strip()
@@ -979,6 +1159,8 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
     [Company]
     [Location]
     """
+    # Preprocess text to normalize OCR spacing artifacts (Extract -> Normalize)
+    text = normalize_ocr_spacing(text)
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     
     # Rule 2: Ignore specific heading blocks
@@ -1099,7 +1281,8 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             # Strip UI labels that may have been concatenated onto the company name
             ui_label_pattern = rf'{UI_LABEL_PATTERN}$'
             company = re.sub(ui_label_pattern, '', company).strip()
-            company = company.strip()
+            # Collapse multiple spaces to a single space
+            company = re.sub(r'\s+', ' ', company).strip()
             location = _clean_location(location)
                 
             jobs.append({
@@ -1172,6 +1355,14 @@ def evaluate_job(job):
     priority_keywords = criteria.get("priority_keywords", [])
     resume_skills = criteria.get("resume_skills", [])
     
+    # Reject the entire card if either company or title contains obvious email metadata/UI fragments
+    for field_val in [title, company]:
+        val_lower = field_val.lower()
+        if "gmail -" in val_lower or "apply now" in val_lower or "more jobs" in val_lower or "be seen first" in val_lower or "do not share this email" in val_lower:
+            return False, "🔴 Low", "Contains email metadata or UI instructions", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Metadata/UI leak", "", "", job_type
+        if re.search(r'\b\d{1,2}:\d{2}\s*(AM|PM|am|pm)?\b', field_val):
+            return False, "🔴 Low", "Contains timestamp (likely email metadata)", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Metadata/UI leak", "", "", job_type
+
     # Rule 3 & 4: Must have company and title
     if not title or not company:
         return False, "🔴 Low", "Rule 4: Missing company or title", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Missing details", "", "", job_type
@@ -1525,7 +1716,7 @@ def main():
                 reader = pypdf.PdfReader(pdf_path)
                 full_text = ""
                 for page in reader.pages:
-                    t = page.extract_text()
+                    t = page.extract_text(extraction_mode='layout')
                     if t:
                         full_text += t + "\n"
                         
@@ -1536,7 +1727,7 @@ def main():
                 provider = detect_provider(full_text, pdf_file)
                 
                 for page_num, page in enumerate(reader.pages):
-                    page_text = page.extract_text()
+                    page_text = page.extract_text(extraction_mode='layout')
                     if not page_text or not page_text.strip():
                         continue
                         
@@ -1733,13 +1924,13 @@ def main():
         except (ValueError, TypeError):
             row["Age (days)"] = ""
     
+    # Synchronize all combined jobs to SQLite database 'jobs.db'
+    save_to_sqlite("jobs.db", combined_jobs)
+
     with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=expected_headers, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(combined_jobs)
-        
-    # Synchronize all combined jobs to SQLite database 'jobs.db'
-    save_to_sqlite("jobs.db", combined_jobs)
 
     # Calculate summary metrics
     new_jobs_count = len(all_recommendations)

@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.1.0 — 2026-06-30
+
+### Persistent User Workflow & DB Schema Separation
+- Introduced a separate `job_workflow` table in SQLite (`jobs.db`) to store user-managed workflow state (`tracker_status`, `review_status`, `action`, `disposition`, `updated_at`, `updated_by`, `notes`, `follow_up_date`, `last_contact_date`) independently from the main `jobs` list.
+- User-managed workflow state now persists in SQLite even if the imported `jobs` table list is cleared or recreated.
+- Implemented automatic database migration to dynamically transition old `job_status` tables to the expanded `job_workflow` structure.
+- Upsert logic only modifies `updated_at` and `updated_by` when any tracking status, review status, action, or disposition changes, preventing overwrite of user-managed fields like `notes` and `follow_up_date` during routine PDF imports.
+- Re-ordered synchronization so that restored workflow states are written back to `master_tracker.csv` on run.
+
+---
+
 ## v1.0.1 — 2026-06-29
 
 ### Deduplication
