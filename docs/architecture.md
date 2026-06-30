@@ -40,7 +40,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         ├─ 7. Merge & Sort
         │       └─ New + existing rows sorted by Fit Score desc
         │
-        ├─ 8. SQLite Sync         (save_to_sqlite -> jobs.db)
+        ├─ 8. Workflow Restore & SQLite Sync (save_to_sqlite -> jobs.db)
         │       └─ Restores persisted workflow state from job_workflow
         │
         └─ 9. CSV Write           (master_tracker.csv)
@@ -109,6 +109,12 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | `notes` | TEXT | Custom user notes (preserved on import) |
 | `follow_up_date` | TEXT | User-managed follow up date (preserved on import) |
 | `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
+
+---
+
+## Workflow Synchronization
+
+Parsed job attributes (company, title, location, score, recommendation) are treated as derived data and may be regenerated at any time. User-managed workflow attributes (status, notes, follow-up dates, contact history, etc.) are stored independently in `job_workflow` and restored after every synchronization. This separation allows parser improvements and rescoring without losing user history.
 
 ---
 
