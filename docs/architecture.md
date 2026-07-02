@@ -143,6 +143,7 @@ Job alert PDFs are semi-structured documents, not stable APIs. The parser is des
 
 - Providers format job cards differently, including title-first and company-first layouts.
 - Some alerts concatenate card UI text, such as `View Details` or `1-Click Apply`, into company or location fields.
+- Indeed recommendation banners (e.g., `Based on your title and location. Update`, `Recommended for you`) or digest artifacts (e.g., ending in `...`, `more ...`, `view more`, `see more`) can leak into company names.
 - Adjacent cards can bleed together when extracted text loses visual boundaries.
 - OCR is only used when embedded PDF text is unavailable.
 - Some providers require reverse-layout parsing because the company can appear before the title.

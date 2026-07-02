@@ -175,6 +175,19 @@ class TestIsValidCompany(unittest.TestCase):
     def test_accepts_foureyes_fragmented(self):
         self.assertTrue(is_valid_company("Fourey es"))
 
+    # --- Indeed Recommendation Banners and Digest Artifacts ---
+
+    def test_rejects_indeed_recommendation_banners(self):
+        self.assertFalse(is_valid_company("Based on your title and location. Update"))
+        self.assertFalse(is_valid_company("Recommended for you"))
+        self.assertFalse(is_valid_company("Update your profile"))
+
+    def test_rejects_truncated_digest_artifacts(self):
+        self.assertFalse(is_valid_company("Company Name..."))
+        self.assertFalse(is_valid_company("Company Name More ..."))
+        self.assertFalse(is_valid_company("Company Name View more"))
+        self.assertFalse(is_valid_company("Company Name See more"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
