@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.1.1 — 2026-07-02
+
+### Company Name Validation
+- Added validation rules to reject Indeed recommendation banners (e.g. "Based on your title and location. Update", "Recommended for you", "Update your profile").
+- Added validation rules to reject digest/truncation artifacts at the end of company names (e.g. ending in "...", "more ...", "view more", "see more").
+- Added unit tests for new validation rules in `test_company_validation.py`.
+
+---
+
 ## v1.1.0 — 2026-06-30
 
 ### Persistent User Workflow & DB Schema Separation

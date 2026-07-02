@@ -145,6 +145,19 @@ def is_valid_company(company):
     # Check length
     if len(comp) > 100:
         return False
+    # Reject Indeed recommendation banners / email digest artifacts
+    recommendation_banners = [
+        "based on your title",
+        "based on your location",
+        "recommended for you",
+        "update your profile"
+    ]
+    if any(banner in comp_lower for banner in recommendation_banners):
+        return False
+    # Reject company names ending in digest artifacts or truncated text
+    truncated_endings = ["...", "more ...", "view more", "see more", "more..."]
+    if any(comp_lower.endswith(ending) for ending in truncated_endings):
+        return False
     # Reject UI element strings captured instead of company names
     ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more",
                    "see more", "read more", "click here", "get started", "sign in", "log in",
