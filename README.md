@@ -79,6 +79,17 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 
 ---
 
+## Parser Improvements
+
+- OCR spacing normalization
+- Multi-job email support
+- Persistent workflow synchronization
+- Wrapped LinkedIn title detection
+- Company/location normalization
+- Provider-specific metadata filtering
+
+---
+
 ## File Structure
 
 ```
