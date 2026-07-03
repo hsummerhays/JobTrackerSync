@@ -1668,6 +1668,117 @@ def _print_dashboard(tracker_path="master_tracker.csv"):
     console.print(f"\n[bold green]=========================================[/bold green]\n")
 
 
+def print_today_queue(tracker_path="master_tracker.csv"):
+    if not os.path.exists(tracker_path):
+        console.print(f"[red]Tracker not found: {tracker_path}[/red]")
+        return
+    with open(tracker_path, encoding='utf-8') as f:
+        rows = list(csv.DictReader(f))
+    
+    # Queue is P1 + P2 jobs with Tracker Status == "New"
+    queue = [r for r in rows if r.get("Tracker Status") == "New" and (r.get("Priority","").startswith("P1") or r.get("Priority","").startswith("P2"))]
+    
+    console.print("\n[bold green]=========================================[/bold green]")
+    console.print("[bold green]            TODAY'S QUEUE                [/bold green]")
+    console.print("[bold green]=========================================[/bold green]\n")
+    
+    if queue:
+        for r in queue:
+            console.print(f"  □ [bold]{r['Company']}[/bold] — {r.get('Position','')[:50]}")
+        console.print(f"\n[bold yellow]{len(queue)} jobs remaining[/bold yellow]")
+    else:
+        console.print("  🎉 No jobs remaining in today's queue!")
+    console.print("\n[bold green]=========================================[/bold green]\n")
+
+
+def handle_interactive_update():
+    db_path = "jobs.db"
+    if not os.path.exists(db_path):
+        console.print("[red]jobs.db not found. Cannot perform database update.[/red]")
+        return False
+        
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Query database for jobs that are 'New' and have priority P1/P2, or are active in pipeline
+    cursor.execute("""
+        SELECT job_id, company, position, tracker_status, priority 
+        FROM jobs 
+        WHERE tracker_status IN ('New', 'Phone Screen', 'Technical Interview', 'Recruiter Submitted', 'Waiting')
+        ORDER BY 
+            CASE tracker_status 
+                WHEN 'Phone Screen' THEN 1
+                WHEN 'Technical Interview' THEN 2
+                WHEN 'Recruiter Submitted' THEN 3
+                WHEN 'Waiting' THEN 4
+                ELSE 5 
+            END,
+            priority ASC,
+            company ASC
+    """)
+    jobs = cursor.fetchall()
+    conn.close()
+    
+    if not jobs:
+        console.print("[yellow]No active queue or pipeline jobs found to update.[/yellow]")
+        return False
+        
+    console.print("\n[bold cyan]Today's Active Jobs[/bold cyan]\n")
+    for idx, job in enumerate(jobs, 1):
+        jid, company, position, status, priority = job
+        status_info = f"[{status}]" if status != "New" else f"[{priority.split('–')[0].strip()}]"
+        console.print(f"  {idx}) [bold]{company}[/bold] — {position[:50]} {status_info}")
+        
+    try:
+        choice = input("\nSelect job (number) or Ctrl+C to cancel: ").strip()
+        if not choice:
+            return False
+        choice_idx = int(choice) - 1
+        if choice_idx < 0 or choice_idx >= len(jobs):
+            console.print("[red]Invalid selection.[/red]")
+            return False
+    except (ValueError, KeyboardInterrupt):
+        console.print("\n[yellow]Operation cancelled.[/yellow]")
+        return False
+        
+    selected_job = jobs[choice_idx]
+    job_id = selected_job[0]
+    company = selected_job[1]
+    position = selected_job[2]
+    
+    # New status selection
+    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+    console.print(f"\nSelected: [bold]{company}[/bold] — {position}")
+    console.print(f"Current Status: [yellow]{selected_job[3]}[/yellow]")
+    console.print("\n[bold cyan]New Status:[/bold cyan]")
+    for idx, stat in enumerate(valid_statuses, 1):
+        console.print(f"  {idx}) {stat}")
+        
+    try:
+        status_choice = input("\nSelect new status (number) or Ctrl+C to cancel: ").strip()
+        if not status_choice:
+            return False
+        status_idx = int(status_choice) - 1
+        if status_idx < 0 or status_idx >= len(valid_statuses):
+            console.print("[red]Invalid selection.[/red]")
+            return False
+    except (ValueError, KeyboardInterrupt):
+        console.print("\n[yellow]Operation cancelled.[/yellow]")
+        return False
+        
+    status = valid_statuses[status_idx]
+    
+    try:
+        notes = input("\nAdd optional note/disposition (or press Enter to skip): ").strip()
+        if not notes:
+            notes = None
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Operation cancelled.[/yellow]")
+        return False
+        
+    return handle_status_update(job_id, status, notes)
+
+
 def handle_status_update(query, status, notes=None):
     # Validates status
     valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
@@ -1708,8 +1819,6 @@ def handle_status_update(query, status, notes=None):
         
     # Single match found
     job_id, company, position, location, current_status = matches[0]
-    console.print(f"[green]Updating job: [bold]{company}[/bold] - {position} ({location})[/green]")
-    console.print(f"  Current Status: {current_status} -> New Status: {status}")
     
     # Determine derived fields
     review_status = "Imported"
@@ -1788,7 +1897,17 @@ def handle_status_update(query, status, notes=None):
                 writer.writeheader()
                 writer.writerows(rows)
                 
-    console.print("[bold green]Success! Status updated in SQLite and CSV.[/bold green]")
+    console.print("\n[bold green]✓ Updated[/bold green]\n")
+    console.print(f"  [bold]Company:[/bold]       {company}")
+    console.print(f"  [bold]Position:[/bold]      {position}")
+    console.print("")
+    console.print(f"  [bold]Tracker Status:[/bold] [cyan]{status}[/cyan]")
+    console.print(f"  [bold]Review Status:[/bold]  {review_status}")
+    console.print(f"  [bold]Action:[/bold]         {action}")
+    console.print(f"  [bold]Disposition:[/bold]    {disposition}")
+    if notes:
+        console.print(f"  [bold]Notes/Disp:[/bold]     {notes}")
+    console.print("")
     return True
 
 
@@ -1798,17 +1917,26 @@ def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
-    parser.add_argument("--update", required=False, help="Company name, Job ID, or substring to update status")
+    parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
+    parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
     args = parser.parse_args()
     
-    if args.update:
-        if not args.status:
-            console.print("[red]Error: --status is required when using --update[/red]")
-            return
-        handle_status_update(args.update, args.status, args.notes)
+    if args.today:
+        print_today_queue()
         return
+        
+    if args.update is not None:
+        if args.update == "" and not args.status:
+            handle_interactive_update()
+            return
+        elif args.update != "" and not args.status:
+            console.print("[red]Error: --status is required when specifying a company/job ID to update[/red]")
+            return
+        else:
+            handle_status_update(args.update, args.status, args.notes)
+            return
     
     if args.dashboard:
         _print_dashboard()
