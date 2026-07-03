@@ -119,6 +119,19 @@ class TestLinkedInJobParsing(unittest.TestCase):
         jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="linkedin.pdf")
         self.assertGreaterEqual(len(jobs), 2)
 
+    def test_wrapped_title_continuation(self):
+        """Ensure title wraps correctly when followed by a Company · Location line."""
+        text = (
+            "Senior Software Engineer- Big Data & MCP, Data\n"
+            "Foundations\n"
+            "RevSpring · Salt Lake City , UT\n"
+        )
+        jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="linkedin.pdf")
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["title"], "Senior Software Engineer- Big Data & MCP, Data Foundations")
+        self.assertEqual(jobs[0]["company"], "RevSpring")
+        self.assertEqual(jobs[0]["location"], "Salt Lake City, UT")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

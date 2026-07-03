@@ -1155,7 +1155,7 @@ def normalize_ocr_spacing(text):
 def _clean_location(location):
     location = re.sub(r'[,\sâ€¢•]+$', '', location).strip()
     location = re.sub(r'\s+', ' ', location).strip()
-    location = re.sub(r',\s*,', ',', location).strip()
+    location = re.sub(r'\s*,\s*', ', ', location).strip()
     location = location.strip(', ')
 
     location = re.split(UI_LABEL_PATTERN, location, maxsplit=1)[0].strip()
@@ -1208,6 +1208,7 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             company = "Unknown/Other"
             location = ""
             url = ""
+            found_location = False
             
             # Check the next line to see if it's the company or actually a location/another job listing
             has_next = i + 1 < len(filtered_lines)
@@ -1220,7 +1221,25 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 # Check if the next line looks like a location instead of a company
                 is_next_location = not next_is_title and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line)))
                 
-                if next_is_title or next_has_salary:
+                # Check if the line after next (i+2) contains '·' and matches location/remote,
+                # which indicates that next_line (i+1) is actually a continuation of the title,
+                # and next_line+1 (i+2) is the Company · Location line.
+                is_line_after_next_company_location = False
+                if i + 2 < len(filtered_lines):
+                    line_after_next = filtered_lines[i+2]
+                    if "·" in line_after_next and (bool(state_city_pattern.search(line_after_next)) or "remote" in line_after_next.lower()):
+                        is_line_after_next_company_location = True
+                
+                if is_line_after_next_company_location:
+                    title = f"{title} {next_line}"
+                    line_after_next = filtered_lines[i+2]
+                    parts = [p.strip() for p in line_after_next.split("·", 1)]
+                    company = parts[0]
+                    if len(parts) > 1:
+                        location = _clean_location(parts[1])
+                        found_location = True
+                    next_idx = i + 3
+                elif next_is_title or next_has_salary:
                     # The next line is another job title! Don't consume it as company.
                     company = "Unknown/Other"
                     next_idx = i + 1
@@ -1247,7 +1266,6 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 next_idx = i + 1
                 
             # Look ahead for location and URL
-            found_location = False
             while next_idx < min(i + 6, len(filtered_lines)):
                 next_line = filtered_lines[next_idx]
                 # If we hit another title, stop looking ahead

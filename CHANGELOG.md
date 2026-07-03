@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.1.2 — 2026-07-03
+
+### Parser Improvements
+- Implemented wrapped LinkedIn title detection to prevent multiline job titles from splitting into incorrect company names.
+- Normalized whitespace surrounding commas in job locations to resolve OCR/text-extraction spacing artifacts.
+- Added unit tests for title wrapping in `test_linkedin_parser.py`.
+
+---
+
 ## v1.1.1 — 2026-07-02
 
 ### Company Name Validation
