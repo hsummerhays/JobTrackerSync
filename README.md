@@ -129,6 +129,16 @@ cp config.json.example config.json
 python parse_jobs.py --pdf-dir "C:\Path\To\Your\PDF\Folder"
 ```
 
+**4. Update Job Status**
+
+You can update any job's tracking status directly from the command line by providing the company name (or a unique substring/Job ID) and the new status:
+
+```bash
+python parse_jobs.py --update "Hire Feed" --status "Expired"
+```
+
+This will automatically find the matching job, update the database and CSV, and recalculate all derived fields (such as `Review Status`, `Action`, and `Disposition`).
+
 ---
 
 ## Technical Highlights

@@ -1668,13 +1668,147 @@ def _print_dashboard(tracker_path="master_tracker.csv"):
     console.print(f"\n[bold green]=========================================[/bold green]\n")
 
 
+def handle_status_update(query, status, notes=None):
+    # Validates status
+    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+    if status not in valid_statuses:
+        console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
+        return False
+        
+    db_path = "jobs.db"
+    tracker_path = "master_tracker.csv"
+    
+    if not os.path.exists(db_path):
+        console.print("[red]jobs.db not found. Cannot perform database update.[/red]")
+        return False
+        
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Query database for matches
+    cursor.execute("""
+        SELECT job_id, company, position, location, tracker_status 
+        FROM jobs 
+        WHERE job_id = ? OR company LIKE ? OR position LIKE ?
+    """, (query, f"%{query}%", f"%{query}%"))
+    matches = cursor.fetchall()
+    
+    if not matches:
+        console.print(f"[red]No jobs found matching '{query}'.[/red]")
+        conn.close()
+        return False
+        
+    if len(matches) > 1:
+        console.print(f"[yellow]Multiple matches found for '{query}':[/yellow]")
+        for m in matches:
+            console.print(f"  • [bold]{m[0]}[/bold]: {m[1]} - {m[2]} ({m[3]}) [Current Status: {m[4]}]")
+        console.print("[yellow]Please specify a more precise company name or the exact Job ID.[/yellow]")
+        conn.close()
+        return False
+        
+    # Single match found
+    job_id, company, position, location, current_status = matches[0]
+    console.print(f"[green]Updating job: [bold]{company}[/bold] - {position} ({location})[/green]")
+    console.print(f"  Current Status: {current_status} -> New Status: {status}")
+    
+    # Determine derived fields
+    review_status = "Imported"
+    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+        review_status = "Applied"
+    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+        review_status = "Closed"
+        
+    action = "Apply"
+    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+        action = "Already Applied"
+    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+        action = "Ignore"
+        
+    disposition_map = {
+        "New": "Apply",
+        "Applied": "Waiting",
+        "Phone Screen": "Active",
+        "Technical Interview": "Active",
+        "Recruiter Submitted": "Active",
+        "Waiting": "Active",
+        "Rejected": "Closed",
+        "Cancelled": "Closed",
+        "Ghosted": "Closed",
+        "Expired": "Closed"
+    }
+    disposition = disposition_map.get(status, "Apply")
+    
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Update SQLite database
+    cursor.execute("""
+        UPDATE jobs 
+        SET tracker_status = ?, review_status = ?, action = ?, disposition = ? 
+        WHERE job_id = ?
+    """, (status, review_status, action, disposition, job_id))
+    
+    cursor.execute("SELECT 1 FROM job_workflow WHERE job_id = ?", (job_id,))
+    if cursor.fetchone():
+        cursor.execute("""
+            UPDATE job_workflow 
+            SET tracker_status = ?, review_status = ?, action = ?, disposition = ?, 
+                notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system'
+            WHERE job_id = ?
+        """, (status, review_status, action, disposition, notes, now_str, job_id))
+    else:
+        cursor.execute("""
+            INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'system')
+        """, (job_id, status, review_status, action, disposition, notes, now_str))
+        
+    conn.commit()
+    conn.close()
+    
+    # Update master_tracker.csv
+    if os.path.exists(tracker_path):
+        rows = []
+        updated = False
+        with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row["Job ID"] == job_id:
+                    row["Tracker Status"] = status
+                    row["Review Status"] = review_status
+                    row["Action"] = action
+                    row["Disposition"] = disposition
+                    if notes:
+                        row["Notes"] = notes
+                    updated = True
+                rows.append(row)
+                
+        if updated:
+            with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+                
+    console.print("[bold green]Success! Status updated in SQLite and CSV.[/bold green]")
+    return True
+
+
 def main():
 
     import argparse
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
+    parser.add_argument("--update", required=False, help="Company name, Job ID, or substring to update status")
+    parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
+    parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
     args = parser.parse_args()
+    
+    if args.update:
+        if not args.status:
+            console.print("[red]Error: --status is required when using --update[/red]")
+            return
+        handle_status_update(args.update, args.status, args.notes)
+        return
     
     if args.dashboard:
         _print_dashboard()

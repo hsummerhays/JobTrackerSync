@@ -6,6 +6,11 @@ All notable changes to this project are documented here.
 
 ## v1.1.2 — 2026-07-03
 
+### CLI Status Updates
+- Added `--update`, `--status`, and `--notes` CLI options to enable updating any job's tracking status directly from the command line.
+- Automatic recalculation of derived workflow attributes (e.g. `Review Status`, `Action`, `Disposition`) upon status updates.
+- Synchronized database records and master tracking spreadsheet outputs on CLI status updates.
+
 ### Parser Improvements
 - Implemented wrapped LinkedIn title detection to prevent multiline job titles from splitting into incorrect company names.
 - Normalized whitespace surrounding commas in job locations to resolve OCR/text-extraction spacing artifacts.
