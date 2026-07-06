@@ -161,7 +161,8 @@ def is_valid_company(company):
     # Reject UI element strings captured instead of company names
     ui_elements = {"view details", "learn more", "apply now", "easy apply", "save job", "show more",
                    "see more", "read more", "click here", "get started", "sign in", "log in",
-                   "easy", "be seen first", "do not share this email", "1-click apply"}
+                   "easy", "be seen first", "do not share this email", "1-click apply",
+                   "just posted", "systems"}
     if comp_lower in ui_elements:
         return False
     # Reject if a UI label was concatenated onto the end (PDF parser artifact)
@@ -581,7 +582,7 @@ def clean_existing_tracker(tracker_path):
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
 
-def save_to_sqlite(db_path, jobs_list):
+def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
     """Save or upsert a list of jobs to the SQLite database."""
     try:
         conn = sqlite3.connect(db_path)
@@ -671,6 +672,15 @@ def save_to_sqlite(db_path, jobs_list):
             """)
         except sqlite3.OperationalError:
             pass
+
+        # If any expired jobs returned, clear their historic state so they can be re-recommended
+        if returned_expired_ids:
+            try:
+                cursor.executemany("DELETE FROM job_workflow WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
+                cursor.executemany("DELETE FROM jobs WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
         # Retrieve persisted workflow values
         cursor.execute("SELECT job_id, tracker_status, review_status, action, disposition FROM job_workflow")
@@ -1972,6 +1982,7 @@ def main():
     clean_existing_tracker(tracker_path)
     existing_jobs = load_tracker(tracker_path)
     
+    returned_expired_ids = set()
     all_recommendations = []
     found_any_pdf = False
     
@@ -2042,17 +2053,27 @@ def main():
                         is_duplicate = False
                         if job_id in existing_jobs:
                             existing_job = existing_jobs[job_id]
-                            existing_date_str = existing_job.get("Date Added", "")
-                            try:
-                                existing_date = date.fromisoformat(existing_date_str)
-                                current_date = date.fromisoformat(date_added)
-                                if (current_date - existing_date).days <= 90:
-                                    is_duplicate = True
+                            existing_status = existing_job.get("Tracker Status", existing_job.get("Status", ""))
+                            if existing_status == "Expired":
+                                existing_date_str = existing_job.get("Date Added", "")
+                                if existing_date_str and date_added != existing_date_str:
+                                    # Expired job returned on a different day! Remove it from existing_jobs so it is re-suggested.
+                                    del existing_jobs[job_id]
+                                    returned_expired_ids.add(job_id)
                                 else:
-                                    # Over 90 days. We generate a date-distinct job ID to avoid collisions.
-                                    job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added}".encode('utf-8')).hexdigest()[:12]
-                            except (ValueError, TypeError):
-                                is_duplicate = True
+                                    is_duplicate = True
+                            else:
+                                existing_date_str = existing_job.get("Date Added", "")
+                                try:
+                                    existing_date = date.fromisoformat(existing_date_str)
+                                    current_date = date.fromisoformat(date_added)
+                                    if (current_date - existing_date).days <= 90:
+                                        is_duplicate = True
+                                    else:
+                                        # Over 90 days. We generate a date-distinct job ID to avoid collisions.
+                                        job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added}".encode('utf-8')).hexdigest()[:12]
+                                except (ValueError, TypeError):
+                                    is_duplicate = True
                         
                         if is_duplicate or job_id in raw_collected_jobs:
                             continue
@@ -2218,7 +2239,7 @@ def main():
             row["Age (days)"] = ""
     
     # Synchronize all combined jobs to SQLite database 'jobs.db'
-    save_to_sqlite("jobs.db", combined_jobs)
+    save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids)
 
     with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=expected_headers, extrasaction='ignore')

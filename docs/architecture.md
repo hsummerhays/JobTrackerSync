@@ -22,7 +22,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         │       └─ Rejects location-only names, sentences, etc.
         │
         ├─ 4. Deduplication       (job_id = MD5 of company+title+location [+ date if >90 days])
-        │       └─ Skips jobs already in tracker unless older than 90 days (which get unique date-suffixed IDs)
+        │       └─ Skips jobs already in tracker unless older than 90 days (which get unique date-suffixed IDs) or previously marked as "Expired" and returned on a different day (which resets status to "New")
         │
         ├─ 5. Evaluation          (evaluate_job)
         │       ├─ Fit Score (0-100)
@@ -157,6 +157,6 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Local-first**: No cloud dependency. All data stays on disk.
 - **Idempotent**: Re-running the sync is safe -- existing rows are re-scored but never duplicated.
 - **Git-ignored secrets**: `config.json`, `master_tracker.csv`, and `jobs.db` are excluded from version control. Templates are committed instead.
-- **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved. Jobs can be re-imported after 90 days using a date-suffixed hash to avoid database conflicts.
+- **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved. Jobs can be re-imported after 90 days using a date-suffixed hash to avoid database conflicts. Furthermore, roles marked as "Expired" are reset and re-suggested if they are found again on a different day.
 - **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine.
 - **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run, and SQLite schema migrations are applied dynamically to add new user-state columns if they are missing.
