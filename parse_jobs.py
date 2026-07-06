@@ -216,7 +216,7 @@ def initialize_tracker(tracker_path):
     if not os.path.exists(tracker_path):
         with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"])
+            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"])
         console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
 
 def clean_existing_tracker(tracker_path):
@@ -232,7 +232,7 @@ def clean_existing_tracker(tracker_path):
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"
     ]
     
     try:
@@ -567,6 +567,11 @@ def clean_existing_tracker(tracker_path):
             matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
             migrated_row["Matched Skills"] = matched_skills
             migrated_row["Missing Skills"] = missing_skills
+            
+            # Preserve Recruiter & Hiring Manager
+            migrated_row["Recruiter"] = row.get("Recruiter", "")
+            migrated_row["Hiring Manager"] = row.get("Hiring Manager", "")
+            
             rows_to_keep.append(migrated_row)
                 
         # Always sync with SQLite database 'jobs.db' on launch
@@ -614,7 +619,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                 missing_skills TEXT,
                 date_added TEXT,
                 notes TEXT,
-                recruiter TEXT
+                recruiter TEXT,
+                hiring_manager TEXT
             )
         """)
 
@@ -652,6 +658,10 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
         # Add columns dynamically to jobs and job_workflow in case the tables already existed without them
         try:
             cursor.execute("ALTER TABLE jobs ADD COLUMN recruiter TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN hiring_manager TEXT")
         except sqlite3.OperationalError:
             pass
 
@@ -840,7 +850,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                     missing_skills TEXT,
                     date_added TEXT,
                     notes TEXT,
-                    recruiter TEXT
+                    recruiter TEXT,
+                    hiring_manager TEXT
                 )
             """)
             for job in jobs_list:
@@ -882,8 +893,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes, recruiter
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reason, matched_skills, missing_skills, date_added, notes, recruiter, hiring_manager
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -907,7 +918,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
                         notes=excluded.notes,
-                        recruiter=excluded.recruiter
+                        recruiter=excluded.recruiter,
+                        hiring_manager=excluded.hiring_manager
                 """, (
                     jid, 
                     job.get("Review Status", job.get("review_status")), 
@@ -932,7 +944,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                     job.get("Missing Skills", job.get("missing_skills")),
                     job.get("Date Added", job.get("date_added")), 
                     job.get("Notes", job.get("notes")),
-                    job.get("Recruiter", job.get("recruiter"))
+                    job.get("Recruiter", job.get("recruiter")),
+                    job.get("Hiring Manager", job.get("hiring_manager"))
                 ))
             conn.commit()
         conn.close()
@@ -1919,7 +1932,9 @@ def handle_status_update(query, status, notes=None):
         "matched_skills": "Matched Skills",
         "missing_skills": "Missing Skills",
         "date_added": "Date Added",
-        "notes": "Notes"
+        "notes": "Notes",
+        "recruiter": "Recruiter",
+        "hiring_manager": "Hiring Manager"
     }
     
     csv_row = {}
@@ -2020,6 +2035,7 @@ def handle_manual_add():
         provider = "Manual"
         
     recruiter = input("Recruiter [optional]: ").strip()
+    hiring_manager = input("Hiring Manager [optional]: ").strip()
     url = input("URL [optional]: ").strip()
     
     fit_score_str = input("Fit Score (1-100) [default: 70]: ").strip()
@@ -2126,7 +2142,8 @@ def handle_manual_add():
         "Missing Skills": "",
         "Date Added": date_added,
         "Notes": notes,
-        "Recruiter": recruiter
+        "Recruiter": recruiter,
+        "Hiring Manager": hiring_manager
     }
     
     # Save/upsert to jobs.db
@@ -2148,6 +2165,7 @@ def handle_manual_add():
                     row["Disposition"] = disposition
                     row["Notes"] = notes
                     row["Recruiter"] = recruiter
+                    row["Hiring Manager"] = hiring_manager
                     updated = True
                 rows.append(row)
                 
@@ -2478,7 +2496,7 @@ def main():
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"
     ]
     
     # Compute Age (days) for every row before writing
