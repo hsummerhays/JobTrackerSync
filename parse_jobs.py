@@ -216,7 +216,7 @@ def initialize_tracker(tracker_path):
     if not os.path.exists(tracker_path):
         with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"])
+            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"])
         console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
 
 def clean_existing_tracker(tracker_path):
@@ -232,7 +232,7 @@ def clean_existing_tracker(tracker_path):
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"
     ]
     
     try:
@@ -613,7 +613,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                 matched_skills TEXT,
                 missing_skills TEXT,
                 date_added TEXT,
-                notes TEXT
+                notes TEXT,
+                recruiter TEXT
             )
         """)
 
@@ -648,7 +649,12 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
         except sqlite3.OperationalError:
             pass
 
-        # Add columns dynamically to job_workflow in case the table already existed without them
+        # Add columns dynamically to jobs and job_workflow in case the tables already existed without them
+        try:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN recruiter TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         for col, col_type in [
             ("review_status", "TEXT"),
             ("action", "TEXT"),
@@ -752,8 +758,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reason, matched_skills, missing_skills, date_added, notes, recruiter
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -776,7 +782,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         matched_skills=excluded.matched_skills,
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
-                        notes=excluded.notes
+                        notes=excluded.notes,
+                        recruiter=excluded.recruiter
                 """, (
                     jid, 
                     job.get("Review Status", job.get("review_status")), 
@@ -800,7 +807,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                     job.get("Matched Skills", job.get("matched_skills")),
                     job.get("Missing Skills", job.get("missing_skills")),
                     job.get("Date Added", job.get("date_added")), 
-                    job.get("Notes", job.get("notes"))
+                    job.get("Notes", job.get("notes")),
+                    job.get("Recruiter", job.get("recruiter"))
                 ))
             conn.commit()
         except sqlite3.OperationalError as oe:
@@ -831,7 +839,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                     matched_skills TEXT,
                     missing_skills TEXT,
                     date_added TEXT,
-                    notes TEXT
+                    notes TEXT,
+                    recruiter TEXT
                 )
             """)
             for job in jobs_list:
@@ -873,8 +882,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reason, matched_skills, missing_skills, date_added, notes, recruiter
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -897,7 +906,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                         matched_skills=excluded.matched_skills,
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
-                        notes=excluded.notes
+                        notes=excluded.notes,
+                        recruiter=excluded.recruiter
                 """, (
                     jid, 
                     job.get("Review Status", job.get("review_status")), 
@@ -921,7 +931,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
                     job.get("Matched Skills", job.get("matched_skills")),
                     job.get("Missing Skills", job.get("missing_skills")),
                     job.get("Date Added", job.get("date_added")), 
-                    job.get("Notes", job.get("notes"))
+                    job.get("Notes", job.get("notes")),
+                    job.get("Recruiter", job.get("recruiter"))
                 ))
             conn.commit()
         conn.close()
@@ -1880,11 +1891,59 @@ def handle_status_update(query, status, notes=None):
             VALUES (?, ?, ?, ?, ?, ?, ?, 'system')
         """, (job_id, status, review_status, action, disposition, notes, now_str))
         
+    # Retrieve updated row for CSV synchronization
+    cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
+    db_row = cursor.fetchone()
+    
+    # Map DB row keys to CSV headers
+    db_to_csv_mapping = {
+        "job_id": "Job ID",
+        "review_status": "Review Status",
+        "job_type": "Job Type",
+        "company": "Company",
+        "position": "Position",
+        "location": "Location",
+        "url": "URL",
+        "provider": "Provider",
+        "source_pdf": "Source PDF",
+        "confidence": "Confidence",
+        "fit_score": "Fit Score",
+        "priority": "Priority",
+        "company_type": "Company Type",
+        "recommendation": "Recommendation",
+        "tracker_status": "Tracker Status",
+        "disposition": "Disposition",
+        "action": "Action",
+        "existing_company": "Existing Company",
+        "reason": "Reason",
+        "matched_skills": "Matched Skills",
+        "missing_skills": "Missing Skills",
+        "date_added": "Date Added",
+        "notes": "Notes"
+    }
+    
+    csv_row = {}
+    if db_row:
+        # Get column names from cursor description
+        columns = [col[0] for col in cursor.description]
+        db_dict = dict(zip(columns, db_row))
+        for db_k, csv_k in db_to_csv_mapping.items():
+            csv_row[csv_k] = db_dict.get(db_k, "")
+            
+        # Compute Age (days)
+        today = date.today()
+        date_added_str = csv_row.get("Date Added", "")
+        try:
+            added = date.fromisoformat(date_added_str)
+            csv_row["Age (days)"] = (today - added).days
+        except (ValueError, TypeError):
+            csv_row["Age (days)"] = ""
+            
     conn.commit()
     conn.close()
     
     # Update master_tracker.csv
-    if os.path.exists(tracker_path):
+    if os.path.exists(tracker_path) and csv_row:
         rows = []
         updated = False
         with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
@@ -1901,11 +1960,20 @@ def handle_status_update(query, status, notes=None):
                     updated = True
                 rows.append(row)
                 
-        if updated:
-            with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
+        if not updated:
+            rows.append(csv_row)
+            
+        # Sort rows: Fit Score desc, Recommendation desc, Company asc
+        rows.sort(key=lambda x: (
+            -int(x.get("Fit Score", 0) if x.get("Fit Score") else 0),
+            x.get("Recommendation", ""),
+            x.get("Company", "").lower()
+        ))
+        
+        with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(rows)
                 
     console.print("\n[bold green]✓ Updated[/bold green]\n")
     console.print(f"  [bold]Company:[/bold]       {company}")
@@ -1921,6 +1989,186 @@ def handle_status_update(query, status, notes=None):
     return True
 
 
+def handle_manual_add():
+    console.print("\n[bold green]=== Add Manual Opportunity ===[/bold green]\n")
+    
+    # Prompt for fields
+    company = ""
+    while not company:
+        company = input("Company: ").strip()
+        if not company:
+            console.print("[red]Company name is required.[/red]")
+            
+    position = ""
+    while not position:
+        position = input("Position: ").strip()
+        if not position:
+            console.print("[red]Position is required.[/red]")
+            
+    location = input("Location [default: Remote]: ").strip()
+    if not location:
+        location = "Remote"
+        
+    job_type = input("Job Type (1: Software Engineer, 2: Operations) [default: 1]: ").strip()
+    if job_type == "2" or job_type.lower() == "operations":
+        job_type = "Operations"
+    else:
+        job_type = "Software Engineer"
+        
+    provider = input("Source Type / Provider (e.g. PDF Import, Recruiter, Company Website, Referral, Manual) [default: Manual]: ").strip()
+    if not provider:
+        provider = "Manual"
+        
+    recruiter = input("Recruiter [optional]: ").strip()
+    url = input("URL [optional]: ").strip()
+    
+    fit_score_str = input("Fit Score (1-100) [default: 70]: ").strip()
+    try:
+        fit_score = int(fit_score_str)
+    except ValueError:
+        fit_score = 70
+        
+    recommendation = input("Recommendation (e.g. ★★★★★ Apply Now, ★★★★☆ Strong, ★★★☆☆ Maybe) [default: ★★★★☆ Strong]: ").strip()
+    if not recommendation:
+        recommendation = "★★★★☆ Strong"
+        
+    applied_input = input("Applied? (y/n) [default: y]: ").strip().lower()
+    if applied_input == "n":
+        status = "New"
+    else:
+        # Prompt for status in the active statuses list
+        valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+        console.print(f"Select status: {', '.join(valid_statuses)}")
+        status_input = input(f"Status [default: Applied]: ").strip()
+        if status_input in valid_statuses:
+            status = status_input
+        else:
+            status = "Applied"
+            
+    notes = input("Notes: ").strip()
+    
+    # Derived values
+    review_status = "Imported"
+    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+        review_status = "Applied"
+    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+        review_status = "Closed"
+        
+    action = "Apply"
+    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+        action = "Already Applied"
+    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+        action = "Ignore"
+        
+    disposition_map = {
+        "New": "Apply",
+        "Applied": "Waiting",
+        "Phone Screen": "Active",
+        "Technical Interview": "Active",
+        "Recruiter Submitted": "Active",
+        "Waiting": "Active",
+        "Rejected": "Closed",
+        "Cancelled": "Closed",
+        "Ghosted": "Closed",
+        "Expired": "Closed"
+    }
+    disposition = disposition_map.get(status, "Apply")
+    
+    # Existing company check
+    tracker_path = "master_tracker.csv"
+    existing_companies = set()
+    if os.path.exists(tracker_path):
+        try:
+            with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                existing_companies = {row.get("Company", "").strip().lower() for row in reader if row.get("Company")}
+        except Exception:
+            pass
+            
+    known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
+    comp_cleaned = company.strip().lower()
+    if comp_cleaned in known_tracker_companies or comp_cleaned in existing_companies:
+        already_in = "Yes"
+    else:
+        already_in = "No"
+        
+    # Generate job ID
+    import hashlib
+    date_added = datetime.now().strftime("%Y-%m-%d")
+    job_id = hashlib.md5(f"{comp_cleaned}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()[:12]
+    
+    # Priority
+    priority = compute_priority(recommendation, action)
+    
+    # Create the job dictionary
+    job = {
+        "Job ID": job_id,
+        "Review Status": review_status,
+        "Job Type": job_type,
+        "Company": company,
+        "Position": position,
+        "Location": location,
+        "URL": url if url else "N/A",
+        "Provider": provider,
+        "Source PDF": "Manual",
+        "Confidence": "🟢 High",
+        "Fit Score": fit_score,
+        "Priority": priority,
+        "Company Type": "Small / Medium",
+        "Recommendation": recommendation,
+        "Tracker Status": status,
+        "Disposition": disposition,
+        "Action": action,
+        "Existing Company": already_in,
+        "Age (days)": 0,
+        "Reason": "Manual Opportunity",
+        "Matched Skills": "",
+        "Missing Skills": "",
+        "Date Added": date_added,
+        "Notes": notes,
+        "Recruiter": recruiter
+    }
+    
+    # Save/upsert to jobs.db
+    save_to_sqlite("jobs.db", [job])
+    
+    # Append/update master_tracker.csv
+    if os.path.exists(tracker_path):
+        rows = []
+        updated = False
+        with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row["Job ID"] == job_id:
+                    # Update row fields
+                    row["Tracker Status"] = status
+                    row["Review Status"] = review_status
+                    row["Action"] = action
+                    row["Disposition"] = disposition
+                    row["Notes"] = notes
+                    row["Recruiter"] = recruiter
+                    updated = True
+                rows.append(row)
+                
+        if not updated:
+            rows.append(job)
+            
+        # Sort rows: Fit Score desc, Recommendation desc, Company asc
+        rows.sort(key=lambda x: (
+            -int(x.get("Fit Score", 0) if x.get("Fit Score") else 0),
+            x.get("Recommendation", ""),
+            x.get("Company", "").lower()
+        ))
+        
+        with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(rows)
+            
+    console.print(f"\n[bold green]✓ Manually added job '{position}' at '{company}' (ID: {job_id})[/bold green]\n")
+
+
 def main():
 
     import argparse
@@ -1928,11 +2176,16 @@ def main():
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
+    parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
     args = parser.parse_args()
     
+    if args.add:
+        handle_manual_add()
+        return
+        
     if args.today:
         print_today_queue()
         return
@@ -2225,7 +2478,7 @@ def main():
         "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
         "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes"
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter"
     ]
     
     # Compute Age (days) for every row before writing
