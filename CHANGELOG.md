@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.1.3 — 2026-07-06
+
+### Parser & Company Name Validation
+- Blacklisted "just posted" (case-insensitive) to prevent UI posting timestamps from being extracted as company names.
+- Blacklisted exactly "systems" (case-insensitive) to filter out suspicious, truncated company name extraction artifacts.
+
+### Deduplication & Re-suggestion Logic
+- Added logic to automatically re-suggest jobs that were previously marked as "Expired" if they return on a different day.
+- Clears the historical "Expired" status from the SQLite database (`jobs` and `job_workflow` tables) and re-evaluates the role as a new job recommendation.
+- Prevents immediate same-day re-suggestions of active expired jobs to avoid duplicate alerts during consecutive runs on the same day.
+
+---
+
 ## v1.1.2 — 2026-07-03
 
 ### CLI Status Updates

@@ -71,7 +71,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 
 - **Robust PDF extraction** with pytesseract OCR fallback for image-only PDFs
 - **Glassdoor reverse-layout parsing** — handles alert formats where location follows the title
-- **Deterministic dedup** via MD5 hash of Company + Position + Location — stable across daily imports, allowing identical postings to be re-imported as new opportunities after 90 days (with a date-suffixed ID)
+- **Deterministic dedup** via MD5 hash of Company + Position + Location — stable across daily imports, allowing identical postings to be re-imported as new opportunities after 90 days (with a date-suffixed ID) or immediately re-suggested if previously marked as "Expired" and returned on a different day.
 - **Idempotent re-scoring** — editing `config.json` and re-running automatically recalculates all historic rows
 - **Company type detection** — classifies Recruiting Firm, Consulting, Defense, Healthcare, Financial, Enterprise, or Small/Medium from the company name
 - **Local/onsite warnings** — 30-point deduction when postings contain "local candidates", "onsite only", "must relocate", or "no remote"
