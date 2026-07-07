@@ -20,25 +20,48 @@ See **[docs/architecture.md](docs/architecture.md)** for the full pipeline diagr
 
 ## Output
 
-Each run prints a sync report followed by a live application pipeline dashboard:
+Each run prints a sync report followed by a live pipeline health summary and application pipeline dashboard:
 
 ```text
 =========================================
           JOB TRACKER SYNC REPORT        
 =========================================
-New jobs: 18
-Existing jobs: 61
-Already applied: 3
-Closed jobs: 2
-Need review: 24
+Jobs tracked:        199
+New this run:        18
+
+P1 – Apply today:     4
+P2 – Apply this week: 39
+P3 – Investigate:     36
+P4 – Ignore:          95
+
+Applied:             6
+Closed:              18
+Need review:         24
+
+Top Missing Skills:
+  React (8 roles)
+  Docker (5 roles)
+=========================================
+
+=========================================
+            PIPELINE HEALTH              
+=========================================
+Tracked:               199
+Active:                181
+Applied:                 6
+Interviewing:            1
+Closed:                 18
+
+Application Rate:      3.0%
+Interview Rate:       14.3% (1 of 7 active applications)
 =========================================
 
 =========================================
           APPLICATION PIPELINE           
 =========================================
 Active Pipeline
-  Phone Screen:         1
-  Technical Interview:  0
+  Phone Screen:         0
+  Technical Interview:  1
   Recruiter Contact:    1
   Waiting:              0
 
@@ -69,6 +92,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 
 ## Features
 
+- **Pipeline Health Dashboard**: Real-time conversion metrics including Application Rate and Interview Rate to track process trends over time.
 - **Robust PDF extraction** with pytesseract OCR fallback for image-only PDFs
 - **Glassdoor reverse-layout parsing** — handles alert formats where location follows the title
 - **Deterministic dedup** via MD5 hash of Company + Position + Location — stable across daily imports, allowing identical postings to be re-imported as new opportunities after 90 days (with a date-suffixed ID) or immediately re-suggested if previously marked as "Expired" and returned on a different day.
@@ -159,7 +183,14 @@ This discovery reinforced an important architectural principle: job providers of
 
 ## Future Roadmap
 
-- [ ] Unit tests for parsing and scoring logic
+- [x] Unit tests for parsing and scoring logic
+- [ ] **Current Priorities Section**: Display active interviews and pending applications directly under the sync report.
+- [ ] **Pipeline Funnel**: CRM-style conversion stages (Tracked → Applied → Recruiter Screen → Technical → Final → Offer → Accepted).
+- [ ] **Eligible Application Rate**: Exclude Expired, Rejected, Duplicate, or Cancelled postings from the denominator to measure true selection rates.
+- [ ] **Source Performance Breakdown**: Compare response and interview rates by job board (Indeed, LinkedIn, Dice, Manual, Recruiter, etc.).
+- [ ] **Fit Score Distribution**: Group jobs by fit tier (e.g., 90+, 80+, 70+, 60+) to monitor opportunity quality.
+- [ ] **Aging & Follow-up Alerts**: Flag stale opportunities (e.g., New > 30 days, Applied > 14 days, Interview > 7 days) to prompt follow-ups.
+- [ ] **Company Opening Aggregation**: Identify companies with multiple active openings to prioritize target employers.
 - [ ] Sample PDFs with expected parser outputs
 - [ ] AI-assisted classification for fuzzy job postings
 - [ ] AI resume tailoring suggestions based on skill gap analysis

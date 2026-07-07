@@ -2580,6 +2580,34 @@ def main():
     ghosted_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Ghosted")
     expired_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Expired")
 
+    # Calculate Pipeline Health metrics
+    health_imported = len(combined_jobs)
+    health_closed = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted", "Expired"])
+    health_active = health_imported - health_closed
+    health_applied = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Applied")
+    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Technical Interview"])
+    
+    health_active_apps = health_applied + health_interviewing
+    health_app_rate = (health_applied / health_imported * 100) if health_imported > 0 else 0.0
+    health_interview_rate = (health_interviewing / health_active_apps * 100) if health_active_apps > 0 else 0.0
+
+    # Output Console Pipeline Health dashboard
+    console.print("[bold magenta]=========================================[/bold magenta]")
+    console.print("[bold magenta]            PIPELINE HEALTH              [/bold magenta]")
+    console.print("[bold magenta]=========================================[/bold magenta]")
+    console.print(f"Tracked:               [bold cyan]{health_imported}[/bold cyan]")
+    console.print(f"Active:                [bold cyan]{health_active}[/bold cyan]")
+    console.print(f"Applied:               [bold green]{health_applied}[/bold green]")
+    console.print(f"Interviewing:          [bold yellow]{health_interviewing}[/bold yellow]")
+    console.print(f"Closed:                [bold red]{health_closed}[/bold red]")
+    console.print()
+    console.print(f"Application Rate:      [bold green]{health_app_rate:.1f}%[/bold green]")
+    if health_active_apps > 0:
+        console.print(f"Interview Rate:        [bold yellow]{health_interview_rate:.1f}%[/bold yellow] ({health_interviewing} of {health_active_apps} active applications)")
+    else:
+        console.print(f"Interview Rate:        [bold yellow]0.0%[/bold yellow] (0 of 0 active applications)")
+    console.print("[bold magenta]=========================================[/bold magenta]\n")
+
     # Output Console Pipeline dashboard
     console.print("[bold cyan]=========================================[/bold cyan]")
     console.print("[bold cyan]          APPLICATION PIPELINE           [/bold cyan]")
