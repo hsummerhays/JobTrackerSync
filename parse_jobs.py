@@ -707,13 +707,17 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
             "disposition": row[4]
         } for row in cursor.fetchall()}
 
-        # Update jobs in-memory with their persisted workflow state if they are default 'New'
+        # Update jobs in-memory with their persisted workflow state
+        # If the persisted status is an active application state (Applied, Phone Screen, etc.), protect it from being overwritten.
+        applied_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]
         for job in jobs_list:
             jid = job.get("Job ID", job.get("job_id"))
             if jid and jid in persisted_workflows:
                 pw = persisted_workflows[jid]
+                persisted_status = pw.get("tracker_status")
                 current_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
-                if (not current_status or current_status == "New"):
+                
+                if persisted_status in applied_statuses or (not current_status or current_status == "New"):
                     for target_key, source_key in [
                         ("Tracker Status", "tracker_status"),
                         ("Review Status", "review_status"),
