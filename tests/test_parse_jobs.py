@@ -92,7 +92,7 @@ class TestEvaluateJob(unittest.TestCase):
         )
         should_rec, confidence, notes, fit_score, priority, company_type, rec, reason, matched, missing, job_type = evaluate_job(job)
         self.assertTrue(should_rec)
-        self.assertEqual(confidence, "🟢 High")
+        self.assertEqual(confidence, "100%")
         self.assertEqual(rec, "★★★★★ Apply Now")
         self.assertEqual(priority, "P1 – Apply today")
         self.assertEqual(job_type, "Software Engineer")

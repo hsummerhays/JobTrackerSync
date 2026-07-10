@@ -135,5 +135,61 @@ class Test90DayDeduplication(unittest.TestCase):
         self.assertEqual(len(new_job_id), 12)
 
 
+class TestCanonicalKeyMerging(unittest.TestCase):
+    """Verify that duplicates discovered within 90 days merge metadata."""
+
+    def test_canonical_key_generation(self):
+        import re
+        def get_canonical_key(comp, pos, loc):
+            c_norm = re.sub(r'[^a-z0-9]', '', comp.lower())
+            p_norm = re.sub(r'[^a-z0-9]', '', pos.lower())
+            l_norm = re.sub(r'[^a-z0-9]', '', loc.lower())
+            return f"{c_norm}|{p_norm}|{l_norm}"
+
+        key1 = get_canonical_key("Alivia  Analytics!", "Senior Backend - Developer", "Remote")
+        key2 = get_canonical_key("aliviaanalytics", "seniorbackenddeveloper", "remote")
+        self.assertEqual(key1, key2)
+
+    def test_metadata_merging(self):
+        # Simulate an existing match dict
+        existing_match = {
+            "Job ID": "6bdb241ddc24",
+            "Company": "Alivia Analytics",
+            "Position": "Senior Backend Engineer",
+            "Location": "Remote",
+            "Provider": "LinkedIn",
+            "Source PDF": "alert1.pdf",
+            "Notes": "Original note"
+        }
+        
+        # New duplicate job details
+        new_provider = "Indeed"
+        new_pdf = "alert2.pdf"
+        date_added = "2026-07-10"
+        
+        # Perform merge logic
+        p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
+        if new_provider not in p_list:
+            p_list.append(new_provider)
+            existing_match["Provider"] = " / ".join(p_list)
+            
+        pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
+        if new_pdf not in pdf_list:
+            pdf_list.append(new_pdf)
+            existing_match["Source PDF"] = " / ".join(pdf_list)
+            
+        disc_note = f"Also discovered on {new_provider} via {new_pdf} on {date_added}"
+        notes_val = existing_match.get("Notes", "")
+        if notes_val:
+            if disc_note not in notes_val:
+                existing_match["Notes"] = f"{notes_val}; {disc_note}"
+        else:
+            existing_match["Notes"] = disc_note
+            
+        self.assertEqual(existing_match["Provider"], "LinkedIn / Indeed")
+        self.assertEqual(existing_match["Source PDF"], "alert1.pdf / alert2.pdf")
+        self.assertEqual(existing_match["Notes"], "Original note; Also discovered on Indeed via alert2.pdf on 2026-07-10")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

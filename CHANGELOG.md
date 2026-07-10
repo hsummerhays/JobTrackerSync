@@ -4,6 +4,38 @@ All notable changes to this project are documented here.
 
 ---
 
+## v1.2.0 — 2026-07-10
+
+### Parser & Board Integrations
+- Implemented dedicated layout-aware text parsers for **jobs.utah.gov** (Utah's Daily Job Summary) and **Ladders** daily digest email PDFs.
+- Standardized parser extraction to use source-specific company markers: `Jobs.utah.gov-DailySummary` and `Ladders-DailyDigest`.
+- Cleaned email subject line/notification artifacts (e.g. `Jobs at Brady Corporation` ➔ `Brady Corporation`) from extracted company names.
+- Excluded email headers (e.g. `Your job listings for [Date]`, `job summary`) from valid company name candidates.
+
+### Deduplication & Reconciliation
+- Implemented **CanonicalKey Deduplication & Merging**: Groups identical opportunities by `normalize(employer) + normalize(position) + normalize(location)` within a 90-day window.
+- Rather than discarding duplicates, the system now merges metadata across multiple discovery job boards and source PDF documents (slash-separating values) and appends a chronological discovery trail to `Notes`.
+
+### Traceability & Audit Logs
+- Added deterministic sequential **Source Index Tracing** (e.g. `Source Index: 2-17` representing the 17th job card extracted from the 2nd sorted PDF processed in the folder), prepended to the `Notes` field.
+- PDF file discovery is now sorted alphabetically before iteration to ensure stable source indexing across sync runs.
+
+### Confidence & Recommendation Algorithm
+- Shifted Confidence to a **numeric percentage** representation representing metadata accuracy:
+  - `100%`: Direct employer posting + URL available.
+  - `90%`: Company identified + URL missing.
+  - `70%`: Company name inferred from context.
+  - `40%`: Daily digest / summary email listing (Utah Jobs and Ladders).
+  - `20%`: OCR fallback with sparse content.
+- Updated recommendation rules and `should_recommend` logic to parse and evaluate these numeric confidence values.
+
+### CLI & UI Improvements
+- Fixed Tkinter directory selection lockups on Windows by adding `root.update()`.
+- Implemented clean exit (`sys.exit(0)`) if the user explicitly cancels or closes the GUI folder dialog.
+- Headless console directory selection prompt is bypassed if a valid default directory exists in `config.json`.
+
+---
+
 ## v1.1.3 — 2026-07-06
 
 ### Parser & Company Name Validation

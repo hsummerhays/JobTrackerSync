@@ -28,25 +28,29 @@ The Fit Score is the sum of up to 7 weighted criteria. It is recalculated on eve
 
 ## Confidence
 
-Confidence is derived from whether the role is a priority keyword match AND has matched tech skills AND has a valid URL.
+Confidence represents the estimated accuracy of the parser's extracted metadata and is represented as a percentage value.
 
 | Confidence | Condition |
 |------------|-----------|
-| High | Priority keyword match + tech match + valid URL |
-| Medium | Priority keyword OR tech match |
-| Low | Neither |
+| **100%** | Direct employer posting (Company identified + URL available) |
+| **90%** | Company identified + URL missing |
+| **70%** | Company inferred from context (no explicit company metadata block) |
+| **40%** | Daily digest / summary source (such as `Jobs.utah.gov` and `Ladders`) |
+| **20%** | OCR fallback with sparse content (< 50 chars context) |
 
 ---
 
 ## Recommendation (Stars)
 
+Recommendation categories are determined by combining the **Fit Score** and the numeric **Confidence** level.
+
 | Stars | Label | Condition |
 |-------|-------|-----------|
-| 5 | Apply Now | Fit Score >= 80 AND Confidence = High |
-| 4 | Strong | Fit Score >= 60 |
-| 3 | Maybe | Fit Score >= 40 |
-| 2 | Low | Fit Score >= 20 |
-| 1 | Skip | Fit Score < 20 OR Confidence = Low |
+| 5 | Apply Now | Fit Score >= 80 AND Confidence >= 90% |
+| 4 | Strong | Fit Score >= 60 AND Confidence > 20% |
+| 3 | Maybe | Fit Score >= 40 AND Confidence > 20% |
+| 2 | Low | Fit Score >= 20 AND Confidence > 20% |
+| 1 | Skip | Fit Score < 20 OR Confidence <= 20% |
 
 ---
 

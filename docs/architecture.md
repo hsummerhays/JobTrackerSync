@@ -21,8 +21,8 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         ├─ 3. Validation          (is_valid_company)
         │       └─ Rejects location-only names, sentences, etc.
         │
-        ├─ 4. Deduplication       (job_id = MD5 of company+title+location [+ date if >90 days])
-        │       └─ Skips jobs already in tracker unless older than 90 days (which get unique date-suffixed IDs) or previously marked as "Expired" and returned on a different day (which resets status to "New")
+        ├─ 4. Deduplication       (CanonicalKey = normalize(employer) + normalize(position) + normalize(location))
+        │       └─ Merges metadata (multiple job boards and PDF sources) into the existing record if matched within 90 days. Non-duplicate listings generate a stable 12-char MD5 Job ID hash.
         │
         ├─ 5. Evaluation          (evaluate_job)
         │       ├─ Fit Score (0-100)
@@ -31,6 +31,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         │       ├─ Action (Apply / Contact Recruiter / Review / Ignore)
         │       ├─ Company Type
         │       ├─ Matched / Missing Skills
+        │       ├─ Source Index Trace (e.g. 2-17 prepended to Notes)
         │       └─ Reason (human-readable summary)
         │
         ├─ 6. Existing Tracker Migration  (clean_existing_tracker)
@@ -69,16 +70,16 @@ Each job record in the main `jobs` table carries these fields:
 
 | Field | Description |
 |-------|-------------|
-| `Job ID` | MD5 hash of company + title + location (stable dedup key, with optional date suffix if re-imported after 90 days) |
+| `Job ID` | MD5 hash of company + title + location (with optional date suffix if re-imported after 90 days) |
 | `Review Status` | Workflow state: New, Applied, Imported, Closed |
 | `Job Type` | Software Engineer or Operations (drives scoring criteria) |
-| `Company` | Extracted company name |
+| `Company` | Extracted company name (cleaned of subject/email subject formatting artifacts) |
 | `Position` | Job title |
 | `Location` | City/State or "Remote" |
 | `URL` | Direct application link when available |
-| `Provider` | Source board (Glassdoor, LinkedIn, etc.) |
-| `Source PDF` | Original filename for traceability |
-| `Confidence` | High / Medium / Low |
+| `Provider` | Source board (Glassdoor, LinkedIn, etc., slash-separated if discovered on multiple) |
+| `Source PDF` | Original filename for traceability (slash-separated if discovered on multiple) |
+| `Confidence` | Percentage value representing metadata accuracy (100%, 90%, 70%, 40%, 20%) |
 | `Fit Score` | 0-100 numeric score |
 | `Priority` | P1 - Apply today ... P4 - Ignore |
 | `Company Type` | Recruiting Firm / Consulting / Defense / Healthcare / Financial / Enterprise / Small/Medium |
@@ -157,6 +158,6 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Local-first**: No cloud dependency. All data stays on disk.
 - **Idempotent**: Re-running the sync is safe -- existing rows are re-scored but never duplicated.
 - **Git-ignored secrets**: `config.json`, `master_tracker.csv`, and `jobs.db` are excluded from version control. Templates are committed instead.
-- **MD5 dedup key**: Stable across runs so manually-annotated rows (Tracker Status, Disposition, Notes) are always preserved. Jobs can be re-imported after 90 days using a date-suffixed hash to avoid database conflicts. Furthermore, roles marked as "Expired" are reset and re-suggested if they are found again on a different day.
+- **CanonicalKey Deduplication & Merging**: Rather than creating duplicate entries when the same listing is found across different providers (e.g. Indeed and LinkedIn) or PDF folders within a 90-day window, the system merges their metadata (slash-separating providers/source PDFs and adding discovery note logs) to preserve tracker integrity.
 - **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine.
 - **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run, and SQLite schema migrations are applied dynamically to add new user-state columns if they are missing.
