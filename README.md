@@ -184,6 +184,10 @@ This discovery reinforced an important architectural principle: job providers of
 ## Future Roadmap
 
 - [x] Unit tests for parsing and scoring logic
+- [ ] **Incremental File Syncing**: Hash source PDFs and skip processing any file that hasn't changed since the last run.
+- [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
+- [ ] **Pipeline Parallelism**: Refactor parser into a pipeline separating file discovery, PDF extraction (bounded worker pools to prevent Windows Tcl/Tk hangs), normalization, single-stage deduplication, and database writing.
+- [ ] **Golang Service Extraction**: Port heavy I/O or CPU-bound segments (e.g. PDF text extraction, OCR orchestration) to Go to serve as standalone CLI utilities or worker processes rather than rewriting the entire Python orchestrator.
 - [ ] **Current Priorities Section**: Display active interviews and pending applications directly under the sync report.
 - [ ] **Pipeline Funnel**: CRM-style conversion stages (Tracked → Applied → Recruiter Screen → Technical → Final → Offer → Accepted).
 - [ ] **Eligible Application Rate**: Exclude Expired, Rejected, Duplicate, or Cancelled postings from the denominator to measure true selection rates.

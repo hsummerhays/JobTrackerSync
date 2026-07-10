@@ -188,6 +188,27 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Company Name View more"))
         self.assertFalse(is_valid_company("Company Name See more"))
 
+    def test_rejects_subject_header_artifacts(self):
+        self.assertFalse(is_valid_company("Your job listings for June 22, 2026"))
+        self.assertFalse(is_valid_company("Job listings for you"))
+
+    # --- clean_company_name tests ---
+
+    def test_clean_company_name_jobs_at(self):
+        from parse_jobs import clean_company_name
+        self.assertEqual(clean_company_name("Jobs at Brady Corporation"), "Brady Corporation")
+        self.assertEqual(clean_company_name("  Jobs at Brady Corporation  "), "Brady Corporation")
+
+    def test_clean_company_name_remote_at(self):
+        from parse_jobs import clean_company_name
+        self.assertEqual(clean_company_name("(Remote) at Globe Life"), "Globe Life")
+        self.assertEqual(clean_company_name("at Globe Life"), "Globe Life")
+
+    def test_clean_company_name_hiring_for(self):
+        from parse_jobs import clean_company_name
+        self.assertEqual(clean_company_name("Informativ is hiring for Sr. PHP Engineer"), "Informativ")
+        self.assertEqual(clean_company_name("PlayOn Sports is looking for candidates"), "PlayOn Sports")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
