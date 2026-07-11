@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## v1.2.1 — 2026-07-11
+
+### CLI Improvements
+- Added support for non-interactive job addition (`--add`) using command-line arguments (e.g. `--company`, `--position`, `--location`, `--fit-score`, `--status`, `--notes`).
+- Automatically detect interactive vs. non-interactive modes to bypass prompts and use default values when sufficient fields are supplied.
+
 ---
 
 ## v1.2.0 — 2026-07-10

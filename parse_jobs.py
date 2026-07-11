@@ -2099,64 +2099,142 @@ def handle_status_update(query, status, notes=None):
     return True
 
 
-def handle_manual_add():
+def handle_manual_add(company=None, position=None, location=None, job_type=None, provider=None, recruiter=None, hiring_manager=None, url=None, fit_score=None, recommendation=None, status=None, notes=None, interactive=None):
+    if interactive is None:
+        interactive = not (company and position)
+
     console.print("\n[bold green]=== Add Manual Opportunity ===[/bold green]\n")
     
     # Prompt for fields
-    company = ""
-    while not company:
-        company = input("Company: ").strip()
-        if not company:
-            console.print("[red]Company name is required.[/red]")
+    if not company:
+        if interactive:
+            while not company:
+                company = input("Company: ").strip()
+                if not company:
+                    console.print("[red]Company name is required.[/red]")
+        else:
+            console.print("[red]Company name is required in non-interactive mode.[/red]")
+            return False
+    else:
+        company = company.strip()
             
-    position = ""
-    while not position:
-        position = input("Position: ").strip()
-        if not position:
-            console.print("[red]Position is required.[/red]")
+    if not position:
+        if interactive:
+            while not position:
+                position = input("Position: ").strip()
+                if not position:
+                    console.print("[red]Position is required.[/red]")
+        else:
+            console.print("[red]Position is required in non-interactive mode.[/red]")
+            return False
+    else:
+        position = position.strip()
             
-    location = input("Location [default: Remote]: ").strip()
+    if location is None:
+        if interactive:
+            location = input("Location [default: Remote]: ").strip()
+        else:
+            location = "Remote"
     if not location:
         location = "Remote"
+    else:
+        location = location.strip()
         
-    job_type = input("Job Type (1: Software Engineer, 2: Operations) [default: 1]: ").strip()
-    if job_type == "2" or job_type.lower() == "operations":
+    if job_type is None:
+        if interactive:
+            job_type = input("Job Type (1: Software Engineer, 2: Operations) [default: 1]: ").strip()
+        else:
+            job_type = "Software Engineer"
+    if job_type == "2" or str(job_type).lower() == "operations":
         job_type = "Operations"
     else:
         job_type = "Software Engineer"
         
-    provider = input("Source Type / Provider (e.g. PDF Import, Recruiter, Company Website, Referral, Manual) [default: Manual]: ").strip()
+    if provider is None:
+        if interactive:
+            provider = input("Source Type / Provider (e.g. PDF Import, Recruiter, Company Website, Referral, Manual) [default: Manual]: ").strip()
+        else:
+            provider = "Manual"
     if not provider:
         provider = "Manual"
+    else:
+        provider = provider.strip()
         
-    recruiter = input("Recruiter [optional]: ").strip()
-    hiring_manager = input("Hiring Manager [optional]: ").strip()
-    url = input("URL [optional]: ").strip()
+    if recruiter is None:
+        if interactive:
+            recruiter = input("Recruiter [optional]: ").strip()
+        else:
+            recruiter = ""
+    else:
+        recruiter = recruiter.strip()
+        
+    if hiring_manager is None:
+        if interactive:
+            hiring_manager = input("Hiring Manager [optional]: ").strip()
+        else:
+            hiring_manager = ""
+    else:
+        hiring_manager = hiring_manager.strip()
+        
+    if url is None:
+        if interactive:
+            url = input("URL [optional]: ").strip()
+        else:
+            url = ""
+    else:
+        url = url.strip()
     
-    fit_score_str = input("Fit Score (1-100) [default: 70]: ").strip()
-    try:
-        fit_score = int(fit_score_str)
-    except ValueError:
-        fit_score = 70
+    if fit_score is None:
+        if interactive:
+            fit_score_str = input("Fit Score (1-100) [default: 70]: ").strip()
+            try:
+                fit_score = int(fit_score_str)
+            except ValueError:
+                fit_score = 70
+        else:
+            fit_score = 70
+    else:
+        try:
+            fit_score = int(fit_score)
+        except ValueError:
+            fit_score = 70
         
-    recommendation = input("Recommendation (e.g. ★★★★★ Apply Now, ★★★★☆ Strong, ★★★☆☆ Maybe) [default: ★★★★☆ Strong]: ").strip()
+    if recommendation is None:
+        if interactive:
+            recommendation = input("Recommendation (e.g. ★★★★★ Apply Now, ★★★★☆ Strong, ★★★☆☆ Maybe) [default: ★★★★☆ Strong]: ").strip()
+        else:
+            recommendation = "★★★★☆ Strong"
     if not recommendation:
         recommendation = "★★★★☆ Strong"
-        
-    applied_input = input("Applied? (y/n) [default: y]: ").strip().lower()
-    if applied_input == "n":
-        status = "New"
     else:
-        # Prompt for status in the active statuses list
-        valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
-        console.print(f"Select status: {', '.join(valid_statuses)}")
-        status_input = input(f"Status [default: Applied]: ").strip()
-        if status_input in valid_statuses:
-            status = status_input
+        recommendation = recommendation.strip()
+        
+    if status is None:
+        if interactive:
+            applied_input = input("Applied? (y/n) [default: y]: ").strip().lower()
+            if applied_input == "n":
+                status = "New"
+            else:
+                # Prompt for status in the active statuses list
+                valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+                console.print(f"Select status: {', '.join(valid_statuses)}")
+                status_input = input(f"Status [default: Applied]: ").strip()
+                if status_input in valid_statuses:
+                    status = status_input
+                else:
+                    status = "Applied"
         else:
             status = "Applied"
+    else:
+        status = status.strip()
             
-    notes = input("Notes: ").strip()
+    if notes is None:
+        if interactive:
+            notes = input("Notes: ").strip()
+        else:
+            notes = ""
+    else:
+        notes = notes.strip()
     
     # Derived values
     review_status = "Imported"
@@ -2293,10 +2371,33 @@ def main():
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
+    parser.add_argument("--company", required=False, help="Company name for manual job addition")
+    parser.add_argument("--position", required=False, help="Position title for manual job addition")
+    parser.add_argument("--location", required=False, help="Location for manual job addition")
+    parser.add_argument("--job-type", required=False, help="Job Type (Software Engineer or Operations)")
+    parser.add_argument("--fit-score", required=False, type=int, help="Fit score (1-100)")
+    parser.add_argument("--recommendation", required=False, help="Recommendation (e.g. ★★★★☆ Strong)")
+    parser.add_argument("--provider", required=False, help="Provider / Source Type")
+    parser.add_argument("--recruiter", required=False, help="Recruiter name")
+    parser.add_argument("--hiring-manager", required=False, help="Hiring manager name")
+    parser.add_argument("--url", required=False, help="Job posting URL")
     args = parser.parse_args()
     
     if args.add:
-        handle_manual_add()
+        handle_manual_add(
+            company=args.company,
+            position=args.position,
+            location=args.location,
+            job_type=args.job_type,
+            provider=args.provider,
+            recruiter=args.recruiter,
+            hiring_manager=args.hiring_manager,
+            url=args.url,
+            fit_score=args.fit_score,
+            recommendation=args.recommendation,
+            status=args.status,
+            notes=args.notes
+        )
         return
         
     if args.today:
