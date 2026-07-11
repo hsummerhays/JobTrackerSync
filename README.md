@@ -163,6 +163,18 @@ python parse_jobs.py --update "Hire Feed" --status "Expired"
 
 This will automatically find the matching job, update the database and CSV, and recalculate all derived fields (such as `Review Status`, `Action`, and `Disposition`).
 
+**5. Manually Add Jobs**
+
+You can add a new job to the tracker manually. Run the command without arguments to start the interactive prompt, or provide arguments for a non-interactive addition:
+
+```bash
+# Interactive mode
+python parse_jobs.py --add
+
+# Non-interactive mode (requires at least --company and --position)
+python parse_jobs.py --add --company "Example Corp" --position "Software Engineer" --location "Remote" --status "New" --notes "First contact"
+```
+
 ---
 
 ## Technical Highlights
