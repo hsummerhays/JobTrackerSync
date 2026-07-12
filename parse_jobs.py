@@ -56,7 +56,9 @@ TECH_KEYWORDS = [
 
 TITLE_KEYWORDS = [
     "engineer", "developer", "programmer", "architect", "analyst", "lead",
-    "specialist", "manager", "support", "trainer", "coordinator"
+    "specialist", "manager", "support", "trainer", "coordinator", "mgr",
+    "associate", "worker", "selector", "janitor", "tasker", "operator",
+    "technician", "clerk", "driver", "consultant"
 ]
 
 UI_LABEL_PATTERN = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)'
@@ -1133,10 +1135,12 @@ def detect_provider(text, filename=""):
     full_text = (text + " " + filename).lower()
     if "jobs.utah.gov" in full_text or "utah's daily job summary" in full_text:
         return "jobs.utah.gov"
-    elif "ladders" in full_text or "your skills are in high demand" in full_text:
-        return "Ladders"
     elif "linkedin" in full_text:
         return "LinkedIn"
+    elif "bhe career site" in full_text or "bhe career" in full_text:
+        return "BHE"
+    elif "ladders" in full_text or "your skills are in high demand" in full_text:
+        return "Ladders"
     elif "indeed" in full_text:
         return "Indeed"
     elif "glassdoor" in full_text:
@@ -1262,30 +1266,213 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 })
         return jobs
 
-    if provider == "Ladders":
+    if provider == "BHE":
         jobs = []
         lines = [line.strip() for line in text.split('\n') if line.strip()]
+        start_collecting = False
         for line in lines:
-            match = re.search(r'^(.+?)\s*/\s*(.+?)\s*/\s*(\$\d+K.*)$', line)
-            if match:
-                title = match.group(1).strip()
-                location_raw = match.group(2).strip()
-                salary_raw = match.group(3).strip()
-                location = re.sub(r'\s+', ' ', location_raw)
+            if "we have new jobs that might interest you" in line.lower():
+                start_collecting = True
+                continue
+            if "you can also view all the jobs available" in line.lower() or "you can also view all the jobs" in line.lower():
+                start_collecting = False
+                break
+            if start_collecting:
+                title = re.sub(r'\s+', ' ', line).strip()
+                if title:
+                    jobs.append({
+                        "title": title,
+                        "company": "BHE",
+                        "location": "Unknown",
+                        "provider": "BHE",
+                        "source_pdf": source_pdf,
+                        "url": "N/A",
+                        "raw_context": line
+                    })
+        return jobs
+
+    if provider == "Ladders":
+        jobs = []
+        
+        # Try Format C: Remote Jobs for You (pipe-delimited single-line format)
+        if "remote jobs for" in text.lower():
+            c_text = re.sub(r'[ \t]+', ' ', text)
+            c_text = re.sub(r'(\$\d+K\s*-)\n\s*(\$?\d+K.*)', r'\1 \2', c_text)
+            c_text = re.sub(r'\|\n\s*(\$?\d+K.*)', r'| \1', c_text)
+            c_lines = [line.strip() for line in c_text.split('\n') if line.strip()]
+            
+            start_collecting = False
+            for line in c_lines:
+                if "remote jobs for you:" in line.lower():
+                    start_collecting = True
+                    continue
+                if "do these jobs match what you're looking for" in line.lower() or "find more jobs" in line.lower():
+                    start_collecting = False
+                    break
+                if start_collecting and "|" in line:
+                    parts = [p.strip() for p in line.split("|") if p.strip()]
+                    if len(parts) >= 2:
+                        salary_raw = ""
+                        if re.search(r'\$\d+K', parts[-1]):
+                            salary_raw = parts[-1]
+                            parts = parts[:-1]
+                            
+                        if len(parts) == 1:
+                            title = parts[0]
+                            company = "Unknown"
+                            location = "Remote"
+                        elif len(parts) == 2:
+                            title = parts[0]
+                            company = parts[1]
+                            location = "Remote"
+                        else:
+                            title = parts[0]
+                            company = parts[-1]
+                            location = re.sub(r'\s+', ' ', " ".join(parts[1:-1])).strip()
+                            location = re.sub(r'(?i)v\s*i\s*r\s*t\s*u\s*a\s*l\s*/\s*travel', 'Remote', location)
+                            location = re.sub(r'(?i)v\s*irtual\s*/\s*travel', 'Remote', location)
+                            if not location:
+                                location = "Remote"
+                                
+                        title = re.sub(r'\s+', ' ', title)
+                        company = re.sub(r'\s+', ' ', company)
+                        
+                        jobs.append({
+                            "title": title,
+                            "company": company,
+                            "location": location,
+                            "provider": "Ladders",
+                            "source_pdf": source_pdf,
+                            "url": "https://www.theladders.com",
+                            "raw_context": f"{line} | Company: {company} | Location: {location} | Estimated Salary: {salary_raw}"
+                        })
+            if jobs:
+                return jobs
+                
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        # Try multiline layout formats first
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            
+            # Format A: Title and Salary on one line, Company | Location on next line
+            # e.g., "Applied Scientist             $165K - $206K*"
+            match_a1 = re.search(r'^(.+?)\s{2,}(\$\d+K\s*-\s*\$\d+K.*)$', line)
+            if match_a1:
+                title = match_a1.group(1).strip()
+                salary_raw = match_a1.group(2).strip()
+                if i + 1 < len(lines):
+                    next_line = lines[i+1]
+                    match_a2 = re.search(r'^(.+?)\s*\|\s*(.+)$', next_line)
+                    if match_a2:
+                        company = match_a2.group(1).strip()
+                        location_raw = match_a2.group(2).strip()
+                        
+                        location = re.sub(r'\s+', ' ', location_raw)
+                        location = re.sub(r'(?i)v\s*i\s*r\s*t\s*u\s*a\s*l\s*/\s*travel', 'Remote', location)
+                        location = re.sub(r'(?i)v\s*irtual\s*/\s*travel', 'Remote', location)
+                        location = re.sub(r'(?i)salt\s*lake\s*city\s*,\s*ut', 'Salt Lake City, UT', location)
+                        location = re.sub(r'(?i)draper\s*,\s*ut', 'Draper, UT', location)
+                        location = re.sub(r'\s*,\s*$', '', location)
+                        
+                        title = re.sub(r'\s+', ' ', title)
+                        company = re.sub(r'\s+', ' ', company)
+                        
+                        jobs.append({
+                            "title": title,
+                            "company": company,
+                            "location": location,
+                            "provider": "Ladders",
+                            "source_pdf": source_pdf,
+                            "url": "https://www.theladders.com",
+                            "raw_context": f"{line} | Company: {company} | Location: {location} | Estimated Salary: {salary_raw}"
+                        })
+                        i += 2
+                        continue
+                        
+            # Format B: Salary | Company | Location on one line, Title on preceding lines
+            # e.g., "$180K - $210K* | Teladoc | Remote"
+            match_b = re.search(r'^(\$\d+K\s*-\s*\$\d+K.*)\s*\|\s*(.+?)\s*\|\s*(.+)$', line)
+            if match_b:
+                salary_raw = match_b.group(1).strip()
+                company = match_b.group(2).strip()
+                loc_start = match_b.group(3).strip()
+                
+                # Find location continuation by looking forward until "Apply Now"
+                loc_parts = [loc_start]
+                k = i + 1
+                while k < len(lines):
+                    next_line = lines[k]
+                    if "apply now" in next_line.lower():
+                        break
+                    if "|" in next_line or "jobs posted" in next_line.lower():
+                        break
+                    loc_parts.append(next_line)
+                    k += 1
+                location = " ".join(loc_parts).strip()
+                location = re.sub(r'\s+', ' ', location)
                 location = re.sub(r'(?i)v\s*i\s*r\s*t\s*u\s*a\s*l\s*/\s*travel', 'Remote', location)
+                location = re.sub(r'(?i)v\s*irtual\s*/\s*travel', 'Remote', location)
                 location = re.sub(r'(?i)salt\s*lake\s*city\s*,\s*ut', 'Salt Lake City, UT', location)
                 location = re.sub(r'(?i)draper\s*,\s*ut', 'Draper, UT', location)
                 location = re.sub(r'\s*,\s*$', '', location)
+                
+                # Find title by looking backward
+                title_parts = []
+                j = i - 1
+                while j >= 0:
+                    prev_line = lines[j]
+                    if "apply now" in prev_line.lower() or "jobs posted" in prev_line.lower() or "hot remote" in prev_line.lower() or "hot companies" in prev_line.lower() or "|" in prev_line:
+                        break
+                    if "http" in prev_line or "gmail -" in prev_line.lower() or "1 message" in prev_line or re.search(r'\b\d+/\d+\b', prev_line):
+                        j -= 1
+                        continue
+                    title_parts.insert(0, prev_line)
+                    j -= 1
+                title = " ".join(title_parts).strip()
                 title = re.sub(r'\s+', ' ', title)
-                jobs.append({
-                    "title": title,
-                    "company": "Ladders-DailyDigest",
-                    "location": location,
-                    "provider": "Ladders",
-                    "source_pdf": source_pdf,
-                    "url": "https://www.theladders.com",
-                    "raw_context": f"{line} | Estimated Salary: {salary_raw}"
-                })
+                company = re.sub(r'\s+', ' ', company)
+                
+                if title:
+                    jobs.append({
+                        "title": title,
+                        "company": company,
+                        "location": location,
+                        "provider": "Ladders",
+                        "source_pdf": source_pdf,
+                        "url": "https://www.theladders.com",
+                        "raw_context": f"{line} | Company: {company} | Location: {location} | Estimated Salary: {salary_raw}"
+                    })
+                    # We consumed the location lines, so fast-forward i to k
+                    i = k
+                    continue
+                    
+            i += 1
+            
+        # If no jobs found with layout parser, fallback to single-line format
+        if not jobs:
+            for line in lines:
+                match = re.search(r'^(.+?)\s*/\s*(.+?)\s*/\s*(\$\d+K.*)$', line)
+                if match:
+                    title = match.group(1).strip()
+                    location_raw = match.group(2).strip()
+                    salary_raw = match.group(3).strip()
+                    location = re.sub(r'\s+', ' ', location_raw)
+                    location = re.sub(r'(?i)v\s*i\s*r\s*t\s*u\s*a\s*l\s*/\s*travel', 'Remote', location)
+                    location = re.sub(r'(?i)salt\s*lake\s*city\s*,\s*ut', 'Salt Lake City, UT', location)
+                    location = re.sub(r'(?i)draper\s*,\s*ut', 'Draper, UT', location)
+                    location = re.sub(r'\s*,\s*$', '', location)
+                    title = re.sub(r'\s+', ' ', title)
+                    jobs.append({
+                        "title": title,
+                        "company": "Ladders-DailyDigest",
+                        "location": location,
+                        "provider": "Ladders",
+                        "source_pdf": source_pdf,
+                        "url": "https://www.theladders.com",
+                        "raw_context": f"{line} | Estimated Salary: {salary_raw}"
+                    })
         return jobs
 
     lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -2457,157 +2644,170 @@ def main():
     raw_collected_jobs = {}  # job_id -> job dict
     empty_pdfs = []
     
-    for root, dirs, files in os.walk(pdf_dir):
-        pdf_files = sorted([f for f in files if f.lower().endswith('.pdf')])
-        if not pdf_files:
-            continue
-            
-        found_any_pdf = True
-        
-        # Check if the folder name is a valid date
-        folder_name = os.path.basename(os.path.abspath(root))
-        date_added = None
-        for fmt in ("%Y-%m-%d", "%Y%m%d", "%m-%d-%Y", "%d-%m-%Y"):
-            try:
-                dt = datetime.strptime(folder_name, fmt)
-                date_added = dt.strftime("%Y-%m-%d")
-                break
-            except ValueError:
-                pass
+    try:
+        for root, dirs, files in os.walk(pdf_dir):
+            pdf_files = sorted([f for f in files if f.lower().endswith('.pdf')])
+            if not pdf_files:
+                continue
                 
-        if not date_added:
-            date_added = datetime.now().strftime("%Y-%m-%d")
+            found_any_pdf = True
             
-        console.print(f"[blue]Processing {len(pdf_files)} PDF files in {root} (Date Added: {date_added})...[/blue]")
-        
-        for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
-            pdf_path = os.path.join(root, pdf_file)
-            console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
-            
-            try:
-                reader = pypdf.PdfReader(pdf_path)
-                full_text = ""
-                for page in reader.pages:
-                    t = page.extract_text(extraction_mode='layout')
-                    if t:
-                        full_text += t + "\n"
-                        
-                if not full_text.strip():
-                    console.print(f"[yellow]No selectable text in {pdf_file}. Falling back to OCR...[/yellow]")
-                    full_text = perform_ocr(pdf_path)
+            # Check if the folder name is a valid date
+            folder_name = os.path.basename(os.path.abspath(root))
+            date_added = None
+            for fmt in ("%Y-%m-%d", "%Y%m%d", "%m-%d-%Y", "%d-%m-%Y"):
+                try:
+                    dt = datetime.strptime(folder_name, fmt)
+                    date_added = dt.strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    pass
                     
-                provider = detect_provider(full_text, pdf_file)
+            if not date_added:
+                date_added = datetime.now().strftime("%Y-%m-%d")
                 
-                pdf_jobs_count = 0
-                job_idx = 1
-                for page_num, page in enumerate(reader.pages):
-                    page_text = page.extract_text(extraction_mode='layout')
-                    if not page_text or not page_text.strip():
-                        continue
+            console.print(f"[blue]Processing {len(pdf_files)} PDF files in {root} (Date Added: {date_added})...[/blue]")
+            
+            for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
+                pdf_path = os.path.join(root, pdf_file)
+                console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
+                
+                try:
+                    reader = pypdf.PdfReader(pdf_path)
+                    full_text = ""
+                    for page in reader.pages:
+                        t = page.extract_text(extraction_mode='layout')
+                        if t:
+                            full_text += t + "\n"
+                            
+                    if not full_text.strip():
+                        console.print(f"[yellow]No selectable text in {pdf_file}. Falling back to OCR...[/yellow]")
+                        full_text = perform_ocr(pdf_path)
                         
-                    page_urls = extract_job_urls_from_page(page)
-                    jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=pdf_file)
-                    pdf_jobs_count += len(jobs)
+                    provider = detect_provider(full_text, pdf_file)
                     
-                    for idx, job in enumerate(jobs):
-                        job["source_index"] = f"{pdf_idx}-{job_idx}"
-                        job_idx += 1
-                        # Map parsed job to top-to-bottom page annotation URL
-                        if job.get("url", "N/A") == "N/A" and idx < len(page_urls):
-                            job["url"] = page_urls[idx]
+                    pdf_jobs_count = 0
+                    job_idx = 1
+                    for page_num, page in enumerate(reader.pages):
+                        page_text = page.extract_text(extraction_mode='layout')
+                        if not page_text or not page_text.strip():
+                            continue
                             
-                        # Compute Job ID
-                        import hashlib
-                        if "dailysummary" in job['company'].lower() or "dailydigest" in job['company'].lower():
-                            hash_input = f"{job['company'].strip().lower()}|{date_added}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
-                        else:
-                            hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
-                        job_id = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
+                        page_urls = extract_job_urls_from_page(page)
+                        jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=pdf_file)
+                        pdf_jobs_count += len(jobs)
                         
-                        # Deduplicate before review using Canonical Key
-                        def get_canonical_key(comp, pos, loc):
-                            c_norm = re.sub(r'[^a-z0-9]', '', comp.lower())
-                            p_norm = re.sub(r'[^a-z0-9]', '', pos.lower())
-                            l_norm = re.sub(r'[^a-z0-9]', '', loc.lower())
-                            return f"{c_norm}|{p_norm}|{l_norm}"
+                        for idx, job in enumerate(jobs):
+                            job["source_index"] = f"{pdf_idx}-{job_idx}"
+                            job_idx += 1
+                            # Map parsed job to top-to-bottom page annotation URL
+                            if job.get("url", "N/A") == "N/A" and idx < len(page_urls):
+                                job["url"] = page_urls[idx]
+                                
+                            # Compute Job ID
+                            import hashlib
+                            if "dailysummary" in job['company'].lower() or "dailydigest" in job['company'].lower():
+                                hash_input = f"{job['company'].strip().lower()}|{date_added}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
+                            else:
+                                hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
+                            job_id = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
                             
-                        current_canonical = get_canonical_key(job['company'], job['title'], job['location'])
-                        
-                        is_duplicate = False
-                        existing_match = None
-                        
-                        # 1. Check existing_jobs for canonical match
-                        for ej_id, ej in existing_jobs.items():
-                            ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
-                            if ej_canonical == current_canonical:
-                                existing_date_str = ej.get("Date Added", "")
-                                try:
-                                    existing_date = date.fromisoformat(existing_date_str)
-                                    current_date = date.fromisoformat(date_added)
-                                    if (current_date - existing_date).days <= 90:
+                            # Deduplicate before review using Canonical Key
+                            def get_canonical_key(comp, pos, loc):
+                                c_norm = re.sub(r'[^a-z0-9]', '', comp.lower())
+                                p_norm = re.sub(r'[^a-z0-9]', '', pos.lower())
+                                l_norm = re.sub(r'[^a-z0-9]', '', loc.lower())
+                                return f"{c_norm}|{p_norm}|{l_norm}"
+                                
+                            current_canonical = get_canonical_key(job['company'], job['title'], job['location'])
+                            
+                            is_duplicate = False
+                            existing_match = None
+                            
+                            # 1. Check existing_jobs for canonical match
+                            for ej_id, ej in existing_jobs.items():
+                                ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
+                                if ej_canonical == current_canonical:
+                                    existing_date_str = ej.get("Date Added", "")
+                                    try:
+                                        existing_date = date.fromisoformat(existing_date_str)
+                                        current_date = date.fromisoformat(date_added)
+                                        if (current_date - existing_date).days <= 90:
+                                            existing_match = ej
+                                            is_duplicate = True
+                                            break
+                                    except (ValueError, TypeError):
                                         existing_match = ej
                                         is_duplicate = True
                                         break
-                                except (ValueError, TypeError):
-                                    existing_match = ej
-                                    is_duplicate = True
-                                    break
-                                    
-                        # 2. Check raw_collected_jobs for canonical match
-                        if not is_duplicate:
-                            for rj_id, rj_item in raw_collected_jobs.items():
-                                rj_job = rj_item["job"]
-                                rj_canonical = get_canonical_key(rj_job['company'], rj_job['title'], rj_job['location'])
-                                if rj_canonical == current_canonical:
-                                    # Merge into the raw_collected_job
-                                    is_duplicate = True
-                                    p_list = [p.strip() for p in rj_job.get("provider", "").split("/") if p.strip()]
-                                    if job['provider'] not in p_list:
-                                        p_list.append(job['provider'])
-                                        rj_job["provider"] = " / ".join(p_list)
                                         
-                                    pdf_list = [pdf.strip() for pdf in rj_job.get("source_pdf", "").split("/") if pdf.strip()]
-                                    if job['source_pdf'] not in pdf_list:
-                                        pdf_list.append(job['source_pdf'])
-                                        rj_job["source_pdf"] = " / ".join(pdf_list)
-                                    break
+                            # 2. Check raw_collected_jobs for canonical match
+                            if not is_duplicate:
+                                for rj_id, rj_item in raw_collected_jobs.items():
+                                    rj_job = rj_item["job"]
+                                    rj_canonical = get_canonical_key(rj_job['company'], rj_job['title'], rj_job['location'])
+                                    if rj_canonical == current_canonical:
+                                        # Merge into the raw_collected_job
+                                        is_duplicate = True
+                                        p_list = [p.strip() for p in rj_job.get("provider", "").split("/") if p.strip()]
+                                        if job['provider'] not in p_list:
+                                            p_list.append(job['provider'])
+                                            rj_job["provider"] = " / ".join(p_list)
+                                            
+                                        pdf_list = [pdf.strip() for pdf in rj_job.get("source_pdf", "").split("/") if pdf.strip()]
+                                        if job['source_pdf'] not in pdf_list:
+                                            pdf_list.append(job['source_pdf'])
+                                            rj_job["source_pdf"] = " / ".join(pdf_list)
+                                        break
+                                        
+                            if existing_match:
+                                # Merge metadata into the existing database/CSV record
+                                p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
+                                if job['provider'] not in p_list:
+                                    p_list.append(job['provider'])
+                                    existing_match["Provider"] = " / ".join(p_list)
                                     
-                        if existing_match:
-                            # Merge metadata into the existing database/CSV record
-                            p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
-                            if job['provider'] not in p_list:
-                                p_list.append(job['provider'])
-                                existing_match["Provider"] = " / ".join(p_list)
-                                
-                            pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
-                            if job['source_pdf'] not in pdf_list:
-                                pdf_list.append(job['source_pdf'])
-                                existing_match["Source PDF"] = " / ".join(pdf_list)
-                                
-                            # Append a discovery note if it doesn't already exist
-                            disc_note = f"Also discovered on {job['provider']} via {job['source_pdf']} on {date_added}"
-                            notes_val = existing_match.get("Notes", "")
-                            if notes_val:
-                                if disc_note not in notes_val:
-                                    existing_match["Notes"] = f"{notes_val}; {disc_note}"
-                            else:
-                                existing_match["Notes"] = disc_note
-                                
-                        if is_duplicate or job_id in raw_collected_jobs:
-                            continue
-                        
-                        # Store for review phase
-                        raw_collected_jobs[job_id] = {
-                            "job": job,
-                            "job_id": job_id,
-                            "date_added": date_added
-                        }
-                if pdf_jobs_count == 0:
-                    import pathlib
-                    empty_pdfs.append(pathlib.Path(pdf_path).as_uri())
-            except Exception as e:
-                console.print(f"[red]Error parsing {pdf_file}: {e}[/red]")
-                
+                                pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
+                                if job['source_pdf'] not in pdf_list:
+                                    pdf_list.append(job['source_pdf'])
+                                    existing_match["Source PDF"] = " / ".join(pdf_list)
+                                    
+                                # Append a discovery note if it doesn't already exist
+                                disc_note = f"Also discovered on {job['provider']} via {job['source_pdf']} on {date_added}"
+                                notes_val = existing_match.get("Notes", "")
+                                if notes_val:
+                                    if disc_note not in notes_val:
+                                        existing_match["Notes"] = f"{notes_val}; {disc_note}"
+                                else:
+                                    existing_match["Notes"] = disc_note
+                                    
+                            if is_duplicate or job_id in raw_collected_jobs:
+                                continue
+                            
+                            # Store for review phase
+                            raw_collected_jobs[job_id] = {
+                                "job": job,
+                                "job_id": job_id,
+                                "date_added": date_added
+                            }
+                    if pdf_jobs_count == 0:
+                        # Check if this empty PDF is a known non-job file to suppress warning
+                        filename_lower = pdf_file.lower()
+                        ignored_patterns = [
+                            "resume report",
+                            "weekly digest",
+                            "northrop grumman",
+                            "remote jobs that"
+                        ]
+                        if not any(pat in filename_lower for pat in ignored_patterns):
+                            import pathlib
+                            empty_pdfs.append(pathlib.Path(pdf_path).as_uri())
+                except Exception as e:
+                    console.print(f"[red]Error parsing {pdf_file}: {e}[/red]")
+    except KeyboardInterrupt:
+        console.print("\n[bold yellow]Scan interrupted by user (Ctrl+C). Saving progress for already parsed jobs...[/bold yellow]")
+        found_any_pdf = True # Fall through to save phase
+        
     if not found_any_pdf:
         console.print(f"[yellow]No PDF files found in {pdf_dir}[/yellow]")
         return
