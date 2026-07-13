@@ -2624,27 +2624,25 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
 
 def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     """
-    Print a 'Today's Highlights' briefing — the most exciting new opportunities
-    surfaced by this sync run, plus contextual insights drawn from prior history.
-    Called at the end of every sync so you always know if there's something worth
-    your attention without scrolling through the full table.
+    Print a 'Today's Highlights' briefing — top un-actioned opportunities from
+    the full tracker, with new-this-run jobs called out separately.
+    Always appears as the terminal's final section.
     """
-    # Only the genuinely new jobs from this run
-    four_plus = [
-        j for j in new_jobs
-        if "★★★★★" in j.get("Recommendation", "") or "★★★★☆" in j.get("Recommendation", "")
-    ]
-    four_plus.sort(key=lambda x: (-int(x.get("Fit Score", 0) or 0), x.get("Recommendation", "")))
+    new_job_ids = {j.get("Job ID", "") for j in new_jobs}
 
-    if not four_plus and not new_jobs:
-        # Nothing new — still show the section so the terminal always ends the same way
-        console.print("\n[bold yellow]TODAY'S HIGHLIGHTS[/bold yellow]")
-        console.print("[dim]  No new jobs this sync. Check back tomorrow.[/dim]\n")
-        return
+    # Top un-actioned ★★★★☆+ jobs from the FULL tracker (not just this run)
+    # Pattern ★★★★★ always surfaces here as long as it hasn't been acted on
+    unactioned = [
+        j for j in combined_jobs
+        if j.get("Tracker Status") == "New"
+        and ("★★★★★" in j.get("Recommendation", "") or "★★★★☆" in j.get("Recommendation", ""))
+    ]
+    unactioned.sort(key=lambda x: (-int(x.get("Fit Score", 0) or 0), x.get("Recommendation", "")))
+    top_jobs = unactioned[:8]
 
     # --- Build insight data ---
 
-    # 1. Companies previously interviewed at (Phone Screen or Technical Interview in job_workflow)
+    # Companies previously interviewed at
     prior_interview_companies = set()
     try:
         conn = sqlite3.connect(db_path)
@@ -2659,20 +2657,21 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     except Exception:
         pass
 
-    # 2. Brand-new companies (Existing Company = No in new recs, not seen in combined at all)
-    existing_company_names = {
+    # Brand-new companies: in top_jobs AND new this run AND not in pre-run tracker
+    existing_before_run = {
         r.get("Company", "").strip().lower()
         for r in combined_jobs
-        if r not in new_jobs  # existing rows only
+        if r.get("Job ID", "") not in new_job_ids
     }
     new_companies = [
-        j for j in four_plus
-        if j.get("Company", "").strip().lower() not in existing_company_names
+        j for j in top_jobs
+        if j.get("Job ID", "") in new_job_ids
+        and j.get("Company", "").strip().lower() not in existing_before_run
     ]
 
-    # 3. Key skill matches in new recs (highlight the ones people actually care about)
+    # Key skill matches among new-this-run jobs only
     HIGHLIGHT_SKILLS = [".net", "c#", "spring boot", "java", "react", "aws", "azure"]
-    skill_hits = {}  # skill -> list of company names
+    skill_hits = {}
     for j in new_jobs:
         matched = j.get("Matched Skills", "").lower()
         notes   = j.get("Notes", "").lower()
@@ -2681,7 +2680,7 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
             if skill in matched or skill in notes:
                 skill_hits.setdefault(skill, []).append(company)
 
-    # 4. Previously-interviewed companies appearing in new recs
+    # Previously-interviewed companies in new-this-run recs
     reunion_jobs = [
         j for j in new_jobs
         if j.get("Company", "").strip().lower() in prior_interview_companies
@@ -2692,25 +2691,29 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     console.print("[bold yellow]║           TODAY'S HIGHLIGHTS                 ║[/bold yellow]")
     console.print("[bold yellow]╠══════════════════════════════════════════════╣[/bold yellow]")
 
-    if four_plus:
-        for j in four_plus:
-            stars = "★★★★★" if "★★★★★" in j.get("Recommendation", "") else "★★★★☆"
+    if top_jobs:
+        for j in top_jobs:
+            is_new   = j.get("Job ID", "") in new_job_ids
+            stars    = "★★★★★" if "★★★★★" in j.get("Recommendation", "") else "★★★★☆"
             company  = j.get("Company", "Unknown")
             position = j.get("Position", "")
             score    = j.get("Fit Score", "")
             location = j.get("Location", "")
-            color = "bold green" if "★★★★★" in stars else "green"
-            console.print(f"[bold yellow]║[/bold yellow]  [{color}]{stars}[/{color}]  [bold]{company}[/bold] — {position}")
+            color    = "bold green" if "★★★★★" in stars else "green"
+            tag      = " [bold cyan]NEW[/bold cyan]" if is_new else ""
+            console.print(f"[bold yellow]║[/bold yellow]  [{color}]{stars}[/{color}]{tag}  [bold]{company}[/bold] — {position}")
             console.print(f"[bold yellow]║[/bold yellow]         [dim]{location}  •  Fit: {score}[/dim]")
     else:
-        console.print("[bold yellow]║[/bold yellow]  [dim]No ★★★★☆+ recommendations this run[/dim]")
+        console.print("[bold yellow]║[/bold yellow]  [dim]No ★★★★☆+ unactioned jobs in your queue[/dim]")
 
     console.print("[bold yellow]╠══════════════════════════════════════════════╣[/bold yellow]")
 
     insights = []
     total_new = len(new_jobs)
-    if total_new:
-        insights.append(f"[cyan]{total_new}[/cyan] new job{'s' if total_new != 1 else ''} imported this run")
+    insights.append(
+        f"[cyan]{total_new}[/cyan] new job{'s' if total_new != 1 else ''} imported this run"
+        if total_new else "[dim]No new jobs this run[/dim]"
+    )
     if new_companies:
         names = ", ".join(j.get("Company", "") for j in new_companies[:3])
         extra = f" (+{len(new_companies)-3} more)" if len(new_companies) > 3 else ""
@@ -2720,13 +2723,10 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
         insights.append(f"[cyan]{len(companies)}[/cyan] job{'s' if len(companies) != 1 else ''} matching {display}")
     if reunion_jobs:
         names = ", ".join(j.get("Company", "") for j in reunion_jobs[:2])
-        insights.append(f"[cyan]{len(reunion_jobs)}[/cyan] job{'s' if len(reunion_jobs) != 1 else ''} from {'companies' if len(reunion_jobs) != 1 else 'a company'} you've previously interviewed at: {names}")
+        insights.append(f"[cyan]{len(reunion_jobs)}[/cyan] from a company you've previously interviewed at: {names}")
 
-    if insights:
-        for line in insights:
-            console.print(f"[bold yellow]║[/bold yellow]  {line}")
-    else:
-        console.print("[bold yellow]║[/bold yellow]  [dim]No notable patterns detected[/dim]")
+    for line in insights:
+        console.print(f"[bold yellow]║[/bold yellow]  {line}")
 
     console.print("[bold yellow]╚══════════════════════════════════════════════╝[/bold yellow]\n")
 
