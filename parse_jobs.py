@@ -4,7 +4,7 @@ import re
 import csv
 import json
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import pypdf
 from rich.console import Console
 from rich.table import Table
@@ -118,6 +118,68 @@ LEGACY_KEYWORDS = [
 
 # FAANG scale companies for Rule 12 comparison
 FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "Microsoft"]
+
+# Incremental sync: bump this whenever a parser change should force re-processing of unchanged PDFs.
+PARSER_VERSION = "1.2.1"
+
+
+def hash_pdf_file(pdf_path):
+    """Return a stable content hash (MD5) for a PDF file, or None on error."""
+    import hashlib
+    try:
+        hasher = hashlib.md5()
+        with open(pdf_path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except OSError:
+        return None
+
+
+def initialize_processed_files_table(conn):
+    """Create the processed_files table if it does not yet exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS processed_files (
+            file_hash       TEXT NOT NULL,
+            parser_version  TEXT NOT NULL,
+            file_path       TEXT,
+            file_size       INTEGER,
+            modified_time   REAL,
+            processed_at    TEXT,
+            status          TEXT,
+            error_message   TEXT,
+            PRIMARY KEY (file_hash, parser_version)
+        )
+    """)
+    conn.commit()
+
+
+def check_pdf_processed(conn, file_hash, parser_version):
+    """Return True if this hash+version was previously processed successfully."""
+    row = conn.execute(
+        "SELECT status FROM processed_files WHERE file_hash = ? AND parser_version = ?",
+        (file_hash, parser_version)
+    ).fetchone()
+    return row is not None and row[0] == "success"
+
+
+def record_pdf_processed(conn, file_hash, parser_version, file_path, file_size, modified_time, status, error_message=None):
+    """Upsert a processed_files record after a PDF has been handled."""
+    conn.execute("""
+        INSERT INTO processed_files (file_hash, parser_version, file_path, file_size, modified_time, processed_at, status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_hash, parser_version) DO UPDATE SET
+            file_path      = excluded.file_path,
+            file_size      = excluded.file_size,
+            modified_time  = excluded.modified_time,
+            processed_at   = excluded.processed_at,
+            status         = excluded.status,
+            error_message  = excluded.error_message
+    """, (
+        file_hash, parser_version, file_path, file_size, modified_time,
+        datetime.now(timezone.utc).isoformat(), status, error_message
+    ))
+    conn.commit()
 
 def clean_company_name(comp):
     if not comp:
@@ -664,6 +726,9 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
             )
         """)
 
+        # Create processed_files table for incremental sync
+        initialize_processed_files_table(conn)
+
         # Migrate data from old job_status table if it exists
         try:
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='job_status'")
@@ -991,8 +1056,9 @@ def load_tracker(tracker_path):
                     pos = row.get("Position", "").strip().lower()
                     loc = row.get("Location", "").strip().lower()
                     job_id = hashlib.md5(f"{comp}|{pos}|{loc}".encode('utf-8')).hexdigest()[:12]
-                existing_jobs[job_id] = row
+                existing_jobs[(job_id, row.get("Date Added", ""))] = row
     return existing_jobs
+
 
 def load_config():
     """Load config file to retrieve last used folder and job type criteria."""
@@ -2635,11 +2701,27 @@ def main():
     initialize_tracker(tracker_path)
     clean_existing_tracker(tracker_path)
     existing_jobs = load_tracker(tracker_path)
-    
+
+    # Open the DB early so we can use processed_files for incremental sync
+    import time as _time
+    _sync_start = _time.monotonic()
+    _db_conn = sqlite3.connect("jobs.db")
+    initialize_processed_files_table(_db_conn)
+
+    # Run-level statistics collected during the scan
+    run_stats = {
+        "pdfs_discovered": 0,
+        "pdfs_skipped":    0,
+        "pdfs_processed":  0,
+        "jobs_created":    0,
+        "jobs_merged":     0,
+        "files_failed":    0,
+    }
+
     returned_expired_ids = set()
     all_recommendations = []
     found_any_pdf = False
-    
+
     # Store all unique job cards collected during the scan before reviewing
     raw_collected_jobs = {}  # job_id -> job dict
     empty_pdfs = []
@@ -2667,43 +2749,53 @@ def main():
                 date_added = datetime.now().strftime("%Y-%m-%d")
                 
             console.print(f"[blue]Processing {len(pdf_files)} PDF files in {root} (Date Added: {date_added})...[/blue]")
-            
+            run_stats["pdfs_discovered"] += len(pdf_files)
+
             for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
                 pdf_path = os.path.join(root, pdf_file)
+
+                # --- Incremental sync: skip if content+parser-version unchanged ---
+                pdf_hash = hash_pdf_file(pdf_path)
+                if pdf_hash and check_pdf_processed(_db_conn, pdf_hash, PARSER_VERSION):
+                    console.print(f"[dim]Skipping {pdf_file} (unchanged)[/dim]")
+                    run_stats["pdfs_skipped"] += 1
+                    continue
+
                 console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
-                
+
                 try:
+                    pdf_stat = os.stat(pdf_path)
                     reader = pypdf.PdfReader(pdf_path)
                     full_text = ""
                     for page in reader.pages:
                         t = page.extract_text(extraction_mode='layout')
                         if t:
                             full_text += t + "\n"
-                            
+
                     if not full_text.strip():
                         console.print(f"[yellow]No selectable text in {pdf_file}. Falling back to OCR...[/yellow]")
                         full_text = perform_ocr(pdf_path)
-                        
+
                     provider = detect_provider(full_text, pdf_file)
-                    
+
                     pdf_jobs_count = 0
                     job_idx = 1
                     for page_num, page in enumerate(reader.pages):
                         page_text = page.extract_text(extraction_mode='layout')
                         if not page_text or not page_text.strip():
                             continue
-                            
+
                         page_urls = extract_job_urls_from_page(page)
                         jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=pdf_file)
                         pdf_jobs_count += len(jobs)
-                        
+
                         for idx, job in enumerate(jobs):
                             job["source_index"] = f"{pdf_idx}-{job_idx}"
                             job_idx += 1
                             # Map parsed job to top-to-bottom page annotation URL
                             if job.get("url", "N/A") == "N/A" and idx < len(page_urls):
                                 job["url"] = page_urls[idx]
-                                
+
                             # Compute Job ID
                             import hashlib
                             if "dailysummary" in job['company'].lower() or "dailydigest" in job['company'].lower():
@@ -2711,19 +2803,19 @@ def main():
                             else:
                                 hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
                             job_id = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
-                            
+
                             # Deduplicate before review using Canonical Key
                             def get_canonical_key(comp, pos, loc):
                                 c_norm = re.sub(r'[^a-z0-9]', '', comp.lower())
                                 p_norm = re.sub(r'[^a-z0-9]', '', pos.lower())
                                 l_norm = re.sub(r'[^a-z0-9]', '', loc.lower())
                                 return f"{c_norm}|{p_norm}|{l_norm}"
-                                
+
                             current_canonical = get_canonical_key(job['company'], job['title'], job['location'])
-                            
+
                             is_duplicate = False
                             existing_match = None
-                            
+
                             # 1. Check existing_jobs for canonical match
                             for ej_id, ej in existing_jobs.items():
                                 ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
@@ -2740,7 +2832,7 @@ def main():
                                         existing_match = ej
                                         is_duplicate = True
                                         break
-                                        
+
                             # 2. Check raw_collected_jobs for canonical match
                             if not is_duplicate:
                                 for rj_id, rj_item in raw_collected_jobs.items():
@@ -2749,29 +2841,31 @@ def main():
                                     if rj_canonical == current_canonical:
                                         # Merge into the raw_collected_job
                                         is_duplicate = True
+                                        run_stats["jobs_merged"] += 1
                                         p_list = [p.strip() for p in rj_job.get("provider", "").split("/") if p.strip()]
                                         if job['provider'] not in p_list:
                                             p_list.append(job['provider'])
                                             rj_job["provider"] = " / ".join(p_list)
-                                            
+
                                         pdf_list = [pdf.strip() for pdf in rj_job.get("source_pdf", "").split("/") if pdf.strip()]
                                         if job['source_pdf'] not in pdf_list:
                                             pdf_list.append(job['source_pdf'])
                                             rj_job["source_pdf"] = " / ".join(pdf_list)
                                         break
-                                        
+
                             if existing_match:
                                 # Merge metadata into the existing database/CSV record
+                                run_stats["jobs_merged"] += 1
                                 p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
                                 if job['provider'] not in p_list:
                                     p_list.append(job['provider'])
                                     existing_match["Provider"] = " / ".join(p_list)
-                                    
+
                                 pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
                                 if job['source_pdf'] not in pdf_list:
                                     pdf_list.append(job['source_pdf'])
                                     existing_match["Source PDF"] = " / ".join(pdf_list)
-                                    
+
                                 # Append a discovery note if it doesn't already exist
                                 disc_note = f"Also discovered on {job['provider']} via {job['source_pdf']} on {date_added}"
                                 notes_val = existing_match.get("Notes", "")
@@ -2780,16 +2874,17 @@ def main():
                                         existing_match["Notes"] = f"{notes_val}; {disc_note}"
                                 else:
                                     existing_match["Notes"] = disc_note
-                                    
+
                             if is_duplicate or job_id in raw_collected_jobs:
                                 continue
-                            
+
                             # Store for review phase
                             raw_collected_jobs[job_id] = {
                                 "job": job,
                                 "job_id": job_id,
                                 "date_added": date_added
                             }
+
                     if pdf_jobs_count == 0:
                         # Check if this empty PDF is a known non-job file to suppress warning
                         filename_lower = pdf_file.lower()
@@ -2802,11 +2897,28 @@ def main():
                         if not any(pat in filename_lower for pat in ignored_patterns):
                             import pathlib
                             empty_pdfs.append(pathlib.Path(pdf_path).as_uri())
+
+                    # Record successful processing for future incremental-sync skipping
+                    run_stats["pdfs_processed"] += 1
+                    if pdf_hash:
+                        record_pdf_processed(
+                            _db_conn, pdf_hash, PARSER_VERSION, pdf_path,
+                            pdf_stat.st_size, pdf_stat.st_mtime, "success"
+                        )
+
                 except Exception as e:
+                    run_stats["files_failed"] += 1
                     console.print(f"[red]Error parsing {pdf_file}: {e}[/red]")
+                    if pdf_hash:
+                        record_pdf_processed(
+                            _db_conn, pdf_hash, PARSER_VERSION, pdf_path,
+                            os.path.getsize(pdf_path) if os.path.exists(pdf_path) else 0,
+                            os.path.getmtime(pdf_path) if os.path.exists(pdf_path) else 0,
+                            "error", str(e)
+                        )
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Scan interrupted by user (Ctrl+C). Saving progress for already parsed jobs...[/bold yellow]")
-        found_any_pdf = True # Fall through to save phase
+        found_any_pdf = True  # Fall through to save phase
         
     if not found_any_pdf:
         console.print(f"[yellow]No PDF files found in {pdf_dir}[/yellow]")
@@ -2960,12 +3072,35 @@ def main():
             row["Age (days)"] = ""
     
     # Synchronize all combined jobs to SQLite database 'jobs.db'
+    run_stats["jobs_created"] = len(all_recommendations)
     save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids)
+    _db_conn.close()
 
     with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=expected_headers, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(combined_jobs)
+
+    # Capture elapsed time
+    _elapsed = _time.monotonic() - _sync_start
+
+    # ── SYNC COMPLETE banner (always shown, even when nothing is new) ──────────
+    five_star_new  = sum(1 for r in all_recommendations if "★★★★★" in r.get("Recommendation", ""))
+    four_star_new  = sum(1 for r in all_recommendations if "★★★★☆" in r.get("Recommendation", ""))
+    console.print("\n[bold green]╔══════════════════════════════════════════════╗[/bold green]")
+    console.print(f"[bold green]║       SYNC COMPLETE — {date.today()}        ║[/bold green]")
+    console.print("[bold green]╠══════════════════════════════════════════════╣[/bold green]")
+    console.print(f"[bold green]║[/bold green]  PDFs discovered:        [bold cyan]{run_stats['pdfs_discovered']:<6}[/bold cyan]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Unchanged PDFs skipped: [bold dim]{run_stats['pdfs_skipped']:<6}[/bold dim]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  New/changed processed:  [bold cyan]{run_stats['pdfs_processed']:<6}[/bold cyan]              [bold green]║[/bold green]")
+    console.print("[bold green]║                                              ║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Jobs created:           [bold cyan]{run_stats['jobs_created']:<6}[/bold cyan]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Duplicates merged:      [bold cyan]{run_stats['jobs_merged']:<6}[/bold cyan]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  ★★★★★ recommendations: [bold yellow]{five_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  ★★★★☆ recommendations: [bold yellow]{four_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Files failed:           [bold red]{run_stats['files_failed']:<6}[/bold red]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Elapsed:                [bold white]{_elapsed:.1f}s[/bold white]                  [bold green]║[/bold green]")
+    console.print("[bold green]╚══════════════════════════════════════════════╝[/bold green]\n")
 
     # Calculate summary metrics
     new_jobs_count = len(all_recommendations)
