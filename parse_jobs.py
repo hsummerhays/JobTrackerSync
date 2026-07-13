@@ -670,7 +670,7 @@ def clean_existing_tracker(tracker_path):
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
 
-def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
+def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_applied_ids=None):
     """Save or upsert a list of jobs to the SQLite database."""
     try:
         conn = sqlite3.connect(db_path)
@@ -780,6 +780,15 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None):
             try:
                 cursor.executemany("DELETE FROM job_workflow WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
                 cursor.executemany("DELETE FROM jobs WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # If any previously-applied jobs were re-listed after 30+ days, reset their workflow so they can be re-applied
+        if returned_applied_ids:
+            try:
+                cursor.executemany("DELETE FROM job_workflow WHERE job_id = ?", [(jid,) for jid in returned_applied_ids])
+                cursor.executemany("DELETE FROM jobs WHERE job_id = ?", [(jid,) for jid in returned_applied_ids])
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -2719,6 +2728,7 @@ def main():
     }
 
     returned_expired_ids = set()
+    returned_applied_ids = set()
     all_recommendations = []
     found_any_pdf = False
 
@@ -2817,6 +2827,8 @@ def main():
                             existing_match = None
 
                             # 1. Check existing_jobs for canonical match
+                            REAPPLY_DAYS = 30
+                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
                             for ej_id, ej in existing_jobs.items():
                                 ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
                                 if ej_canonical == current_canonical:
@@ -2824,7 +2836,21 @@ def main():
                                     try:
                                         existing_date = date.fromisoformat(existing_date_str)
                                         current_date = date.fromisoformat(date_added)
-                                        if (current_date - existing_date).days <= 90:
+                                        age_days = (current_date - existing_date).days
+                                        ej_status = ej.get("Tracker Status", "New")
+
+                                        # Re-apply window: if job was applied to 30+ days ago, treat as fresh
+                                        if ej_status in REAPPLY_STATUSES and age_days >= REAPPLY_DAYS:
+                                            returned_applied_ids.add(ej_id)
+                                            reapply_note = (
+                                                f"Re-listed {age_days} days after original application "
+                                                f"(was {ej_status}, originally seen {existing_date_str})"
+                                            )
+                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                            # Do NOT mark as duplicate — let it re-enter as New
+                                            break
+
+                                        if age_days <= 90:
                                             existing_match = ej
                                             is_duplicate = True
                                             break
@@ -3014,6 +3040,21 @@ def main():
             else:
                 status = "New"
         row["Tracker Status"] = status
+
+        # Auto-expire: if a job has sat as "New" for more than 7 days without being applied to, mark it Expired
+        AUTO_EXPIRE_DAYS = 7
+        if status == "New":
+            date_added_str = row.get("Date Added", "")
+            try:
+                added_date = date.fromisoformat(date_added_str)
+                if (date.today() - added_date).days > AUTO_EXPIRE_DAYS:
+                    status = "Expired"
+                    row["Tracker Status"] = "Expired"
+                    row["Review Status"] = "Closed"
+                    row["Disposition"] = "Closed"
+                    row["Action"] = "Ignore"
+            except (ValueError, TypeError):
+                pass
         
         # Standardize Review Status
         review_status = row.get("Review Status")
@@ -3073,7 +3114,7 @@ def main():
     
     # Synchronize all combined jobs to SQLite database 'jobs.db'
     run_stats["jobs_created"] = len(all_recommendations)
-    save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids)
+    save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids, returned_applied_ids)
     _db_conn.close()
 
     with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
