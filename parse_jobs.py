@@ -1254,7 +1254,15 @@ def perform_ocr(pdf_path):
         return ""
 
 def _looks_like_title(line):
-    return any(kw in line.lower() for kw in TITLE_KEYWORDS)
+    line_lower = line.strip().lower()
+    # Skip email subject-like lines, search alerts, or meta-text
+    if line_lower.endswith(" jobs") or line_lower.endswith(" job"):
+        return False
+    if "similar to" in line_lower or "jobs similar" in line_lower:
+        return False
+    if "jobs at" in line_lower or "jobs in" in line_lower:
+        return False
+    return any(kw in line_lower for kw in TITLE_KEYWORDS)
 
 def _find_skills(text):
     text_lower = text.lower()
@@ -2628,6 +2636,9 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     the full tracker, with new-this-run jobs called out separately.
     Always appears as the terminal's final section.
     """
+    from rich.panel import Panel
+    from rich.text import Text
+
     new_job_ids = {j.get("Job ID", "") for j in new_jobs}
 
     # Top un-actioned ★★★★☆+ jobs from the FULL tracker (not just this run)
@@ -2687,12 +2698,12 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     ]
 
     # --- Render ---
-    console.print("\n[bold yellow]╔══════════════════════════════════════════════╗[/bold yellow]")
-    console.print("[bold yellow]║           TODAY'S HIGHLIGHTS                 ║[/bold yellow]")
-    console.print("[bold yellow]╠══════════════════════════════════════════════╣[/bold yellow]")
+    content = Text()
 
     if top_jobs:
-        for j in top_jobs:
+        for idx, j in enumerate(top_jobs):
+            if idx > 0:
+                content.append("\n")
             is_new   = j.get("Job ID", "") in new_job_ids
             stars    = "★★★★★" if "★★★★★" in j.get("Recommendation", "") else "★★★★☆"
             company  = j.get("Company", "Unknown")
@@ -2700,13 +2711,24 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
             score    = j.get("Fit Score", "")
             location = j.get("Location", "")
             color    = "bold green" if "★★★★★" in stars else "green"
-            tag      = " [bold cyan]NEW[/bold cyan]" if is_new else ""
-            console.print(f"[bold yellow]║[/bold yellow]  [{color}]{stars}[/{color}]{tag}  [bold]{company}[/bold] — {position}")
-            console.print(f"[bold yellow]║[/bold yellow]         [dim]{location}  •  Fit: {score}[/dim]")
+            tag      = " NEW" if is_new else ""
+            
+            line1 = Text()
+            line1.append(stars, style=color)
+            if is_new:
+                line1.append(" NEW", style="bold cyan")
+            line1.append(f"  {company}", style="bold")
+            line1.append(f" — {position}\n")
+            
+            line2 = Text(f"         {location}  •  Fit: {score}", style="dim")
+            
+            content.append(line1)
+            content.append(line2)
     else:
-        console.print("[bold yellow]║[/bold yellow]  [dim]No ★★★★☆+ unactioned jobs in your queue[/dim]")
+        content.append(Text("No ★★★★☆+ unactioned jobs in your queue", style="dim"))
 
-    console.print("[bold yellow]╠══════════════════════════════════════════════╣[/bold yellow]")
+    # Divider line
+    content.append("\n" + "─" * 60 + "\n")
 
     insights = []
     total_new = len(new_jobs)
@@ -2725,10 +2747,21 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
         names = ", ".join(j.get("Company", "") for j in reunion_jobs[:2])
         insights.append(f"[cyan]{len(reunion_jobs)}[/cyan] from a company you've previously interviewed at: {names}")
 
-    for line in insights:
-        console.print(f"[bold yellow]║[/bold yellow]  {line}")
+    for idx, line in enumerate(insights):
+        content.append(Text.from_markup(line))
+        if idx < len(insights) - 1:
+            content.append("\n")
 
-    console.print("[bold yellow]╚══════════════════════════════════════════════╝[/bold yellow]\n")
+    panel = Panel(
+        content,
+        title="[bold yellow]TODAY'S HIGHLIGHTS[/bold yellow]",
+        border_style="bold yellow",
+        expand=False,
+        padding=(1, 2)
+    )
+    console.print()
+    console.print(panel)
+
 
 
 def main():
