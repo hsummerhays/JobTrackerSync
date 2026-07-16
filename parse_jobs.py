@@ -557,6 +557,28 @@ def clean_existing_tracker(tracker_path):
                     rec = "★★☆☆☆ Low"
                 else:
                     rec = "★☆☆☆☆ Skip"
+            
+            # Apply Digest-Based Priority Decay (Half-Life) for "New" (un-actioned) jobs
+            company_lower = company.lower()
+            provider_lower = migrated_row.get("Provider", "").lower()
+            is_digest = ("dailysummary" in company_lower or 
+                         "dailydigest" in company_lower or 
+                         "ladders" in provider_lower or 
+                         "jobs.utah.gov" in provider_lower)
+            if is_digest and status == "New":
+                date_added_str = migrated_row.get("Date Added", "")
+                if date_added_str:
+                    try:
+                        added = date.fromisoformat(date_added_str)
+                        age_days = (date.today() - added).days
+                        if 3 <= age_days <= 7:
+                            if rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                                rec = "★★★☆☆ Maybe"
+                        elif age_days >= 8:
+                            if rec in ["★★★★★ Apply Now", "★★★★☆ Strong", "★★★☆☆ Maybe"]:
+                                rec = "★★☆☆☆ Low"
+                    except (ValueError, TypeError):
+                        pass
             migrated_row["Recommendation"] = rec
             
             # Action calculation
