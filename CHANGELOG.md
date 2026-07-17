@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## v1.2.2 — 2026-07-17
+
+### Search Utility Improvements
+- Enhanced `find_pdf.py` to query both the SQLite database (`jobs.db`) and the master tracking spreadsheet (`master_tracker.csv`) case-insensitively, returning consolidated matches from both sources.
+
 ## v1.2.1 — 2026-07-11
 
 ### CLI Improvements

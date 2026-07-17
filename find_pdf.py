@@ -2,6 +2,7 @@ import sqlite3
 import sys
 import os
 import pathlib
+import csv
 
 # Reconfigure stdout to use utf-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -52,6 +53,37 @@ def find_matches(db_path, search_term):
     conn.close()
     return results
 
+def find_csv_matches(csv_path, search_term):
+    """Search all columns in the CSV tracker for the search_term."""
+    if not os.path.exists(csv_path):
+        return []
+        
+    matches = []
+    search_term_lower = search_term.lower()
+    try:
+        with open(csv_path, mode='r', encoding='utf-8', errors='ignore') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                # Search all fields in the row case-insensitively
+                found = False
+                for v in row.values():
+                    if v and search_term_lower in v.lower():
+                        found = True
+                        break
+                if found:
+                    row_dict = dict(row)
+                    # Generate file:/// links if we find file paths in values
+                    for k, v in list(row_dict.items()):
+                        if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v) and (v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
+                            try:
+                                row_dict[k + "_uri"] = pathlib.Path(v).as_uri()
+                            except Exception:
+                                pass
+                    matches.append(row_dict)
+    except Exception as e:
+        pass
+    return matches
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python find_pdf.py <pdf_filename_or_substring>")
@@ -59,16 +91,24 @@ def main():
         
     search_term = sys.argv[1]
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'jobs.db')
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'master_tracker.csv')
     
-    results = find_matches(db_path, search_term)
+    db_results = find_matches(db_path, search_term)
+    csv_results = find_csv_matches(csv_path, search_term)
     
-    if not results:
+    if not db_results and not csv_results:
         print(f"No matches found for: '{search_term}'")
         return
         
-    for table, rows in results.items():
-        print(f"\n--- Matches in Table: {table} ---")
-        for row in rows:
+    if db_results:
+        for table, rows in db_results.items():
+            print(f"\n--- Matches in Table: {table} ---")
+            for row in rows:
+                print(row)
+                
+    if csv_results:
+        print(f"\n--- Matches in CSV: master_tracker.csv ---")
+        for row in csv_results:
             print(row)
 
 if __name__ == '__main__':
