@@ -119,7 +119,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 ```
 JobTrackerSync/
 ├── parse_jobs.py              # Main CLI entry point
-├── find_pdf.py                # Database search utility for PDFs and jobs
+├── find_pdf.py                # Database and CSV search utility for PDFs and jobs
 ├── config.json                # Resume skills and scoring criteria (git-ignored)
 ├── config.json.example        # Template for new installations
 ├── master_tracker.csv         # Master tracking spreadsheet (git-ignored)
@@ -178,7 +178,7 @@ python parse_jobs.py --add --company "Example Corp" --position "Software Enginee
 
 **6. Search PDF & Job Records**
 
-You can quickly query the database to locate all jobs or processed files matching a specific term (like a company name, position, or PDF filename):
+You can quickly query both the SQLite database and the CSV tracker to locate all jobs, processed files, or CSV entries matching a specific term (like a company name, position, or PDF filename):
 
 ```bash
 python find_pdf.py "<search_term>"
