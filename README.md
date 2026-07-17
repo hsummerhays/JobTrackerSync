@@ -119,6 +119,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 ```
 JobTrackerSync/
 ├── parse_jobs.py              # Main CLI entry point
+├── find_pdf.py                # Database search utility for PDFs and jobs
 ├── config.json                # Resume skills and scoring criteria (git-ignored)
 ├── config.json.example        # Template for new installations
 ├── master_tracker.csv         # Master tracking spreadsheet (git-ignored)
@@ -137,7 +138,7 @@ JobTrackerSync/
 **1. Install dependencies**
 
 ```bash
-pip install pdfplumber pytesseract rich
+pip install pdfplumber pytesseract rich pytest pypdf
 ```
 
 **2. Copy and configure**
@@ -175,6 +176,22 @@ python parse_jobs.py --add
 python parse_jobs.py --add --company "Example Corp" --position "Software Engineer" --location "Remote" --status "New" --notes "First contact"
 ```
 
+**6. Search PDF & Job Records**
+
+You can quickly query the database to locate all jobs or processed files matching a specific term (like a company name, position, or PDF filename):
+
+```bash
+python find_pdf.py "<search_term>"
+```
+
+**7. Running Tests**
+
+Run the complete test suite using `pytest`:
+
+```bash
+python -m pytest tests/ -v
+```
+
 ---
 
 ## Technical Highlights
@@ -196,7 +213,7 @@ This discovery reinforced an important architectural principle: job providers of
 ## Future Roadmap
 
 - [x] Unit tests for parsing and scoring logic
-- [ ] **Incremental File Syncing**: Hash source PDFs and skip processing any file that hasn't changed since the last run.
+- [x] **Incremental File Syncing**: Hash source PDFs and skip processing any file that hasn't changed since the last run.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
 - [ ] **Pipeline Parallelism**: Refactor parser into a pipeline separating file discovery, PDF extraction (bounded worker pools to prevent Windows Tcl/Tk hangs), normalization, single-stage deduplication, and database writing.
 - [ ] **Golang Service Extraction**: Port heavy I/O or CPU-bound segments (e.g. PDF text extraction, OCR orchestration) to Go to serve as standalone CLI utilities or worker processes rather than rewriting the entire Python orchestrator.

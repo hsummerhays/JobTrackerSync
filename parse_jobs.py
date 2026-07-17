@@ -889,8 +889,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                         job_id, review_status, job_type, company, position, location, url, provider, 
                         source_pdf, confidence, fit_score, priority, company_type, 
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes, recruiter
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reason, matched_skills, missing_skills, date_added, notes, recruiter, hiring_manager
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -914,7 +914,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
                         notes=excluded.notes,
-                        recruiter=excluded.recruiter
+                        recruiter=excluded.recruiter,
+                        hiring_manager=excluded.hiring_manager
                 """, (
                     jid, 
                     job.get("Review Status", job.get("review_status")), 
@@ -939,7 +940,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                     job.get("Missing Skills", job.get("missing_skills")),
                     job.get("Date Added", job.get("date_added")), 
                     job.get("Notes", job.get("notes")),
-                    job.get("Recruiter", job.get("recruiter"))
+                    job.get("Recruiter", job.get("recruiter")),
+                    job.get("Hiring Manager", job.get("hiring_manager"))
                 ))
             conn.commit()
         except sqlite3.OperationalError as oe:
@@ -2925,17 +2927,19 @@ def main():
             console.print(f"[blue]Processing {len(pdf_files)} PDF files in {root} (Date Added: {date_added})...[/blue]")
             run_stats["pdfs_discovered"] += len(pdf_files)
 
+            import pathlib
             for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
                 pdf_path = os.path.join(root, pdf_file)
+                pdf_uri = pathlib.Path(pdf_path).as_uri()
 
                 # --- Incremental sync: skip if content+parser-version unchanged ---
                 pdf_hash = hash_pdf_file(pdf_path)
                 if pdf_hash and check_pdf_processed(_db_conn, pdf_hash, PARSER_VERSION):
-                    console.print(f"[dim]Skipping {pdf_file} (unchanged)[/dim]")
+                    console.print(f"[dim]Skipping {pdf_file} ({pdf_uri}) (unchanged)[/dim]")
                     run_stats["pdfs_skipped"] += 1
                     continue
 
-                console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
+                console.print(f"[cyan]Parsing {pdf_file} ({pdf_uri})...[/cyan]")
 
                 try:
                     pdf_stat = os.stat(pdf_path)
