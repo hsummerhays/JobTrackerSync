@@ -212,21 +212,31 @@ This discovery reinforced an important architectural principle: job providers of
 
 ## Future Roadmap
 
-- [x] Unit tests for parsing and scoring logic
-- [x] **Incremental File Syncing**: Hash source PDFs and skip processing any file that hasn't changed since the last run.
+The roadmap focuses on making parsed data more actionable and improving workflow visibility.
+
+### 1. Polish and Reliability
+- [ ] **More unit tests** around parsing and merge logic.
+- [ ] **Better logging** for unexpected PDFs.
+- [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
-- [ ] **Pipeline Parallelism**: Refactor parser into a pipeline separating file discovery, PDF extraction (bounded worker pools to prevent Windows Tcl/Tk hangs), normalization, single-stage deduplication, and database writing.
-- [ ] **Golang Service Extraction**: Port heavy I/O or CPU-bound segments (e.g. PDF text extraction, OCR orchestration) to Go to serve as standalone CLI utilities or worker processes rather than rewriting the entire Python orchestrator.
-- [ ] **Current Priorities Section**: Display active interviews and pending applications directly under the sync report.
-- [ ] **Pipeline Funnel**: CRM-style conversion stages (Tracked → Applied → Recruiter Screen → Technical → Final → Offer → Accepted).
-- [ ] **Eligible Application Rate**: Exclude Expired, Rejected, Duplicate, or Cancelled postings from the denominator to measure true selection rates.
-- [ ] **Source Performance Breakdown**: Compare response and interview rates by job board (Indeed, LinkedIn, Dice, Manual, Recruiter, etc.).
-- [ ] **Fit Score Distribution**: Group jobs by fit tier (e.g., 90+, 80+, 70+, 60+) to monitor opportunity quality.
+- [ ] **Pipeline Parallelism**: Refactor parser into a pipeline separating file discovery, PDF extraction (bounded worker pools to prevent Windows hangs), normalization, single-stage deduplication, and database writing.
+
+### 2. Analytics Dashboard
+- [ ] **Best sources by conversion**: Compare response, interview, and offer rates by source job board (Indeed, LinkedIn, Glassdoor, etc.).
+- [ ] **Applications by week**: Weekly volume metrics to monitor application consistency.
+- [ ] **Average time from discovery to application**: Measure response latency from finding a job to applying.
+- [ ] **Score Correlation**: Determine which recommendation/fit scores actually lead to interviews.
+- [ ] **Pipeline Funnel**: CRM-style conversion stages (Tracked → Applied → Recruiter Screen → Technical → Final → Offer → Accepted) and Eligible Application Rate metrics.
+
+### 3. Workflow Enhancements
+- [ ] **Repost Detection**: Detect reposts of previously closed/rejected positions.
+- [ ] **Reopened Hiring Highlights**: Flag companies that have reopened hiring after a previous rejection.
+- [ ] **Company Status Separation**: Surface "companies hiring again" separately from "new companies."
 - [ ] **Aging & Follow-up Alerts**: Flag stale opportunities (e.g., New > 30 days, Applied > 14 days, Interview > 7 days) to prompt follow-ups.
-- [ ] **Company Opening Aggregation**: Identify companies with multiple active openings to prioritize target employers.
-- [ ] Sample PDFs with expected parser outputs
-- [ ] AI-assisted classification for fuzzy job postings
-- [ ] AI resume tailoring suggestions based on skill gap analysis
-- [ ] Cross-provider duplication detection (same listing on ZipRecruiter and LinkedIn)
-- [ ] Automatic degree requirement detection via NLP
-- [ ] Company historical interaction tracking
+
+### 4. Nice-to-Have
+- [ ] **Small Local Web UI**: A lightweight local web interface (e.g., Flask/FastAPI backend with a clean HTML/JS dashboard) instead of opening CSVs directly.
+- [ ] **Search and Filtering**: Live search, status filters, and fit score thresholds.
+- [ ] **Charts Over Time**: Visualizations of application volume and funnel conversion rates.
+- [ ] **AI Tailoring & Analysis**: AI resume tailoring suggestions based on skill gap analysis and automated degree requirement detection.
+
