@@ -404,7 +404,7 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Source PDF"] = row.get("Source PDF", "Unknown")
             migrated_row["Confidence"] = row.get("Confidence", "🟡 Medium")
             status = row.get("Tracker Status", row.get("Status", "New"))
-            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]:
+            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]:
                 if status == "Recruiter":
                     status = "Recruiter Submitted"
                 elif status == "Interview":
@@ -419,7 +419,7 @@ def clean_existing_tracker(tracker_path):
             
             review_status = row.get("Review Status")
             if not review_status:
-                if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+                if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                     review_status = "Applied"
                 elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     review_status = "Closed"
@@ -437,7 +437,9 @@ def clean_existing_tracker(tracker_path):
                 "Rejected": "Closed",
                 "Cancelled": "Closed",
                 "Ghosted": "Closed",
-                "Expired": "Closed"
+                "Expired": "Closed",
+                "Offer": "Active",
+                "Accepted": "Closed"
             }
             disposition = row.get("Disposition", disposition_map.get(status, "Apply"))
             migrated_row["Disposition"] = disposition
@@ -583,7 +585,7 @@ def clean_existing_tracker(tracker_path):
             
             # Action calculation
             if status != "New":
-                if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+                if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
                     action = "Already Applied"
                 elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     action = "Ignore"
@@ -603,7 +605,7 @@ def clean_existing_tracker(tracker_path):
                 act = action
             else:
                 act = row.get("Action", action)
-                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired"]:
+                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired", "Offer", "Accepted"]:
                     if "apply" in act.lower():
                         act = "Apply"
                     elif "recruiter" in act.lower():
@@ -2114,6 +2116,293 @@ def print_today_queue(tracker_path="master_tracker.csv"):
     console.print("\n[bold green]=========================================[/bold green]\n")
 
 
+def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
+    """Print an analytics dashboard with pipeline conversion funnel, source comparison, weekly metrics, and score correlation."""
+    if not os.path.exists(db_path):
+        console.print(f"[red]Database not found: {db_path}. Please run sync first to build the database.[/red]")
+        return
+    
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
+        if not cursor.fetchone():
+            console.print("[red]Jobs table not found in database. Please run sync first.[/red]")
+            return
+            
+        cursor.execute("""
+            SELECT j.*, w.updated_at, w.notes as w_notes 
+            FROM jobs j 
+            LEFT JOIN job_workflow w ON j.job_id = w.job_id
+        """)
+        rows = [dict(r) for r in cursor.fetchall()]
+    except Exception as e:
+        console.print(f"[red]Error reading database: {e}[/red]")
+        return
+    finally:
+        conn.close()
+        
+    if not rows:
+        console.print("[yellow]No jobs found to analyze.[/yellow]")
+        return
+
+    # Helper function to check if a job was applied to
+    def is_applied(r):
+        return r.get("tracker_status") in [
+            "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", 
+            "Waiting", "Rejected", "Ghosted", "Offer", "Accepted"
+        ]
+
+    # Helper function to check if a job was interviewed
+    def is_interviewed(r):
+        status = r.get("tracker_status")
+        notes = (r.get("notes") or "").lower() + " " + (r.get("w_notes") or "").lower()
+        if status in ["Phone Screen", "Technical Interview", "Offer", "Accepted"]:
+            return True
+        return any(kw in notes for kw in ["screen", "phone screen", "interview", "technical screen", "technical interview"])
+
+    # Helper function to check if a job was offered
+    def is_offered(r):
+        status = r.get("tracker_status")
+        notes = (r.get("notes") or "").lower() + " " + (r.get("w_notes") or "").lower()
+        if status in ["Offer", "Accepted"]:
+            return True
+        return "offer" in notes
+
+    # Helper function to parse dates
+    def parse_date(date_str):
+        if not date_str:
+            return None
+        date_str = date_str.strip()
+        if len(date_str) >= 10:
+            try:
+                return date.fromisoformat(date_str[:10])
+            except ValueError:
+                pass
+        return None
+
+    # Helper to draw a horizontal progress bar
+    def make_bar(percentage, width=15):
+        filled = int(round(percentage / 100 * width))
+        return "█" * filled + "░" * (width - filled)
+
+    # Helper to get calendar week
+    def get_iso_week_str(d):
+        if not d:
+            return None
+        iso = d.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+
+    # Output Title
+    console.print("\n[bold magenta]=========================================[/bold magenta]")
+    console.print("[bold magenta]          JOB PIPELINE ANALYTICS         [/bold magenta]")
+    console.print("[bold magenta]=========================================[/bold magenta]\n")
+
+    # --- SECTION 1: CRM PIPELINE FUNNEL ---
+    tracked_cnt = len(rows)
+    eligible_cnt = sum(1 for r in rows if (r.get("fit_score") or 0) >= 40)
+    applied_cnt = sum(1 for r in rows if is_applied(r))
+    screen_cnt = sum(1 for r in rows if is_interviewed(r))
+    tech_cnt = sum(1 for r in rows if r.get("tracker_status") in ["Technical Interview", "Offer", "Accepted"] or any(kw in ((r.get("notes") or "") + " " + (r.get("w_notes") or "")).lower() for kw in ["technical", "coding", "hackerrank", "assessment"]))
+    offer_cnt = sum(1 for r in rows if is_offered(r))
+    accepted_cnt = sum(1 for r in rows if r.get("tracker_status") == "Accepted")
+
+    funnel_data = [
+        ("Tracked (Total)", tracked_cnt),
+        ("Eligible (Score >= 40)", eligible_cnt),
+        ("Applied", applied_cnt),
+        ("Screening (Phone/Recruiter)", screen_cnt),
+        ("Technical Interview", tech_cnt),
+        ("Offer Received", offer_cnt),
+        ("Offer Accepted", accepted_cnt)
+    ]
+
+    funnel_table = Table(title="1. CRM Conversion Funnel", title_style="bold cyan", show_header=True)
+    funnel_table.add_column("Pipeline Stage", style="bold cyan")
+    funnel_table.add_column("Count", justify="right", style="green")
+    funnel_table.add_column("Conv. (Tracked)", justify="right", style="yellow")
+    funnel_table.add_column("Conv. (Prev)", justify="right", style="yellow")
+    funnel_table.add_column("Visual Funnel", style="magenta")
+
+    prev_count = tracked_cnt
+    for stage_name, count in funnel_data:
+        conv_tracked = (count / tracked_cnt * 100) if tracked_cnt > 0 else 0.0
+        conv_prev = (count / prev_count * 100) if prev_count > 0 else 0.0
+        bar = make_bar(conv_tracked)
+        funnel_table.add_row(
+            stage_name,
+            str(count),
+            f"{conv_tracked:.1f}%",
+            f"{conv_prev:.1f}%" if stage_name != "Tracked (Total)" else "-",
+            bar
+        )
+        prev_count = count
+
+    console.print(funnel_table)
+    eligible_app_rate = (applied_cnt / eligible_cnt * 100) if eligible_cnt > 0 else 0.0
+    console.print(f"Eligible Application Rate (Applied / Eligible): [bold green]{eligible_app_rate:.1f}%[/bold green]")
+    console.print()
+
+    # --- SECTION 2: BEST SOURCES BY CONVERSION ---
+    providers = {}
+    for r in rows:
+        prov = r.get("provider") or "Unknown"
+        prov_lower = prov.lower()
+        if "indeed" in prov_lower:
+            prov = "Indeed"
+        elif "linkedin" in prov_lower:
+            prov = "LinkedIn"
+        elif "glassdoor" in prov_lower:
+            prov = "Glassdoor"
+        elif "ziprecruiter" in prov_lower:
+            prov = "ZipRecruiter"
+        elif "utah" in prov_lower:
+            prov = "Jobs.utah.gov"
+        elif "ladders" in prov_lower:
+            prov = "Ladders"
+        else:
+            prov = prov.strip() or "Unknown"
+        
+        if prov not in providers:
+            providers[prov] = []
+        providers[prov].append(r)
+
+    source_table = Table(title="2. Performance by Job Source / Provider", title_style="bold cyan")
+    source_table.add_column("Source Board", style="bold cyan")
+    source_table.add_column("Tracked", justify="right", style="white")
+    source_table.add_column("Applied (%)", justify="right", style="green")
+    source_table.add_column("Interview (%)", justify="right", style="yellow")
+    source_table.add_column("Offers", justify="right", style="bold green")
+
+    # Sort sources by tracked count descending
+    sorted_sources = sorted(providers.items(), key=lambda x: len(x[1]), reverse=True)
+    for source, s_rows in sorted_sources:
+        s_tracked = len(s_rows)
+        s_applied = sum(1 for r in s_rows if is_applied(r))
+        s_interviewed = sum(1 for r in s_rows if is_interviewed(r))
+        s_offered = sum(1 for r in s_rows if is_offered(r))
+        
+        app_pct = (s_applied / s_tracked * 100) if s_tracked > 0 else 0.0
+        int_pct = (s_interviewed / s_applied * 100) if s_applied > 0 else 0.0
+        
+        source_table.add_row(
+            source,
+            str(s_tracked),
+            f"{s_applied} ({app_pct:.1f}%)",
+            f"{s_interviewed} ({int_pct:.1f}%)" if s_applied > 0 else "0 (0.0%)",
+            str(s_offered)
+        )
+
+    console.print(source_table)
+    console.print()
+
+    # --- SECTION 3: APPLICATIONS BY WEEK ---
+    weekly_stats = {}
+    for r in rows:
+        disc_date = parse_date(r.get("date_added"))
+        app_date = parse_date(r.get("updated_at")) if is_applied(r) else None
+        
+        disc_week = get_iso_week_str(disc_date)
+        app_week = get_iso_week_str(app_date)
+        
+        if disc_week:
+            if disc_week not in weekly_stats:
+                weekly_stats[disc_week] = {"discovered": 0, "applied": 0}
+            weekly_stats[disc_week]["discovered"] += 1
+            
+        if app_week:
+            if app_week not in weekly_stats:
+                weekly_stats[app_week] = {"discovered": 0, "applied": 0}
+            weekly_stats[app_week]["applied"] += 1
+
+    weekly_table = Table(title="3. Weekly Volume & Consistency", title_style="bold cyan")
+    weekly_table.add_column("Calendar Week (ISO)", style="bold cyan")
+    weekly_table.add_column("Jobs Discovered", justify="right", style="white")
+    weekly_table.add_column("Applications Sent", justify="right", style="green")
+
+    # Sort weeks chronologically and show up to last 12 weeks
+    sorted_weeks = sorted(weekly_stats.keys())[-12:]
+    for wk in sorted_weeks:
+        w_data = weekly_stats[wk]
+        weekly_table.add_row(
+            wk,
+            str(w_data["discovered"]),
+            str(w_data["applied"])
+        )
+
+    console.print(weekly_table)
+    console.print()
+
+    # --- SECTION 4: LATENCY AND AVERAGE DURATION ---
+    latencies = []
+    for r in rows:
+        if is_applied(r):
+            disc_date = parse_date(r.get("date_added"))
+            app_date = parse_date(r.get("updated_at"))
+            if disc_date and app_date:
+                days = (app_date - disc_date).days
+                latencies.append(max(0, days))
+
+    from rich.panel import Panel
+    if latencies:
+        avg_lat = sum(latencies) / len(latencies)
+        sorted_lat = sorted(latencies)
+        median_lat = sorted_lat[len(sorted_lat) // 2]
+        min_lat = sorted_lat[0]
+        max_lat = sorted_lat[-1]
+        
+        latency_content = (
+            f"Average latency from discovery to application:  [bold green]{avg_lat:.1f} days[/bold green]\n"
+            f"Median latency:                                  [bold green]{median_lat} days[/bold green]\n"
+            f"Minimum latency:                                 [bold green]{min_lat} days[/bold green] (same-day action)\n"
+            f"Maximum latency:                                 [bold green]{max_lat} days[/bold green]"
+        )
+    else:
+        latency_content = "[yellow]No status change date history found to calculate application latency.[/yellow]"
+        
+    console.print(Panel(latency_content, title="4. Discovery-to-Application Latency", title_align="left", border_style="cyan"))
+    console.print()
+
+    # --- SECTION 5: SCORE CORRELATION ---
+    score_bins = [
+        ("Excellent (90-100)", lambda s: 90 <= s <= 100),
+        ("High (70-89)", lambda s: 70 <= s <= 89),
+        ("Medium (50-69)", lambda s: 50 <= s <= 69),
+        ("Low (30-49)", lambda s: 30 <= s <= 49),
+        ("Ignore (< 30)", lambda s: s < 30)
+    ]
+
+    score_table = Table(title="5. Fit Score Correlation with Funnel Progression", title_style="bold cyan")
+    score_table.add_column("Fit Score Range", style="bold cyan")
+    score_table.add_column("Tracked", justify="right", style="white")
+    score_table.add_column("Applied (%)", justify="right", style="green")
+    score_table.add_column("Interview (%)", justify="right", style="yellow")
+    score_table.add_column("Offers", justify="right", style="bold green")
+
+    for range_name, bin_fn in score_bins:
+        bin_rows = [r for r in rows if bin_fn(r.get("fit_score") or 0)]
+        b_tracked = len(bin_rows)
+        b_applied = sum(1 for r in bin_rows if is_applied(r))
+        b_interviewed = sum(1 for r in bin_rows if is_interviewed(r))
+        b_offered = sum(1 for r in bin_rows if is_offered(r))
+        
+        app_pct = (b_applied / b_tracked * 100) if b_tracked > 0 else 0.0
+        int_pct = (b_interviewed / b_applied * 100) if b_applied > 0 else 0.0
+        
+        score_table.add_row(
+            range_name,
+            str(b_tracked),
+            f"{b_applied} ({app_pct:.1f}%)" if b_tracked > 0 else "0 (0.0%)",
+            f"{b_interviewed} ({int_pct:.1f}%)" if b_applied > 0 else "0 (0.0%)",
+            str(b_offered)
+        )
+
+    console.print(score_table)
+    console.print("\n[bold magenta]=========================================[/bold magenta]\n")
+
+
 def handle_interactive_update():
     db_path = "jobs.db"
     if not os.path.exists(db_path):
@@ -2170,7 +2459,7 @@ def handle_interactive_update():
     position = selected_job[2]
     
     # New status selection
-    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
     console.print(f"\nSelected: [bold]{company}[/bold] — {position}")
     console.print(f"Current Status: [yellow]{selected_job[3]}[/yellow]")
     console.print("\n[bold cyan]New Status:[/bold cyan]")
@@ -2204,7 +2493,7 @@ def handle_interactive_update():
 
 def handle_status_update(query, status, notes=None):
     # Validates status
-    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
     if status not in valid_statuses:
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
@@ -2245,13 +2534,13 @@ def handle_status_update(query, status, notes=None):
     
     # Determine derived fields
     review_status = "Imported"
-    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
         review_status = "Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         review_status = "Closed"
         
     action = "Apply"
-    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
         action = "Already Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
@@ -2266,7 +2555,9 @@ def handle_status_update(query, status, notes=None):
         "Rejected": "Closed",
         "Cancelled": "Closed",
         "Ghosted": "Closed",
-        "Expired": "Closed"
+        "Expired": "Closed",
+        "Offer": "Active",
+        "Accepted": "Closed"
     }
     disposition = disposition_map.get(status, "Apply")
     
@@ -2510,7 +2801,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
                 status = "New"
             else:
                 # Prompt for status in the active statuses list
-                valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]
+                valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
                 console.print(f"Select status: {', '.join(valid_statuses)}")
                 status_input = input(f"Status [default: Applied]: ").strip()
                 if status_input in valid_statuses:
@@ -2532,13 +2823,13 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     
     # Derived values
     review_status = "Imported"
-    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
         review_status = "Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         review_status = "Closed"
         
     action = "Apply"
-    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted"]:
+    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
         action = "Already Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
@@ -2553,7 +2844,9 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
         "Rejected": "Closed",
         "Cancelled": "Closed",
         "Ghosted": "Closed",
-        "Expired": "Closed"
+        "Expired": "Closed",
+        "Offer": "Active",
+        "Accepted": "Closed"
     }
     disposition = disposition_map.get(status, "Apply")
     
@@ -2795,6 +3088,7 @@ def main():
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
+    parser.add_argument("--analytics", action="store_true", help="Print analytics dashboard showing conversion rates and exit")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
@@ -2845,6 +3139,10 @@ def main():
     
     if args.dashboard:
         _print_dashboard()
+        return
+
+    if args.analytics:
+        print_analytics()
         return
     
     pdf_dir = args.pdf_dir
@@ -3227,7 +3525,7 @@ def main():
         # Standardize Review Status
         review_status = row.get("Review Status")
         if not review_status:
-            if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]:
+            if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                 review_status = "Applied"
             elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                 review_status = "Closed"
@@ -3241,7 +3539,7 @@ def main():
             
         # Standardize existing Action column values
         act = row.get("Action", "Ignore")
-        if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired"]:
+        if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired", "Offer", "Accepted"]:
             if "apply" in act.lower():
                 act = "Apply"
             elif "recruiter" in act.lower():
