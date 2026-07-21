@@ -160,3 +160,7 @@ jobs.db.session.sql
 jobs.db-journal
 config.json
 master_tracker.csv
+
+# PDF Directory
+PDFs/
+logs/
