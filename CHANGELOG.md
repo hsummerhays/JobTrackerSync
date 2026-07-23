@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## v1.2.3 — 2026-07-23
+
+### Search Utility Improvements
+- Improved `find_pdf.py` search to use regex word boundaries, preventing short terms from falsely matching substrings embedded inside long URLs or IDs.
+
 ## v1.2.2 — 2026-07-17
 
 ### Search Utility Improvements
