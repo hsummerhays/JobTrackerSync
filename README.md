@@ -240,3 +240,6 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 - [ ] **Charts Over Time**: Visualizations of application volume and funnel conversion rates.
 - [ ] **AI Tailoring & Analysis**: AI resume tailoring suggestions based on skill gap analysis and automated degree requirement detection.
 
+### 5. Scoring Enhancements
+- [ ] **Title Exclusions / Penalty**: Observe recommendations over time, and consider adding a penalty (e.g. `score_role -= 10`) for roles with frequently mismatched titles (like `qa`, `test`, `salesforce`, `servicenow`, `wordpress`, `php`, `ios`, `android`) if false positives become an issue.
+

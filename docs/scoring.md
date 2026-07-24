@@ -11,7 +11,8 @@ The Fit Score is the sum of up to 7 weighted criteria. It is recalculated on eve
 | # | Criterion | Points | Condition |
 |---|-----------|--------|-----------|
 | 1 | **Remote or Utah** | 20 | Location contains "remote", "ut", "utah", "salt lake", "slc", "lehi", "provo", or "ogden" |
-| 2 | **Senior-level title** | 15 | Title contains: senior, lead, principal, sme, staff, architect, manager |
+| 2a | **Experienced title** | 15 | Title contains: senior, lead, principal, staff, architect, engineering manager, sme, mid, ii, iii, 2, 3, level ii, level iii |
+| 2b | **Role match** | 10 | Title contains: software engineer, backend engineer, full stack, developer, sde, swe |
 | 3 | **Backend / Full Stack** | 15 | Title or notes contains: backend, full stack, fullstack, full-stack, distributed, data |
 | 4a | **.NET / C# match** | 20 | Title or notes contains: .net, c# |
 | 4b | **Java-only match** | 10 | Title or notes contains: java, spring (but NOT .net or c#) |

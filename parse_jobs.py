@@ -1915,9 +1915,20 @@ def evaluate_job(job):
     elif any(faang.lower() in company.lower() for faang in FAANG_COMPANIES):
         company_type = "Enterprise"
 
-    # Normalized Fit Score calculation (0-100)
+    # Normalized Fit Score calculation
     score_remote_utah = 20 if (is_utah or is_remote) else 0
-    score_senior = 15 if any(w in title.lower() for w in ["senior", "lead", "principal", "sme", "staff", "architect", "manager"]) else 0
+
+    title_lower = title.lower()
+    experienced_terms = [
+        "senior", "lead", "principal", "staff", "architect", "engineering manager", "sme",
+        "mid", " ii", " iii", " 2", " 3", "level ii", "level iii"
+    ]
+    role_terms = [
+        "software engineer", "backend engineer", "full stack", "developer", "sde", "swe"
+    ]
+
+    score_experience = 15 if any(w in title_lower for w in experienced_terms) else 0
+    score_role = 10 if any(w in title_lower for w in role_terms) else 0
     
     # Role-specific backend/fullstack indicator
     if job_type == "Software Engineer":
@@ -1941,7 +1952,7 @@ def evaluate_job(job):
     score_small_med = 10 if company_type == "Small / Medium" else 0
     score_legacy = 10 if bool(matched_legacy) else 0
     
-    fit_score = score_remote_utah + score_senior + score_backend_fs + score_dotnet_java + score_no_degree + score_small_med + score_legacy
+    fit_score = score_remote_utah + score_experience + score_role + score_backend_fs + score_dotnet_java + score_no_degree + score_small_med + score_legacy
     if has_restriction:
         fit_score = max(0, fit_score - 30)
     
