@@ -120,7 +120,7 @@ LEGACY_KEYWORDS = [
 FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "Microsoft"]
 
 # Incremental sync: bump this whenever a parser change should force re-processing of unchanged PDFs.
-PARSER_VERSION = "1.2.1"
+PARSER_VERSION = "1.2.2"
 
 
 def hash_pdf_file(pdf_path):
@@ -3273,7 +3273,7 @@ def main():
                             continue
 
                         page_urls = extract_job_urls_from_page(page)
-                        jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=pdf_file)
+                        jobs = parse_job_cards_from_text(page_text, provider=provider, source_pdf=os.path.abspath(pdf_path))
                         pdf_jobs_count += len(jobs)
 
                         for idx, job in enumerate(jobs):
