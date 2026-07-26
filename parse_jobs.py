@@ -283,15 +283,23 @@ def is_valid_company(company, provider=None):
     return True
 
 
-def compute_priority(recommendation, action):
+def compute_priority(recommendation, action, age_days=0):
     if action == "Apply" and recommendation == "★★★★★ Apply Now":
-        return "P1 – Apply today"
+        priority = "P1 – Apply today"
     elif action in ["Apply", "Contact Recruiter"]:
-        return "P2 – Apply this week"
+        priority = "P2 – Apply this week"
     elif action == "Review":
-        return "P3 – Investigate"
+        priority = "P3 – Investigate"
     else:
-        return "P4 – Ignore"
+        priority = "P4 – Ignore"
+        
+    if action in ["Apply", "Contact Recruiter"] and age_days > 14:
+        if priority == "P1 – Apply today":
+            priority = "P2 – Apply this week"
+        elif priority == "P2 – Apply this week":
+            priority = "P3 – Investigate"
+            
+    return priority
 
 def initialize_tracker(tracker_path):
     """Ensure the tracker CSV exists and has the correct headers."""
@@ -620,7 +628,9 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Action"] = act
             
             # Priority calculation (always recalculated to standardize formatting)
-            migrated_row["Priority"] = compute_priority(rec, act)
+            age_val = migrated_row.get("Age (days)")
+            age_days = int(age_val) if age_val and str(age_val).isdigit() else 0
+            migrated_row["Priority"] = compute_priority(rec, act, age_days)
             
             # Existing Company (same employer already tracked)
             known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
@@ -3546,7 +3556,9 @@ def main():
         
         # Compute Priority if missing
         if "Priority" not in row or not row["Priority"]:
-            row["Priority"] = compute_priority(row.get("Recommendation", "★☆☆☆☆ Skip"), row.get("Action", "Ignore"))
+            age_val = row.get("Age (days)")
+            age_days = int(age_val) if age_val and str(age_val).isdigit() else 0
+            row["Priority"] = compute_priority(row.get("Recommendation", "★☆☆☆☆ Skip"), row.get("Action", "Ignore"), age_days)
             
         # Standardize existing Action column values
         act = row.get("Action", "Ignore")
