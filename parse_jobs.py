@@ -4,8 +4,14 @@ import re
 import csv
 import json
 import sqlite3
+import hashlib
+import argparse
+import shutil
+import time
+import pathlib
 from datetime import datetime, date, timezone
 import pypdf
+from dedup_utils import merge_delimited_field
 from rich.console import Console
 from rich.table import Table
 
@@ -120,12 +126,11 @@ LEGACY_KEYWORDS = [
 FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "Microsoft"]
 
 # Incremental sync: bump this whenever a parser change should force re-processing of unchanged PDFs.
-PARSER_VERSION = "1.2.2"
+PARSER_VERSION = "1.2.3"
 
 
 def hash_pdf_file(pdf_path):
     """Return a stable content hash (MD5) for a PDF file, or None on error."""
-    import hashlib
     try:
         hasher = hashlib.md5()
         with open(pdf_path, "rb") as f:
@@ -326,7 +331,6 @@ def clean_existing_tracker(tracker_path):
     ]
     
     try:
-        import hashlib
         with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
@@ -706,6 +710,7 @@ def clean_existing_tracker(tracker_path):
 
 def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_applied_ids=None):
     """Save or upsert a list of jobs to the SQLite database."""
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -1083,9 +1088,11 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                     job.get("Hiring Manager", job.get("hiring_manager"))
                 ))
             conn.commit()
-        conn.close()
     except Exception as e:
         console.print(f"[red]Failed to save to SQLite database: {e}[/red]")
+    finally:
+        if conn:
+            conn.close()
 
 def load_tracker(tracker_path):
     """Load existing jobs from tracker to prevent duplicates."""
@@ -1096,7 +1103,6 @@ def load_tracker(tracker_path):
             for row in reader:
                 job_id = row.get("Job ID")
                 if not job_id:
-                    import hashlib
                     comp = row.get("Company", "").strip().lower()
                     pos = row.get("Position", "").strip().lower()
                     loc = row.get("Location", "").strip().lower()
@@ -1112,8 +1118,8 @@ def load_config():
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 config = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[yellow]Failed to read {CONFIG_PATH}, falling back to defaults: {e}[/yellow]")
             
     # Default job type criteria if not present
     if "job_type_criteria" not in config:
@@ -1137,9 +1143,9 @@ def load_config():
         try:
             with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4)
-        except Exception:
-            pass
-            
+        except Exception as e:
+            console.print(f"[yellow]Failed to write default config to {CONFIG_PATH}: {e}[/yellow]")
+
     return config
 
 def save_config(pdf_dir):
@@ -1228,7 +1234,11 @@ def extract_job_urls_from_page(page):
                     y_coord = rect[1]  # y_bottom coordinate of annotation bounding box
                     urls_with_y.append((uri, y_coord))
             except Exception:
-                pass
+                # Malformed/unsupported annotation objects are common and not
+                # actionable; skip just this one rather than failing extraction
+                # for the whole page. Intentionally silent -- logging here would
+                # spam once per malformed annotation across every PDF processed.
+                continue
                 
     # Sort by Y-coordinate in descending order (top of page to bottom)
     urls_with_y.sort(key=lambda x: x[1], reverse=True)
@@ -1645,11 +1655,15 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 # which indicates that next_line (i+1) is actually a continuation of the title,
                 # and next_line+1 (i+2) is the Company · Location line.
                 is_line_after_next_company_location = False
-                if i + 2 < len(filtered_lines):
+                if i + 2 < len(filtered_lines) and not next_is_title:
                     line_after_next = filtered_lines[i+2]
                     if "·" in line_after_next and (bool(state_city_pattern.search(line_after_next)) or "remote" in line_after_next.lower()):
                         is_line_after_next_company_location = True
                 
+                is_next_company_location = False
+                if "·" in next_line and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower()):
+                    is_next_company_location = True
+
                 if is_line_after_next_company_location:
                     title = f"{title} {next_line}"
                     line_after_next = filtered_lines[i+2]
@@ -1659,6 +1673,13 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                         location = _clean_location(parts[1])
                         found_location = True
                     next_idx = i + 3
+                elif is_next_company_location:
+                    parts = [p.strip() for p in next_line.split("·", 1)]
+                    company = parts[0]
+                    if len(parts) > 1:
+                        location = _clean_location(parts[1])
+                        found_location = True
+                    next_idx = i + 2
                 elif next_is_title or next_has_salary:
                     # The next line is another job title! Don't consume it as company.
                     company = "Unknown/Other"
@@ -2431,26 +2452,28 @@ def handle_interactive_update():
         return False
         
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    # Query database for jobs that are 'New' and have priority P1/P2, or are active in pipeline
-    cursor.execute("""
-        SELECT job_id, company, position, tracker_status, priority 
-        FROM jobs 
-        WHERE tracker_status IN ('New', 'Phone Screen', 'Technical Interview', 'Recruiter Submitted', 'Waiting')
-        ORDER BY 
-            CASE tracker_status 
-                WHEN 'Phone Screen' THEN 1
-                WHEN 'Technical Interview' THEN 2
-                WHEN 'Recruiter Submitted' THEN 3
-                WHEN 'Waiting' THEN 4
-                ELSE 5 
-            END,
-            priority ASC,
-            company ASC
-    """)
-    jobs = cursor.fetchall()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+
+        # Query database for jobs that are 'New' and have priority P1/P2, or are active in pipeline
+        cursor.execute("""
+            SELECT job_id, company, position, tracker_status, priority
+            FROM jobs
+            WHERE tracker_status IN ('New', 'Phone Screen', 'Technical Interview', 'Recruiter Submitted', 'Waiting')
+            ORDER BY
+                CASE tracker_status
+                    WHEN 'Phone Screen' THEN 1
+                    WHEN 'Technical Interview' THEN 2
+                    WHEN 'Recruiter Submitted' THEN 3
+                    WHEN 'Waiting' THEN 4
+                    ELSE 5
+                END,
+                priority ASC,
+                company ASC
+        """)
+        jobs = cursor.fetchall()
+    finally:
+        conn.close()
     
     if not jobs:
         console.print("[yellow]No active queue or pipeline jobs found to update.[/yellow]")
@@ -2879,8 +2902,8 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
             with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 existing_companies = {row.get("Company", "").strip().lower() for row in reader if row.get("Company")}
-        except Exception:
-            pass
+        except Exception as e:
+            console.print(f"[dim yellow]Could not read {tracker_path} for existing-company check: {e}[/dim yellow]")
             
     known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
     comp_cleaned = company.strip().lower()
@@ -2890,7 +2913,6 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
         already_in = "No"
         
     # Generate job ID
-    import hashlib
     date_added = datetime.now().strftime("%Y-%m-%d")
     job_id = hashlib.md5(f"{comp_cleaned}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()[:12]
     
@@ -2993,6 +3015,7 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
 
     # Companies previously interviewed at
     prior_interview_companies = set()
+    conn = None
     try:
         conn = sqlite3.connect(db_path)
         rows = conn.execute("""
@@ -3002,9 +3025,11 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
             WHERE w.tracker_status IN ('Phone Screen', 'Technical Interview')
         """).fetchall()
         prior_interview_companies = {r[0] for r in rows}
-        conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        console.print(f"[dim yellow]Could not load prior-interview companies from {db_path}: {e}[/dim yellow]")
+    finally:
+        if conn:
+            conn.close()
 
     # Brand-new companies: in top_jobs AND new this run AND not in pre-run tracker
     existing_before_run = {
@@ -3103,8 +3128,6 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
 
 
 def main():
-
-    import argparse
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
@@ -3186,7 +3209,6 @@ def main():
         if csv_files:
             seed_file = csv_files[0]
             try:
-                import shutil
                 shutil.copy(seed_file, tracker_path)
                 console.print(f"[green]Seeded new master_tracker.csv from {seed_file}[/green]")
             except Exception as e:
@@ -3197,8 +3219,7 @@ def main():
     existing_jobs = load_tracker(tracker_path)
 
     # Open the DB early so we can use processed_files for incremental sync
-    import time as _time
-    _sync_start = _time.monotonic()
+    _sync_start = time.monotonic()
     _db_conn = sqlite3.connect("jobs.db")
     initialize_processed_files_table(_db_conn)
 
@@ -3246,7 +3267,6 @@ def main():
             console.print(f"[blue]Processing {len(pdf_files)} PDF files in {root} (Date Added: {date_added})...[/blue]")
             run_stats["pdfs_discovered"] += len(pdf_files)
 
-            import pathlib
             for pdf_idx, pdf_file in enumerate(pdf_files, start=1):
                 pdf_path = os.path.join(root, pdf_file)
                 pdf_uri = pathlib.Path(pdf_path).as_uri()
@@ -3294,7 +3314,6 @@ def main():
                                 job["url"] = page_urls[idx]
 
                             # Compute Job ID
-                            import hashlib
                             if "dailysummary" in job['company'].lower() or "dailydigest" in job['company'].lower():
                                 hash_input = f"{job['company'].strip().lower()}|{date_added}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
                             else:
@@ -3355,29 +3374,29 @@ def main():
                                         # Merge into the raw_collected_job
                                         is_duplicate = True
                                         run_stats["jobs_merged"] += 1
-                                        p_list = [p.strip() for p in rj_job.get("provider", "").split("/") if p.strip()]
-                                        if job['provider'] not in p_list:
-                                            p_list.append(job['provider'])
-                                            rj_job["provider"] = " / ".join(p_list)
+                                        rj_job["provider"] = merge_delimited_field(
+                                            rj_job.get("provider", ""),
+                                            job.get("provider", ""),
+                                        )
 
-                                        pdf_list = [pdf.strip() for pdf in rj_job.get("source_pdf", "").split("/") if pdf.strip()]
-                                        if job['source_pdf'] not in pdf_list:
-                                            pdf_list.append(job['source_pdf'])
-                                            rj_job["source_pdf"] = " / ".join(pdf_list)
+                                        rj_job["source_pdf"] = merge_delimited_field(
+                                            rj_job.get("source_pdf", ""),
+                                            job.get("source_pdf", ""),
+                                        )
                                         break
 
                             if existing_match:
                                 # Merge metadata into the existing database/CSV record
                                 run_stats["jobs_merged"] += 1
-                                p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
-                                if job['provider'] not in p_list:
-                                    p_list.append(job['provider'])
-                                    existing_match["Provider"] = " / ".join(p_list)
+                                existing_match["Provider"] = merge_delimited_field(
+                                    existing_match.get("Provider", ""),
+                                    job.get("provider", ""),
+                                )
 
-                                pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
-                                if job['source_pdf'] not in pdf_list:
-                                    pdf_list.append(job['source_pdf'])
-                                    existing_match["Source PDF"] = " / ".join(pdf_list)
+                                existing_match["Source PDF"] = merge_delimited_field(
+                                    existing_match.get("Source PDF", ""),
+                                    job.get("source_pdf", ""),
+                                )
 
                                 # Append a discovery note if it doesn't already exist
                                 disc_note = f"Also discovered on {job['provider']} via {job['source_pdf']} on {date_added}"
@@ -3408,7 +3427,6 @@ def main():
                             "remote jobs that"
                         ]
                         if not any(pat in filename_lower for pat in ignored_patterns):
-                            import pathlib
                             empty_pdfs.append(pathlib.Path(pdf_path).as_uri())
 
                     # Record successful processing for future incremental-sync skipping
@@ -3612,7 +3630,7 @@ def main():
         writer.writerows(combined_jobs)
 
     # Capture elapsed time
-    _elapsed = _time.monotonic() - _sync_start
+    _elapsed = time.monotonic() - _sync_start
 
     # ── SYNC COMPLETE banner (always shown, even when nothing is new) ──────────
     five_star_new  = sum(1 for r in all_recommendations if "★★★★★" in r.get("Recommendation", ""))

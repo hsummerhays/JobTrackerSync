@@ -2,8 +2,26 @@
 
 All notable changes to this project are documented here.
 
-## v1.2.3 — 2026-07-23
+## v1.2.6 — 2026-07-28
 
+### Core Enhancements & Fixes
+- Fixed cross-platform generation of Windows absolute file URIs in `find_pdf.py` so they work correctly even when run on Linux hosts.
+- Implemented fully symmetrical logic for deduplication status merging (`should_prefer_status`), ensuring that human-reviewed terminal statuses (e.g. Cancelled, Rejected) are never silently overwritten by unreviewed statuses regardless of merge order.
+- Standardized the multi-value field delimiter to `|` across both the main parsing pipeline and cleanup scripts, safely migrating legacy `/` separated values without corrupting valid file paths.
+
+## v1.2.5 — 2026-07-28
+### Code Cleanup & Maintenance
+- Refactored `parse_jobs.py` to remove unused imports and improve sqlite3 connection handling (added robust try/finally blocks).
+- Updated `requirements.txt` to pin dependencies (`pypdf`, `rich`, `pytest`) and conditionally support `easyocr`.
+- Refactored test suite to separate core evaluation/cleanup tests from provider-specific parsers.
+
+## v1.2.4 — 2026-07-28
+### Parser & Deduplication Fixes
+- Fixed an offset bug in the LinkedIn PDF parser where job titles were incorrectly assigned the company and location of the subsequent job card when they shared the same line (e.g. `Company · Location`).
+- Added regression tests targeting the LinkedIn PDF parser for company/location mapping.
+- Cleaned up and deduplicated historical malformed records in the tracker, merging correct locations and preserving the most advanced job status.
+
+## v1.2.3 — 2026-07-23
 ### Search Utility Improvements
 - Improved `find_pdf.py` search to use regex word boundaries, preventing short terms from falsely matching substrings embedded inside long URLs or IDs.
 

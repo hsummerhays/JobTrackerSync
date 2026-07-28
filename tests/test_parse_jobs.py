@@ -1,12 +1,8 @@
 """
-Test runner for JobTrackerSync test suite.
-
-This module imports and runs all focused test modules:
-- test_company_validation.py
-- test_scoring.py
-- test_deduplication.py
-- test_glassdoor_parser.py
-- test_linkedin_parser.py
+Core unit tests for parse_jobs.py: evaluate_job scoring, tracker cleanup,
+and general job-card parsing. Provider-specific parsing has its own focused
+modules (test_linkedin_parser.py, test_glassdoor_parser.py, etc.) alongside
+this file in tests/; pytest discovers and runs all of them together.
 
 Run with:
     python -m pytest tests/ -v
@@ -171,7 +167,11 @@ class TestEvaluateJob(unittest.TestCase):
         )
         _, _, _, fit_score, _, _, _, _, _, _, job_type = evaluate_job(job)
         self.assertEqual(job_type, "Operations")
-        self.assertEqual(fit_score, 75)
+        # 20 (remote) + 15 (manager) + 20 (logistics/inventory/supply chain) + 10 (no degree)
+        # + 10 (small/medium company) - 15 (Operations penalty) = 60.
+        # "manager" alone no longer counts toward score_experience (that's a SWE-seniority
+        # signal now), so this no longer double-counts with the Operations score_backend_fs bonus.
+        self.assertEqual(fit_score, 60)
 
     def test_java_role_scores_less_than_dotnet(self):
         java_job = _make_job(

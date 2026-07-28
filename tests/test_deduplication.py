@@ -167,16 +167,16 @@ class TestCanonicalKeyMerging(unittest.TestCase):
         new_pdf = "alert2.pdf"
         date_added = "2026-07-10"
         
-        # Perform merge logic
-        p_list = [p.strip() for p in existing_match.get("Provider", "").split("/") if p.strip()]
-        if new_provider not in p_list:
-            p_list.append(new_provider)
-            existing_match["Provider"] = " / ".join(p_list)
-            
-        pdf_list = [pdf.strip() for pdf in existing_match.get("Source PDF", "").split("/") if pdf.strip()]
-        if new_pdf not in pdf_list:
-            pdf_list.append(new_pdf)
-            existing_match["Source PDF"] = " / ".join(pdf_list)
+        if existing_match:
+            from dedup_utils import merge_delimited_field
+            existing_match["Provider"] = merge_delimited_field(
+                existing_match.get("Provider", ""),
+                new_provider
+            )
+            existing_match["Source PDF"] = merge_delimited_field(
+                existing_match.get("Source PDF", ""),
+                new_pdf
+            )
             
         disc_note = f"Also discovered on {new_provider} via {new_pdf} on {date_added}"
         notes_val = existing_match.get("Notes", "")
@@ -186,8 +186,9 @@ class TestCanonicalKeyMerging(unittest.TestCase):
         else:
             existing_match["Notes"] = disc_note
             
-        self.assertEqual(existing_match["Provider"], "LinkedIn / Indeed")
-        self.assertEqual(existing_match["Source PDF"], "alert1.pdf / alert2.pdf")
+        # They should be merged with the | delimiter
+        self.assertEqual(existing_match["Provider"], "LinkedIn|Indeed")
+        self.assertEqual(existing_match["Source PDF"], "alert1.pdf|alert2.pdf")
         self.assertEqual(existing_match["Notes"], "Original note; Also discovered on Indeed via alert2.pdf on 2026-07-10")
 
 

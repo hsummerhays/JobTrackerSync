@@ -132,6 +132,24 @@ class TestLinkedInJobParsing(unittest.TestCase):
         self.assertEqual(jobs[0]["company"], "RevSpring")
         self.assertEqual(jobs[0]["location"], "Salt Lake City, UT")
 
+    def test_wrapped_title_does_not_swallow_next_job_title(self):
+        """A standalone next-job title followed by 'Company · Location' must not be
+        absorbed as a wrapped continuation of the current title (regression:
+        the wrapped-title branch ignored next_is_title)."""
+        text = (
+            "Senior Software Engineer\n"
+            "Senior Backend Engineer\n"
+            "Filevine · United States (Remote)\n"
+        )
+        jobs = parse_job_cards_from_text(text, provider="LinkedIn", source_pdf="linkedin.pdf")
+        titles = [j["title"] for j in jobs]
+        self.assertIn("Senior Software Engineer", titles)
+        self.assertNotIn("Senior Software Engineer Senior Backend Engineer", titles)
+
+        backend_job = next(j for j in jobs if j["title"] == "Senior Backend Engineer")
+        self.assertEqual(backend_job["company"], "Filevine")
+        self.assertEqual(backend_job["location"], "United States (Remote)")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

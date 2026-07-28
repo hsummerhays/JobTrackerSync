@@ -1,9 +1,29 @@
 import sqlite3
 import sys
 import os
-import pathlib
 import csv
 import re
+from pathlib import Path, PureWindowsPath
+from urllib.parse import quote
+
+# Optional debug flag for diagnosing search/URI failures
+DEBUG = False
+
+def path_to_file_uri(value: str) -> str | None:
+    value = value.strip()
+
+    try:
+        if re.match(r"^[A-Za-z]:[\\/]", value):
+            path = PureWindowsPath(value)
+            drive = path.drive.rstrip(":").upper()
+            encoded_parts = "/".join(quote(part) for part in path.parts[1:])
+            return f"file:///{drive}:/{encoded_parts}"
+
+        return Path(value).resolve().as_uri()
+    except (OSError, ValueError) as exc:
+        if DEBUG:
+            print(f"Could not create URI for {value!r}: {exc}", file=sys.stderr)
+        return None
 
 # Reconfigure stdout to use utf-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -59,14 +79,13 @@ def find_matches(db_path, search_term):
                         # Output a nice file:/// link if we find a file path
                         for k, v in list(row_dict.items()):
                             if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v) and (v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
-                                try:
-                                    row_dict[k + "_uri"] = pathlib.Path(v).as_uri()
-                                except Exception:
-                                    pass
+                                uri = path_to_file_uri(v)
+                                if uri:
+                                    row_dict[k + "_uri"] = uri
                         results.setdefault(table, []).append(row_dict)
             except Exception as e:
-                # Silently ignore query errors or print if needed during debugging
-                pass
+                if DEBUG:
+                    print(f"Database query error in table {table}: {e}", file=sys.stderr)
     conn.close()
     return results
 
@@ -86,13 +105,13 @@ def find_csv_matches(csv_path, search_term):
                     # Generate file:/// links if we find file paths in values
                     for k, v in list(row_dict.items()):
                         if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v) and (v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
-                            try:
-                                row_dict[k + "_uri"] = pathlib.Path(v).as_uri()
-                            except Exception:
-                                pass
+                            uri = path_to_file_uri(v)
+                            if uri:
+                                row_dict[k + "_uri"] = uri
                     matches.append(row_dict)
     except Exception as e:
-        pass
+        if DEBUG:
+            print(f"CSV read error: {e}", file=sys.stderr)
     return matches
 
 def main():

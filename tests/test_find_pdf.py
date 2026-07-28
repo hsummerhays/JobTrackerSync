@@ -8,7 +8,7 @@ import pathlib
 # Allow importing from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from find_pdf import find_matches
+from find_pdf import find_matches, path_to_file_uri
 
 class TestFindPdf(unittest.TestCase):
 
@@ -66,8 +66,10 @@ class TestFindPdf(unittest.TestCase):
             self.assertEqual(results["jobs"][0]["job_id"], "id123")
             # Check URI generation for source_pdf
             self.assertIn("source_pdf_uri", results["jobs"][0])
-            expected_uri = pathlib.Path("C:\\postings\\Franki_hiring.pdf").as_uri()
-            self.assertEqual(results["jobs"][0]["source_pdf_uri"], expected_uri)
+            self.assertEqual(
+                results["jobs"][0]["source_pdf_uri"],
+                "file:///C:/postings/Franki_hiring.pdf"
+            )
             
             self.assertIn("processed_files", results)
             self.assertEqual(len(results["processed_files"]), 1)
@@ -77,6 +79,20 @@ class TestFindPdf(unittest.TestCase):
             # 2. Search for a term that does not exist
             no_results = find_matches(db_path, "NonexistentTerm")
             self.assertEqual(no_results, {})
+
+    def test_windows_path_to_file_uri(self):
+        self.assertEqual(
+            path_to_file_uri(r"C:\postings\Franki hiring.pdf"),
+            "file:///C:/postings/Franki%20hiring.pdf"
+        )
+
+    def test_posix_path_to_file_uri(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_file = pathlib.Path(tmp_dir).resolve() / "posting.pdf"
+            self.assertEqual(
+                path_to_file_uri(str(test_file)),
+                test_file.as_uri()
+            )
 
 if __name__ == '__main__':
     unittest.main()

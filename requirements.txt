@@ -1,5 +1,8 @@
-pdfplumber
-pytesseract
-rich
-pypdf
-pytest
+pypdf==6.4.0
+rich==14.2.0
+pytest==9.1.1
+
+# Optional: enables the OCR fallback path in perform_ocr() for scanned/image
+# PDFs. Safe to omit -- perform_ocr() catches ImportError and just reports
+# OCR as unavailable.
+easyocr==1.7.2
