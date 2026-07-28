@@ -16,10 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 class TestJobIdDeterminism(unittest.TestCase):
     """Verify that MD5 job IDs are stable across identical inputs."""
 
-    def _make_job_id(self, company, title, location):
-        """Helper to generate job ID matching the implementation."""
+    def _make_job_id(self, company, title, location, date_added="2026-01-01"):
+        """Helper to generate job ID matching the implementation.
+
+        date_added is included for every job (not just daily-digest rows) --
+        see the parse_jobs.py fix for the collision this used to cause when a
+        job reappeared more than 90 days after it was first seen."""
         return hashlib.md5(
-            f"{company.strip().lower()}|{title.strip().lower()}|{location.strip().lower()}"
+            f"{company.strip().lower()}|{title.strip().lower()}|{location.strip().lower()}|{date_added}"
             .encode('utf-8')
         ).hexdigest()[:12]
 
@@ -45,6 +49,14 @@ class TestJobIdDeterminism(unittest.TestCase):
         """Different locations should produce different job IDs."""
         id1 = self._make_job_id("Alivia Analytics", "Senior Backend Engineer", "Remote")
         id2 = self._make_job_id("Alivia Analytics", "Senior Backend Engineer", "Salt Lake City, UT")
+        self.assertNotEqual(id1, id2)
+
+    def test_different_date_produces_different_id(self):
+        """Regression: a job re-listed after the reapply/merge windows lapse
+        must not collide with the stale row's Job ID (previously only
+        daily-digest rows folded date into the hash)."""
+        id1 = self._make_job_id("Alivia Analytics", "Senior Backend Engineer", "Remote", "2026-01-01")
+        id2 = self._make_job_id("Alivia Analytics", "Senior Backend Engineer", "Remote", "2026-06-01")
         self.assertNotEqual(id1, id2)
 
     def test_case_insensitive(self):
@@ -83,10 +95,14 @@ class Test90DayDeduplication(unittest.TestCase):
     """Verify that the same job is allowed to be added again after 90 days."""
 
     def test_job_added_again_after_90_days(self):
+        """Duplicate detection is driven by the canonical (company/title/location)
+        key, not by Job ID equality -- so it doesn't matter that Job IDs now
+        include date_added. This models is_duplicate using that canonical key,
+        matching parse_jobs.py's get_canonical_key."""
         from datetime import date
-        # Simulate existing jobs dict
+
         existing_jobs = {
-            "6bdb241ddc24": {
+            ("6bdb241ddc24", "2026-03-01"): {
                 "Job ID": "6bdb241ddc24",
                 "Company": "Alivia Analytics",
                 "Position": "Senior Backend Engineer",
@@ -94,44 +110,50 @@ class Test90DayDeduplication(unittest.TestCase):
                 "Date Added": "2026-03-01"
             }
         }
-        
+
         job = {
             "company": "Alivia Analytics",
             "title": "Senior Backend Engineer",
             "location": "Remote"
         }
-        
+
+        def canonical(comp, pos, loc):
+            return f"{comp.strip().lower()}|{pos.strip().lower()}|{loc.strip().lower()}"
+
+        current_canonical = canonical(job["company"], job["title"], job["location"])
+
         # Test case 1: within 90 days (e.g. 2026-04-01 is 31 days after 2026-03-01)
         date_added_within = "2026-04-01"
-        job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}".encode('utf-8')).hexdigest()[:12]
-        
         is_duplicate = False
-        if job_id in existing_jobs:
-            existing_job = existing_jobs[job_id]
-            existing_date_str = existing_job.get("Date Added", "")
-            existing_date = date.fromisoformat(existing_date_str)
-            current_date = date.fromisoformat(date_added_within)
-            if (current_date - existing_date).days <= 90:
-                is_duplicate = True
-        
+        for ej in existing_jobs.values():
+            if canonical(ej["Company"], ej["Position"], ej["Location"]) == current_canonical:
+                existing_date = date.fromisoformat(ej["Date Added"])
+                current_date = date.fromisoformat(date_added_within)
+                if (current_date - existing_date).days <= 90:
+                    is_duplicate = True
+
         self.assertTrue(is_duplicate)
-        
+
         # Test case 2: after 90 days (e.g. 2026-06-29 is 120 days after 2026-03-01)
         date_added_after = "2026-06-29"
         is_duplicate = False
-        new_job_id = job_id
-        if job_id in existing_jobs:
-            existing_job = existing_jobs[job_id]
-            existing_date_str = existing_job.get("Date Added", "")
-            existing_date = date.fromisoformat(existing_date_str)
-            current_date = date.fromisoformat(date_added_after)
-            if (current_date - existing_date).days <= 90:
-                is_duplicate = True
-            else:
-                new_job_id = hashlib.md5(f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added_after}".encode('utf-8')).hexdigest()[:12]
-        
+        for ej in existing_jobs.values():
+            if canonical(ej["Company"], ej["Position"], ej["Location"]) == current_canonical:
+                existing_date = date.fromisoformat(ej["Date Added"])
+                current_date = date.fromisoformat(date_added_after)
+                if (current_date - existing_date).days <= 90:
+                    is_duplicate = True
+
         self.assertFalse(is_duplicate)
-        self.assertNotEqual(job_id, new_job_id)
+
+        # Not a duplicate, so it gets a fresh Job ID -- which, now that date_added
+        # is always part of the hash, differs from the stale row's ID even though
+        # company/title/location are identical.
+        old_job_id = "6bdb241ddc24"
+        new_job_id = hashlib.md5(
+            f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added_after}".encode('utf-8')
+        ).hexdigest()[:12]
+        self.assertNotEqual(old_job_id, new_job_id)
         self.assertEqual(len(new_job_id), 12)
 
 

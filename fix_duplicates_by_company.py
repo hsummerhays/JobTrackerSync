@@ -1,4 +1,6 @@
 import csv
+import shutil
+from datetime import datetime
 
 from dedup_utils import (
     canonical_key,
@@ -104,6 +106,11 @@ def main():
         else:
             # They are either all clean or all malformed. Keep them as is.
             resolved_rows.extend(group)
+
+    if merged_count:
+        backup_path = f"{csv_file}.bak.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        shutil.copyfile(csv_file, backup_path)
+        print(f"Backed up {csv_file} to {backup_path}")
 
     with open(csv_file, 'w', encoding='utf-8', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

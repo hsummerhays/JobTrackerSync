@@ -9,6 +9,7 @@ import argparse
 import shutil
 import time
 import pathlib
+import tempfile
 from datetime import datetime, date, timezone
 import pypdf
 from dedup_utils import merge_delimited_field
@@ -305,6 +306,23 @@ def compute_priority(recommendation, action, age_days=0):
             priority = "P3 – Investigate"
             
     return priority
+
+def write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='raise'):
+    """Write rows to tracker_path via a temp file + atomic rename, so a crash
+    or interruption mid-write can't leave master_tracker.csv truncated."""
+    tracker_dir = os.path.dirname(os.path.abspath(tracker_path)) or "."
+    fd, tmp_path = tempfile.mkstemp(dir=tracker_dir, prefix=".tmp_tracker_", suffix=".csv")
+    try:
+        with os.fdopen(fd, mode='w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction=extrasaction)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(tmp_path, tracker_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
 
 def initialize_tracker(tracker_path):
     """Ensure the tracker CSV exists and has the correct headers."""
@@ -700,10 +718,7 @@ def clean_existing_tracker(tracker_path):
         
         # Always save CSV back to disk to preserve updated skills/scores calculations
         if True:
-            with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=expected_headers)
-                writer.writeheader()
-                writer.writerows(rows_to_keep)
+            write_tracker_csv_atomic(tracker_path, expected_headers, rows_to_keep)
             console.print(f"[green]Synchronized and recalculated all tracking rows in {tracker_path}[/green]")
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
@@ -2709,11 +2724,8 @@ def handle_status_update(query, status, notes=None):
             x.get("Company", "").lower()
         ))
         
-        with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-                
+        write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='ignore')
+
     console.print("\n[bold green]✓ Updated[/bold green]\n")
     console.print(f"  [bold]Company:[/bold]       {company}")
     console.print(f"  [bold]Position:[/bold]      {position}")
@@ -2912,9 +2924,10 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     else:
         already_in = "No"
         
-    # Generate job ID
+    # Generate job ID (date_added included for the same reason as the PDF-import
+    # path: avoids colliding with a stale row of the same company/title/location)
     date_added = datetime.now().strftime("%Y-%m-%d")
-    job_id = hashlib.md5(f"{comp_cleaned}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()[:12]
+    job_id = hashlib.md5(f"{comp_cleaned}|{position.strip().lower()}|{location.strip().lower()}|{date_added}".encode('utf-8')).hexdigest()[:12]
     
     # Priority
     priority = compute_priority(recommendation, action)
@@ -2982,11 +2995,8 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
             x.get("Company", "").lower()
         ))
         
-        with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
-            
+        write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='ignore')
+
     console.print(f"\n[bold green]✓ Manually added job '{position}' at '{company}' (ID: {job_id})[/bold green]\n")
 
 
@@ -3313,11 +3323,14 @@ def main():
                             if job.get("url", "N/A") == "N/A" and idx < len(page_urls):
                                 job["url"] = page_urls[idx]
 
-                            # Compute Job ID
-                            if "dailysummary" in job['company'].lower() or "dailydigest" in job['company'].lower():
-                                hash_input = f"{job['company'].strip().lower()}|{date_added}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
-                            else:
-                                hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}"
+                            # Compute Job ID. date_added is always part of the hash so a
+                            # job that reappears after the reapply/merge windows lapse
+                            # (and is therefore added as a new row, not merged into the
+                            # old one) gets a distinct ID instead of colliding with the
+                            # stale row's ID -- duplicate detection itself is driven by
+                            # the canonical company/title/location key above, not by
+                            # Job ID equality, so this doesn't weaken deduplication.
+                            hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added}"
                             job_id = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
 
                             # Deduplicate before review using Canonical Key
@@ -3336,6 +3349,9 @@ def main():
                             REAPPLY_DAYS = 30
                             REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
                             for ej_id, ej in existing_jobs.items():
+                                # existing_jobs is keyed by (job_id, date_added); the
+                                # plain job_id is what jobs.db / job_workflow expect.
+                                ej_job_id = ej_id[0] if isinstance(ej_id, tuple) else ej_id
                                 ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
                                 if ej_canonical == current_canonical:
                                     existing_date_str = ej.get("Date Added", "")
@@ -3347,13 +3363,21 @@ def main():
 
                                         # Re-apply window: if job was applied to 30+ days ago, treat as fresh
                                         if ej_status in REAPPLY_STATUSES and age_days >= REAPPLY_DAYS:
-                                            returned_applied_ids.add(ej_id)
+                                            returned_applied_ids.add(ej_job_id)
                                             reapply_note = (
                                                 f"Re-listed {age_days} days after original application "
                                                 f"(was {ej_status}, originally seen {existing_date_str})"
                                             )
                                             job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                             # Do NOT mark as duplicate — let it re-enter as New
+                                            break
+
+                                        # Expired jobs can resurface immediately (no 30-day wait like
+                                        # active applications) since the user never acted on them.
+                                        if ej_status == "Expired":
+                                            returned_expired_ids.add(ej_job_id)
+                                            reapply_note = f"Re-listed after expiring (originally seen {existing_date_str})"
+                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                             break
 
                                         if age_days <= 90:
@@ -3624,10 +3648,7 @@ def main():
     save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids, returned_applied_ids)
     _db_conn.close()
 
-    with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=expected_headers, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(combined_jobs)
+    write_tracker_csv_atomic(tracker_path, expected_headers, combined_jobs, extrasaction='ignore')
 
     # Capture elapsed time
     _elapsed = time.monotonic() - _sync_start

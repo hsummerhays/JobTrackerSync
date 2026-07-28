@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dedup_utils import (
     canonical_key,
     is_clean_location,
+    locations_compatible,
     merge_delimited_field,
     should_prefer_status,
     title_similarity,
@@ -46,6 +47,29 @@ class TestShouldPreferStatus(unittest.TestCase):
 
     def test_lower_ranked_reviewed_status_does_not_win(self):
         self.assertFalse(should_prefer_status("Offer", "Applied"))
+
+    def test_terminal_status_is_not_overwritten_by_active_status(self):
+        """Regression: Applied (rank 60) used to outrank Rejected (rank 10)
+        under plain rank comparison, silently reviving a job the user had
+        already rejected."""
+        self.assertFalse(should_prefer_status("Rejected", "Applied"))
+        self.assertFalse(should_prefer_status("Ghosted", "Waiting"))
+
+    def test_terminal_status_beats_active_status(self):
+        self.assertTrue(should_prefer_status("Applied", "Rejected"))
+        self.assertTrue(should_prefer_status("Waiting", "Ghosted"))
+
+
+class TestLocationsCompatible(unittest.TestCase):
+    def test_identical_clean_locations_are_compatible(self):
+        self.assertTrue(locations_compatible("Remote", "remote"))
+
+    def test_distinct_clean_locations_are_not_compatible(self):
+        self.assertFalse(locations_compatible("Remote", "Salt Lake City, UT"))
+
+    def test_malformed_location_is_always_compatible(self):
+        self.assertTrue(locations_compatible("Franki · United States (Remote)", "United States (Remote)"))
+        self.assertTrue(locations_compatible("United States (Remote)", "Franki · United States (Remote)"))
 
 
 class TestMergeDelimitedField(unittest.TestCase):

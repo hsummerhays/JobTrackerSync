@@ -11,6 +11,11 @@ FIELD_DELIMITER = "|"
 
 UNREVIEWED_STATUSES = {"New", "Imported"}
 
+# A human deliberately closed the loop on these -- once set, they must not be
+# clobbered by a still-active status like "Applied" just because "Applied"
+# outranks them numerically below.
+TERMINAL_STATUSES = {"Rejected", "Ghosted", "Cancelled", "Expired", "Closed"}
+
 STATUS_RANKS = {
     "Offer": 100,
     "Interviewing": 90,
@@ -47,11 +52,31 @@ def should_prefer_status(base_status, candidate_status):
     if base_unreviewed != candidate_unreviewed:
         return base_unreviewed and not candidate_unreviewed
 
+    base_terminal = base_status in TERMINAL_STATUSES
+    candidate_terminal = candidate_status in TERMINAL_STATUSES
+
+    if base_terminal != candidate_terminal:
+        # A terminal status is sticky: a still-active status never displaces
+        # it, even though "Applied" outranks "Rejected" numerically.
+        return candidate_terminal
+
     return get_status_rank(candidate_status) > get_status_rank(base_status)
 
 
 def is_clean_location(loc):
     return '·' not in (loc or '')
+
+
+def locations_compatible(loc_a, loc_b):
+    """True if two rows' locations plausibly refer to the same posting --
+    either they match after normalization, or one is a malformed
+    'Company · Location' value (which fix_all_offset_locations.py-style
+    cleanup targets) and can't be trusted to disagree with a clean one.
+    Two distinct clean locations are never compatible, since that usually
+    means two different postings, not one posting recorded twice."""
+    if not is_clean_location(loc_a) or not is_clean_location(loc_b):
+        return True
+    return normalize_string(loc_a) == normalize_string(loc_b)
 
 
 def _split_legacy_values(value: str) -> list[str]:

@@ -2,8 +2,17 @@
 
 All notable changes to this project are documented here.
 
-## v1.2.6 — 2026-07-28
+## v1.2.7 — 2026-07-28
 
+### Stability & Data Integrity
+- Implemented atomic writes (`os.replace`) for all `master_tracker.csv` updates in `parse_jobs.py` to eliminate the risk of truncated files during interruptions.
+- Fixed a `sqlite3.ProgrammingError` crash during the DB sync phase when a job reappeared and was being removed from the "Applied" or "Expired" buckets.
+- Prevented Job ID collisions on re-listed jobs by always hashing `date_added` into the MD5 job identifier.
+- Solidified status deduplication in `dedup_utils.py` by defining `TERMINAL_STATUSES` (e.g. Rejected, Ghosted). These sticky human-reviewed states are no longer silently overwritten by "Applied" just because "Applied" has a higher numerical ranking.
+- Added a `locations_compatible` guard in the deduplication scripts to prevent distinct, clean locations from merging into one record and dropping data.
+- Added automatic `.bak` backups before modifying the tracker file in `fix_duplicates.py` and `fix_duplicates_by_company.py`.
+
+## v1.2.6 — 2026-07-28
 ### Core Enhancements & Fixes
 - Fixed cross-platform generation of Windows absolute file URIs in `find_pdf.py` so they work correctly even when run on Linux hosts.
 - Implemented fully symmetrical logic for deduplication status merging (`should_prefer_status`), ensuring that human-reviewed terminal statuses (e.g. Cancelled, Rejected) are never silently overwritten by unreviewed statuses regardless of merge order.
