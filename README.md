@@ -120,6 +120,7 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 JobTrackerSync/
 ├── parse_jobs.py              # Main CLI entry point
 ├── find_pdf.py                # Database and CSV search utility for PDFs and jobs
+├── query_jobs.py              # Permanent SQLite lookup utility for jobs
 ├── config.json                # Resume skills and scoring criteria (git-ignored)
 ├── config.json.example        # Template for new installations
 ├── master_tracker.csv         # Master tracking spreadsheet (git-ignored)
@@ -184,7 +185,15 @@ You can quickly query both the SQLite database and the CSV tracker to locate all
 python find_pdf.py "<search_term>"
 ```
 
-**7. Running Tests**
+**7. Permanent SQLite Lookup Utility**
+
+You can query the SQLite database directly for jobs matching a specific company using the `query_jobs.py` utility. This provides a quick, human-readable summary of matched jobs directly in your terminal:
+
+```bash
+python query_jobs.py "Company Name"
+```
+
+**8. Running Tests**
 
 Run the complete test suite using `pytest`:
 

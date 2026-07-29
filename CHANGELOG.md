@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here.
 
+## v1.2.8 — 2026-07-29
+
+### New Features
+- Added `query_jobs.py` as a permanent SQLite lookup utility for jobs.
+
 ## v1.2.7 — 2026-07-28
 
 ### Stability & Data Integrity
