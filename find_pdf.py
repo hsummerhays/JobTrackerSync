@@ -3,27 +3,10 @@ import sys
 import os
 import csv
 import re
-from pathlib import Path, PureWindowsPath
-from urllib.parse import quote
+from dedup_utils import path_to_file_uri
 
 # Optional debug flag for diagnosing search/URI failures
 DEBUG = False
-
-def path_to_file_uri(value: str) -> str | None:
-    value = value.strip()
-
-    try:
-        if re.match(r"^[A-Za-z]:[\\/]", value):
-            path = PureWindowsPath(value)
-            drive = path.drive.rstrip(":").upper()
-            encoded_parts = "/".join(quote(part) for part in path.parts[1:])
-            return f"file:///{drive}:/{encoded_parts}"
-
-        return Path(value).resolve().as_uri()
-    except (OSError, ValueError) as exc:
-        if DEBUG:
-            print(f"Could not create URI for {value!r}: {exc}", file=sys.stderr)
-        return None
 
 # Reconfigure stdout to use utf-8
 if hasattr(sys.stdout, 'reconfigure'):

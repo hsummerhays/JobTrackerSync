@@ -32,7 +32,7 @@ class TestCliHandlers(unittest.TestCase):
                 "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
                 "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
                 "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-                "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"
+                "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager"
             ])
             writer.writeheader()
 
@@ -45,8 +45,7 @@ class TestCliHandlers(unittest.TestCase):
                 job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT, position TEXT, location TEXT, 
                 url TEXT, provider TEXT, source_pdf TEXT, confidence TEXT, fit_score INTEGER, priority TEXT, 
                 company_type TEXT, recommendation TEXT, tracker_status TEXT, disposition TEXT, action TEXT, 
-                existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT, date_added TEXT, 
-                notes TEXT, recruiter TEXT, hiring_manager TEXT
+                existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT, date_added TEXT, last_seen TEXT, notes TEXT, recruiter TEXT, hiring_manager TEXT
             )
         """)
         cursor.execute("""

@@ -3,18 +3,20 @@ import sys
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import parse_jobs
 
 
-class TestSaveToSqliteReapplyCleanup(unittest.TestCase):
-    """Regression coverage for the tuple-vs-scalar job_id bug: existing_jobs is
-    keyed by (job_id, date_added), and returned_applied_ids/returned_expired_ids
-    must be populated with the plain job_id string, not that tuple, or the
-    DELETE ... WHERE job_id = ? executemany calls raise sqlite3.ProgrammingError
-    and abort the rest of save_to_sqlite silently."""
+class TestSaveToSqliteExpiredRediscovery(unittest.TestCase):
+    """save_to_sqlite() no longer accepts a returned_expired_ids parameter or
+    deletes anything: an expired job rediscovered on a later run is linked to
+    its old record via Previous Job ID (set by the dedup pass in main()) and
+    written as a new row instead, so the old row's job_workflow history is
+    never force-deleted. This also removes the tuple-vs-scalar job_id bug
+    that used to live in the now-deleted DELETE ... executemany call."""
 
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -43,67 +45,253 @@ class TestSaveToSqliteReapplyCleanup(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def test_returned_applied_ids_as_plain_strings_does_not_raise(self):
-        self._seed_job_workflow("abc123", "Applied")
+    def test_old_expired_row_history_survives_a_linked_rediscovery(self):
+        self._seed_job_workflow("old-expired-id", "Expired")
         jobs_list = [{
-            "Job ID": "abc123", "Company": "Acme", "Position": "Engineer",
+            "Job ID": "new-id", "Company": "Acme", "Position": "Engineer",
             "Location": "Remote", "Tracker Status": "New",
+            "Previous Job ID": "old-expired-id",
         }]
 
-        # This must not raise sqlite3.ProgrammingError.
-        parse_jobs.save_to_sqlite(self.db_path, jobs_list, returned_applied_ids={"abc123"})
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT tracker_status FROM job_workflow WHERE job_id = ?", ("abc123",))
-        row = cursor.fetchone()
+        cursor.execute("SELECT tracker_status FROM job_workflow WHERE job_id = ?", ("old-expired-id",))
+        old_row = cursor.fetchone()
+        cursor.execute("SELECT tracker_status, previous_job_id FROM jobs WHERE job_id = ?", ("new-id",))
+        new_row = cursor.fetchone()
         conn.close()
-        # The stale "Applied" workflow row was cleared, so the fresh "New" upsert wins.
-        self.assertEqual(row[0], "New")
 
-    def test_returned_expired_ids_as_plain_strings_does_not_raise(self):
-        self._seed_job_workflow("def456", "Expired")
-        jobs_list = [{
-            "Job ID": "def456", "Company": "Acme", "Position": "Engineer",
-            "Location": "Remote", "Tracker Status": "New",
-        }]
+        self.assertEqual(old_row[0], "Expired")
+        self.assertEqual(new_row, ("New", "old-expired-id"))
 
-        parse_jobs.save_to_sqlite(self.db_path, jobs_list, returned_expired_ids={"def456"})
 
+class TestSaveToSqliteSchemaRecovery(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.old_cwd = os.getcwd()
+        os.chdir(self.tmp_dir.name)
+        self.db_path = "jobs.db"
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        self.tmp_dir.cleanup()
+
+    def test_schema_drift_heals_columns_without_dropping_existing_rows(self):
+        # Pre-create a jobs table missing columns the INSERT expects, with a
+        # pre-existing row that is NOT part of this run's jobs_list, so the
+        # upsert raises OperationalError and exercises the additive-repair
+        # recovery path.
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT tracker_status FROM job_workflow WHERE job_id = ?", ("def456",))
-        row = cursor.fetchone()
-        conn.close()
-        self.assertEqual(row[0], "New")
-
-    def test_tuple_job_id_silently_aborts_the_rest_of_the_sync(self):
-        """Documents the bug this test file guards against: binding a tuple
-        (the un-fixed value of ej_id, before it's unpacked to ej_id[0]) into
-        the executemany DELETE raises sqlite3.ProgrammingError. The inner
-        except only catches sqlite3.OperationalError, so it propagates up to
-        save_to_sqlite's own catch-all `except Exception`, which swallows it
-        without re-raising -- but only after aborting every upsert that would
-        have run afterward, so the "New" status below never gets written and
-        jobs.db silently drifts from master_tracker.csv."""
-        self._seed_job_workflow("ghi789", "Applied")
-        jobs_list = [{
-            "Job ID": "ghi789", "Company": "Acme", "Position": "Engineer",
-            "Location": "Remote", "Tracker Status": "New",
-        }]
-
-        parse_jobs.save_to_sqlite(
-            self.db_path, jobs_list,
-            returned_applied_ids={("ghi789", "2026-01-01")},
+        conn.execute("""
+            CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT, position TEXT,
+                location TEXT, url TEXT, provider TEXT, source_pdf TEXT, confidence TEXT, fit_score INTEGER,
+                priority TEXT, company_type TEXT, recommendation TEXT, tracker_status TEXT, disposition TEXT,
+                action TEXT, existing_company TEXT, reason TEXT, date_added TEXT, last_seen TEXT, notes TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, tracker_status) VALUES ('preexisting1', 'OldCo', 'Applied')"
         )
+        conn.commit()
+        conn.close()
+
+        jobs_list = [{
+            "Job ID": "id1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Matched Skills": "Java", "Missing Skills": "AWS",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
 
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT tracker_status FROM job_workflow WHERE job_id = ?", ("ghi789",))
-        row = cursor.fetchone()
+        row = conn.execute(
+            "SELECT company, matched_skills, missing_skills FROM jobs WHERE job_id = 'id1'"
+        ).fetchone()
+        wf_row = conn.execute("SELECT tracker_status FROM job_workflow WHERE job_id = 'id1'").fetchone()
+        preexisting = conn.execute(
+            "SELECT company, tracker_status FROM jobs WHERE job_id = 'preexisting1'"
+        ).fetchone()
         conn.close()
-        # With the tuple bug, the sync aborts before the upsert runs, so the
-        # stale "Applied" status is left in place instead of becoming "New".
+        self.assertEqual(row, ("Acme", "Java", "AWS"))
+        self.assertEqual(wf_row[0], "New")
+        # The pre-existing row -- absent from this run's jobs_list -- must
+        # survive the schema-healing retry instead of being dropped along
+        # with the whole table.
+        self.assertEqual(preexisting, ("OldCo", "Applied"))
+
+    def test_legacy_job_status_table_is_migrated_and_dropped(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("""
+            CREATE TABLE job_status (
+                job_id TEXT PRIMARY KEY, tracker_status TEXT, updated_at TEXT, updated_by TEXT,
+                notes TEXT, follow_up_date TEXT, last_contact_date TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO job_status (job_id, tracker_status, notes) VALUES ('legacy1', 'Applied', 'from old table')"
+        )
+        conn.commit()
+        conn.close()
+
+        parse_jobs.save_to_sqlite(self.db_path, [])
+
+        conn = sqlite3.connect(self.db_path)
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        wf_row = conn.execute(
+            "SELECT tracker_status, notes FROM job_workflow WHERE job_id = 'legacy1'"
+        ).fetchone()
+        conn.close()
+        self.assertNotIn("job_status", tables)
+        self.assertEqual(wf_row, ("Applied", "from old table"))
+
+    def _seed_recent_application(self, position="Engineer", location="Remote"):
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("""
+            CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT, position TEXT,
+                location TEXT, url TEXT, provider TEXT, source_pdf TEXT, confidence TEXT, fit_score INTEGER,
+                priority TEXT, company_type TEXT, recommendation TEXT, tracker_status TEXT, disposition TEXT,
+                action TEXT, existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT,
+                date_added TEXT, last_seen TEXT, notes TEXT, recruiter TEXT, hiring_manager TEXT
+            )
+        """)
+        recent_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, location, tracker_status, date_added) "
+            "VALUES ('old1', 'Acme', ?, ?, 'Applied', ?)",
+            (position, location, recent_date),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_recent_application_same_role_is_auto_cancelled(self):
+        self._seed_recent_application(position="Engineer", location="Remote")
+
+        jobs_list = [{
+            "Job ID": "new1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT tracker_status, review_status, action, disposition, reason FROM jobs WHERE job_id = 'new1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row[0], "Cancelled")
+        self.assertEqual(row[1], "Closed")
+        self.assertEqual(row[2], "Ignore")
+        self.assertEqual(row[3], "Closed")
+        self.assertIn("Already Applied within", row[4])
+
+    def test_recent_application_different_role_stays_new(self):
+        # A recent application to one role at a company must not auto-cancel
+        # an unrelated role at the same company -- the match now requires
+        # company AND position (and a compatible location), not company alone.
+        self._seed_recent_application(position="Engineer", location="Remote")
+
+        jobs_list = [{
+            "Job ID": "new1", "Company": "Acme", "Position": "Different Role", "Location": "Remote",
+            "Tracker Status": "New",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT tracker_status FROM jobs WHERE job_id = 'new1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row[0], "New")
+
+
+class TestSaveToSqliteWorkflowProvenance(unittest.TestCase):
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.old_cwd = os.getcwd()
+        os.chdir(self.tmp_dir.name)
+        self.db_path = "jobs.db"
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        self.tmp_dir.cleanup()
+
+    def test_last_seen_advances_on_rediscovery(self):
+        job = {
+            "Job ID": "job1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-01-01", "Last Seen": "2026-01-01",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+
+        job["Last Seen"] = "2026-01-05"
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT last_seen FROM jobs WHERE job_id = 'job1'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], "2026-01-05")
+
+    def test_parser_write_cannot_downgrade_user_set_status_to_terminal(self):
+        # A human set this job to Applied via --update (status_source='user').
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("""
+            CREATE TABLE job_workflow (
+                job_id TEXT PRIMARY KEY, tracker_status TEXT, review_status TEXT,
+                action TEXT, disposition TEXT, updated_at TEXT, updated_by TEXT,
+                notes TEXT, follow_up_date TEXT, last_contact_date TEXT, status_source TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, status_source) VALUES ('job1', 'Applied', 'user')"
+        )
+        conn.commit()
+        conn.close()
+
+        # A later automated parser pass tries to rediscover the same job as a
+        # "New" duplicate and cancel it -- this must not overwrite the
+        # user-set Applied status with a system-generated Cancelled.
+        jobs_list = [{
+            "Job ID": "job1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "Cancelled",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT tracker_status FROM job_workflow WHERE job_id = 'job1'").fetchone()
+        conn.close()
+        self.assertEqual(row[0], "Applied")
+
+    def test_parser_write_cannot_downgrade_historical_row_with_blank_status_source(self):
+        # A row that predates the status_source column (or was migrated from
+        # an older schema) has status_source = NULL/blank, not 'user'. It
+        # must still be protected from an automated parser pass overwriting
+        # its active Applied status with a system-generated Cancelled --
+        # protection can't depend on provenance being recorded.
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("""
+            CREATE TABLE job_workflow (
+                job_id TEXT PRIMARY KEY, tracker_status TEXT, review_status TEXT,
+                action TEXT, disposition TEXT, updated_at TEXT, updated_by TEXT,
+                notes TEXT, follow_up_date TEXT, last_contact_date TEXT, status_source TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, status_source) VALUES ('job1', 'Applied', NULL)"
+        )
+        conn.commit()
+        conn.close()
+
+        jobs_list = [{
+            "Job ID": "job1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "Cancelled",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT tracker_status FROM job_workflow WHERE job_id = 'job1'").fetchone()
+        conn.close()
         self.assertEqual(row[0], "Applied")
 
 

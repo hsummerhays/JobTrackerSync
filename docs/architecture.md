@@ -22,7 +22,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         │       └─ Rejects location-only names, sentences, etc.
         │
         ├─ 4. Deduplication       (CanonicalKey = normalize(employer) + normalize(position) + normalize(location))
-        │       └─ Merges metadata (multiple job boards and PDF sources) into the existing record if matched within 90 days. Non-duplicate listings generate a stable 12-char MD5 Job ID hash.
+        │       └─ Merges metadata (multiple job boards and PDF sources) into the existing record if matched within 90 days. Non-duplicate listings generate a fresh, permanent 32-char hex UUID (`uuid.uuid4().hex`) as their Job ID.
         │
         ├─ 5. Evaluation          (evaluate_job)
         │       ├─ Fit Score (0-100)
@@ -54,6 +54,9 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 | File | Purpose |
 |------|---------|
 | `parse_jobs.py` | Main CLI entry point and all pipeline logic |
+| `find_pdf.py` | Database and CSV search utility for PDFs and jobs |
+| `query_jobs.py` | Permanent SQLite lookup utility for jobs |
+| `dedup_utils.py` | Shared status-ranking, merge, and file-URI helpers used by the above |
 | `config.json` | Resume skills, job type criteria, keyword weights |
 | `config.json.example` | Template for new installations |
 | `master_tracker.csv` | Primary working spreadsheet (git-ignored) |
@@ -70,7 +73,11 @@ Each job record in the main `jobs` table carries these fields:
 
 | Field | Description |
 |-------|-------------|
-| `Job ID` | MD5 hash of company + title + location (with optional date suffix if re-imported after 90 days) |
+| `Job ID` | Stable 32-char hex UUID (`uuid.uuid4().hex`) generated once and never recalculated |
+| `Fingerprint` | Normalized canonical key (company + title + location) used for deduplication |
+| `Previous Job ID` | Links a newly created tracker record to an older record if re-listed outside the window |
+| `Source Index` | Deterministic extraction position (e.g., '1-5' for the 5th job in the 1st PDF) |
+| `Last Seen` | ISO date when the job was most recently observed in a parse run |
 | `Review Status` | Workflow state: New, Applied, Imported, Closed |
 | `Job Type` | Software Engineer or Operations (drives scoring criteria) |
 | `Company` | Extracted company name (cleaned of subject/email subject formatting artifacts) |
@@ -110,6 +117,7 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | `notes` | TEXT | Custom user notes (preserved on import) |
 | `follow_up_date` | TEXT | User-managed follow up date (preserved on import) |
 | `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
+| `status_source` | TEXT | Origin of the status ('user', 'system', 'migration') to prevent parser overrides of manual states |
 
 ---
 
@@ -138,6 +146,16 @@ Resume skill lists drive both skill matching and fit scoring. Editing `config.js
 
 ---
 
+### Company Validation
+
+To protect data integrity from extraction artifacts, the `is_valid_company` function enforces several rules:
+- Rejects location-only company names (city/state strings, state abbreviation suffixes).
+- Rejects UI element strings: `View Details`, `Learn More`, `Apply Now`, `Easy Apply`, `Save Job`, `Show More`.
+- Rejects placeholder names: `Unknown`, `Undisclosed`, sentences, strings >7 words.
+- Rejects job board aggregator names: `Ladders`, `Indeed`, `LinkedIn`, `ZipRecruiter`, `Actively recruiting` (prevents them from being misidentified as employers in digest emails).
+
+---
+
 ## Known Parsing Challenges
 
 Job alert PDFs are semi-structured documents, not stable APIs. The parser is designed around repeatable provider patterns, but it also expects messy extraction artifacts:
@@ -158,6 +176,13 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Local-first**: No cloud dependency. All data stays on disk.
 - **Idempotent**: Re-running the sync is safe -- existing rows are re-scored but never duplicated.
 - **Git-ignored secrets**: `config.json`, `master_tracker.csv`, and `jobs.db` are excluded from version control. Templates are committed instead.
-- **CanonicalKey Deduplication & Merging**: Rather than creating duplicate entries when the same listing is found across different providers (e.g. Indeed and LinkedIn) or PDF folders within a 90-day window, the system merges their metadata (slash-separating providers/source PDFs and adding discovery note logs) to preserve tracker integrity.
-- **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine.
+- **Stable Tracking Architecture**: The discovery hash identifies a particular parsed occurrence. The deduplication engine associates that occurrence with a stable tracker record (UUID) via fingerprint matching when it represents an existing job. Listings outside the relisting window receive a new tracker record with a new stable ID, optionally linked to the earlier record as a relisting.
+- **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine. Manual status updates are stamped with `status_source = 'user'` to protect them from being downgraded by the parser.
 - **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run, and SQLite schema migrations are applied dynamically to add new user-state columns if they are missing.
+- **Single shared-helpers module**: `dedup_utils.py` holds both generic helpers (`normalize_string`, `path_to_file_uri`, `split_multivalue_field`) and dedup-specific ones (`canonical_key`, `merge_delimited_field`, status ranking) in one file rather than splitting into `utils.py` + `dedup.py`. At its current size (~140 lines, 3 consumers) a split would mostly add import indirection -- `dedup.py` would immediately import `normalize_string` from `utils.py` anyway -- without making anything easier to find. Revisit if the module keeps growing or a script needs the generic helpers without the dedup-specific logic.
+
+---
+
+## Future Enhancements
+
+- **CSV as a generated view, not a second source of truth**: Today `master_tracker.csv` and `jobs.db` are maintained as two independent stateful stores kept in sync on every run (two separate writes, pre-write backups, `clean_existing_tracker`'s CSV-parsing/migration pass, deferred `processed_files` commits). Most of the synchronization complexity -- and the bug class where a database failure after a partial CSV/DB write could leave the two diverged or PDFs marked processed prematurely -- stems from treating them as equal peers. Making SQLite the sole owner of identity, workflow, audit history, and processed-file state, and regenerating the CSV atomically as a `SELECT * FROM jobs` projection whenever needed, would eliminate the dual-write/backup-both/reconcile dance and the migration logic entirely. This is a substantial refactor (touches every read/write path that currently targets the CSV) and should be scoped as its own migration plan rather than done incrementally.

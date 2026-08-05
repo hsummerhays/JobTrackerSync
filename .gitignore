@@ -164,3 +164,6 @@ master_tracker.csv
 # PDF Directory
 PDFs/
 logs/
+
+scratch/
+*.bak.*

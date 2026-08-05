@@ -5,14 +5,26 @@ import csv
 import json
 import sqlite3
 import hashlib
+import uuid
 import argparse
 import shutil
 import time
 import pathlib
 import tempfile
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 import pypdf
-from dedup_utils import merge_delimited_field
+from dedup_utils import (
+    merge_delimited_field,
+    canonical_job_key,
+    VALID_STATUSES,
+    build_occurrence_fingerprint,
+    should_prefer_status,
+    normalize_string,
+    locations_compatible,
+    title_similarity,
+    TERMINAL_STATUSES,
+    UNREVIEWED_STATUSES,
+)
 from rich.console import Console
 from rich.table import Table
 
@@ -127,7 +139,7 @@ LEGACY_KEYWORDS = [
 FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "Microsoft"]
 
 # Incremental sync: bump this whenever a parser change should force re-processing of unchanged PDFs.
-PARSER_VERSION = "1.2.3"
+PARSER_VERSION = "1.3.1"
 
 
 def hash_pdf_file(pdf_path):
@@ -203,6 +215,30 @@ def clean_company_name(comp):
     cleaned = re.sub(r'\s*\.\.\.\s*$', '', cleaned)
     return cleaned.strip()
 
+# Known aggregator/job-board brands that sometimes appear as "company" inside
+# other providers' digest emails (e.g. Ladders posts jobs on LinkedIn), or are
+# deliberately used as a placeholder "company" for digest-style postings where
+# no per-job employer can be extracted (see is_aggregator_placeholder below).
+AGGREGATOR_PROVIDER_NAMES = {
+    "ladders", "ladders-dailydigest", "theladders", "the ladders",
+    "linkedin", "indeed", "glassdoor", "ziprecruiter",
+    "jobs.utah.gov", "jobs.utah.gov-dailysummary",
+    "actively recruiting",
+}
+
+
+def is_aggregator_placeholder(company):
+    """True if `company` is an aggregator/digest placeholder rather than a real
+    employer name, e.g. "Jobs.utah.gov-DailySummary" or "Ladders-DailyDigest".
+    These placeholders must never participate in canonical-key matching --
+    two unrelated digest postings from the same aggregator would otherwise
+    look like the same "employer" and get merged or reapply-cancelled."""
+    comp_lower = (company or "").strip().lower()
+    if not comp_lower:
+        return False
+    return comp_lower in AGGREGATOR_PROVIDER_NAMES or "dailysummary" in comp_lower or "dailydigest" in comp_lower
+
+
 def is_valid_company(company, provider=None):
     if not company:
         return False
@@ -213,8 +249,18 @@ def is_valid_company(company, provider=None):
     if not comp:
         return False
     comp_lower = comp.lower()
+    # Digest/summary placeholder rows (e.g. "Jobs.utah.gov-DailySummary",
+    # "Ladders-DailyDigest") are valid tracker rows even though they aren't a
+    # real employer -- is_aggregator_placeholder() is what keeps them out of
+    # canonical-key matching, not rejection here. This must run before the
+    # bare-provider-name rejection below, since those exact placeholder
+    # strings are also listed in AGGREGATOR_PROVIDER_NAMES (to reject the
+    # *unsuffixed* provider name, e.g. "jobs.utah.gov" on its own).
     if "dailysummary" in comp_lower or "dailydigest" in comp_lower:
         return True
+    # Reject job board / provider names that should never appear as employer names.
+    if comp_lower in AGGREGATOR_PROVIDER_NAMES:
+        return False
     # Reject if contains slash or backslash (typically indicates a tech stack heading)
     if "/" in comp or "\\" in comp:
         return False
@@ -286,6 +332,8 @@ def is_valid_company(company, provider=None):
         return False
     if comp.endswith('.') and len(comp.split()[-1]) > 5:
         return False
+    if re.match(r'^posted:\s*', comp_lower):
+        return False
     return True
 
 
@@ -306,6 +354,21 @@ def compute_priority(recommendation, action, age_days=0):
             priority = "P3 – Investigate"
             
     return priority
+
+def backup_file_if_exists(path):
+    """Copy `path` to a timestamped `.bak.<timestamp>` sibling before a risky
+    write, so there's a recoverable snapshot to restore from if the write is
+    interrupted partway through. No-op if `path` doesn't exist yet."""
+    if not os.path.exists(path):
+        return None
+    backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+    try:
+        shutil.copy2(path, backup_path)
+        return backup_path
+    except OSError as e:
+        console.print(f"[dim yellow]Could not back up {path} before writing: {e}[/dim yellow]")
+        return None
+
 
 def write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='raise'):
     """Write rows to tracker_path via a temp file + atomic rename, so a crash
@@ -329,7 +392,7 @@ def initialize_tracker(tracker_path):
     if not os.path.exists(tracker_path):
         with open(tracker_path, mode='w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"])
+            writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager", "Fingerprint", "Previous Job ID"])
         console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
 
 def clean_existing_tracker(tracker_path):
@@ -342,12 +405,13 @@ def clean_existing_tracker(tracker_path):
     migrated_schema = False
     
     expected_headers = [
-        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
-        "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
-        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"
+        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
+        "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager",
+        "Fingerprint", "Previous Job ID"
     ]
-    
+
     try:
         with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
@@ -474,6 +538,7 @@ def clean_existing_tracker(tracker_path):
             disposition = row.get("Disposition", disposition_map.get(status, "Apply"))
             migrated_row["Disposition"] = disposition
             migrated_row["Date Added"] = row.get("Date Added", datetime.now().strftime("%Y-%m-%d"))
+            migrated_row["Last Seen"] = row.get("Last Seen", migrated_row["Date Added"])
             
             notes = row.get("Notes", "")
             migrated_row["Notes"] = notes
@@ -481,7 +546,7 @@ def clean_existing_tracker(tracker_path):
             # Job ID
             job_id = row.get("Job ID")
             if not job_id:
-                job_id = hashlib.md5(f"{company.strip().lower()}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()[:12]
+                job_id = hashlib.md5(f"{company.strip().lower()}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()
             migrated_row["Job ID"] = job_id
             
             # Job Type
@@ -711,25 +776,64 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Recruiter"] = row.get("Recruiter", "")
             migrated_row["Hiring Manager"] = row.get("Hiring Manager", "")
             
+            source_index = row.get("Source Index", "")
+            if not source_index and notes:
+                match = re.search(r"Source Index:\s*([^\n,]+)", notes)
+                if match:
+                    source_index = match.group(1).strip()
+            migrated_row["Source Index"] = source_index
+
+            # Preserve audit fields; backfill Fingerprint for rows that predate
+            # the column so every row has a stable identity key. Aggregator
+            # placeholders use the occurrence-key formula (see
+            # build_occurrence_fingerprint) instead of canonical_job_key, same
+            # as the initial parse, so backfill and import never diverge.
+            if is_aggregator_placeholder(company) and source_index:
+                # Always recompute aggregator fingerprint in case previous version was invalid
+                migrated_row["Fingerprint"] = build_occurrence_fingerprint(
+                    row.get("Provider", ""), row.get("Source PDF", ""), row.get("Date Added", ""), source_index, position
+                )
+            elif row.get("Fingerprint"):
+                migrated_row["Fingerprint"] = row["Fingerprint"]
+            else:
+                migrated_row["Fingerprint"] = canonical_job_key(company, position, location)
+            migrated_row["Previous Job ID"] = row.get("Previous Job ID", "")
+
             rows_to_keep.append(migrated_row)
                 
-        # Always sync with SQLite database 'jobs.db' on launch
-        save_to_sqlite("jobs.db", rows_to_keep)
-        
+        # Always sync with SQLite database 'jobs.db' on launch. Snapshot both
+        # files first -- these are two separate writes, not one transaction.
+        backup_file_if_exists("jobs.db")
+        backup_file_if_exists(tracker_path)
+        success = save_to_sqlite("jobs.db", rows_to_keep)
+
         # Always save CSV back to disk to preserve updated skills/scores calculations
-        if True:
-            write_tracker_csv_atomic(tracker_path, expected_headers, rows_to_keep)
+        if success:
+            write_tracker_csv_atomic(tracker_path, expected_headers, rows_to_keep, extrasaction='ignore')
             console.print(f"[green]Synchronized and recalculated all tracking rows in {tracker_path}[/green]")
+        else:
+            console.print("[red]Database save failed, aborting CSV update in clean_existing_tracker.[/red]")
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
 
-def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_applied_ids=None):
+def _ensure_columns(cursor, table, columns):
+    """Idempotently add any of `columns` (list of (name, type)) missing from
+    `table`, used both for self-healing older DBs and for schema-drift
+    recovery -- additive only, never drops or recreates the table."""
+    for col, col_type in columns:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
+
+def save_to_sqlite(db_path, jobs_list):
     """Save or upsert a list of jobs to the SQLite database."""
     conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
         # Create table if not exists
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
@@ -755,9 +859,12 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                 matched_skills TEXT,
                 missing_skills TEXT,
                 date_added TEXT,
+                last_seen TEXT,
                 notes TEXT,
                 recruiter TEXT,
-                hiring_manager TEXT
+                hiring_manager TEXT,
+                fingerprint TEXT,
+                previous_job_id TEXT
             )
         """)
 
@@ -776,7 +883,8 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                 updated_by TEXT,
                 notes TEXT,
                 follow_up_date TEXT,
-                last_contact_date TEXT
+                last_contact_date TEXT,
+                status_source TEXT
             )
         """)
 
@@ -788,24 +896,21 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='job_status'")
             if cursor.fetchone():
                 cursor.execute("""
-                    INSERT OR IGNORE INTO job_workflow (job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date)
-                    SELECT job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date FROM job_status
+                    INSERT OR IGNORE INTO job_workflow (job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date, status_source)
+                    SELECT job_id, tracker_status, updated_at, updated_by, notes, follow_up_date, last_contact_date, 'migration' FROM job_status
                 """)
                 cursor.execute("DROP TABLE IF EXISTS job_status")
         except sqlite3.OperationalError:
             pass
 
         # Add columns dynamically to jobs and job_workflow in case the tables already existed without them
-        try:
-            cursor.execute("ALTER TABLE jobs ADD COLUMN recruiter TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            cursor.execute("ALTER TABLE jobs ADD COLUMN hiring_manager TEXT")
-        except sqlite3.OperationalError:
-            pass
-
-        for col, col_type in [
+        _ensure_columns(cursor, "jobs", [
+            ("recruiter", "TEXT"),
+            ("hiring_manager", "TEXT"),
+            ("fingerprint", "TEXT"),
+            ("previous_job_id", "TEXT"),
+        ])
+        _ensure_columns(cursor, "job_workflow", [
             ("review_status", "TEXT"),
             ("action", "TEXT"),
             ("disposition", "TEXT"),
@@ -813,12 +918,27 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
             ("updated_by", "TEXT"),
             ("notes", "TEXT"),
             ("follow_up_date", "TEXT"),
-            ("last_contact_date", "TEXT")
-        ]:
-            try:
-                cursor.execute(f"ALTER TABLE job_workflow ADD COLUMN {col} {col_type}")
-            except sqlite3.OperationalError:
-                pass
+            ("last_contact_date", "TEXT"),
+            ("status_source", "TEXT"),
+        ])
+
+        # One-time backfill: pre-existing rows created before the fingerprint
+        # column existed won't have one yet. Back up the DB file before writing,
+        # since this touches every existing row.
+        cursor.execute("SELECT COUNT(*) FROM jobs WHERE fingerprint IS NULL OR fingerprint = ''")
+        if cursor.fetchone()[0] > 0:
+            conn.commit()
+            backup_file_if_exists(db_path)
+            cursor.execute("SELECT job_id, company, position, location FROM jobs WHERE fingerprint IS NULL OR fingerprint = ''")
+            rows_to_backfill = cursor.fetchall()
+            cursor.executemany(
+                "UPDATE jobs SET fingerprint = ? WHERE job_id = ?",
+                [
+                    (canonical_job_key(company or "", position or "", location or ""), job_id)
+                    for job_id, company, position, location in rows_to_backfill
+                ]
+            )
+            conn.commit()
 
         # Populate job_workflow table with existing status data from jobs table if available
         try:
@@ -829,44 +949,112 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
         except sqlite3.OperationalError:
             pass
 
-        # If any expired jobs returned, clear their historic state so they can be re-recommended
-        if returned_expired_ids:
-            try:
-                cursor.executemany("DELETE FROM job_workflow WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
-                cursor.executemany("DELETE FROM jobs WHERE job_id = ?", [(jid,) for jid in returned_expired_ids])
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
-        # If any previously-applied jobs were re-listed after 30+ days, reset their workflow so they can be re-applied
-        if returned_applied_ids:
-            try:
-                cursor.executemany("DELETE FROM job_workflow WHERE job_id = ?", [(jid,) for jid in returned_applied_ids])
-                cursor.executemany("DELETE FROM jobs WHERE job_id = ?", [(jid,) for jid in returned_applied_ids])
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass
+        # Note: neither expired nor previously-applied jobs rediscovered on a
+        # later run are deleted here. A rediscovered Applied/Interviewing/etc.
+        # posting is merged into its existing record by the dedup pass in
+        # main(); a rediscovered Expired posting instead becomes a new row
+        # linked back to the old one via Previous Job ID. Either way the old
+        # row (and its job_workflow history) is kept, never orphaned or
+        # force-deleted.
 
         # Retrieve persisted workflow values
-        cursor.execute("SELECT job_id, tracker_status, review_status, action, disposition FROM job_workflow")
+        cursor.execute("SELECT job_id, tracker_status, review_status, action, disposition, status_source FROM job_workflow")
         persisted_workflows = {row[0]: {
             "tracker_status": row[1],
             "review_status": row[2],
             "action": row[3],
-            "disposition": row[4]
+            "disposition": row[4],
+            "status_source": row[5],
         } for row in cursor.fetchall()}
 
-        # Update jobs in-memory with their persisted workflow state
-        # If the persisted status is an active application state (Applied, Phone Screen, etc.), protect it from being overwritten.
-        applied_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]
+        # Check for recent applications for "New" jobs. Must match company AND
+        # position (and a compatible location) -- a company-only match would
+        # auto-cancel an unrelated role just because some other role at the same
+        # company was recently applied to. Aggregator/digest placeholder
+        # "companies" are skipped entirely since they don't identify a real
+        # employer and would otherwise cancel unrelated postings against
+        # each other.
+        try:
+            today = datetime.now()
+            sixty_days_ago = (today - timedelta(days=60)).strftime('%Y-%m-%d')
+            applied_statuses = ("Applied", "Interviewing", "Technical Interview", "Phone Screen", "Recruiter Contact", "Offer", "Waiting")
+            placeholders = ','.join(['?'] * len(applied_statuses))
+
+            for job in jobs_list:
+                current_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
+                if current_status != "New" and current_status:
+                    continue
+                company = job.get("Company", job.get("company"))
+                position = job.get("Position", job.get("position"))
+                location = job.get("Location", job.get("location"))
+                if not company or not position or is_aggregator_placeholder(company):
+                    continue
+
+                query = f"""
+                    SELECT date_added, position, location
+                    FROM jobs
+                    WHERE company = ?
+                    AND tracker_status IN ({placeholders})
+                    AND date_added >= ?
+                    ORDER BY date_added DESC
+                """
+                cursor.execute(query, (company, *applied_statuses, sixty_days_ago))
+                match_date = None
+                for cand_date, cand_position, cand_location in cursor.fetchall():
+                    if normalize_string(cand_position or "") == normalize_string(position) and locations_compatible(cand_location or "", location or ""):
+                        match_date = cand_date
+                        break
+
+                if match_date:
+                    recent_date = datetime.strptime(match_date[:10], '%Y-%m-%d')
+                    days_since = (today - recent_date).days
+                    reason_text = f"Already Applied within {days_since} days"
+
+                    for k in ["Tracker Status", "tracker_status", "Status", "status"]:
+                        if k in job:
+                            job[k] = "Cancelled"
+
+                    job["Review Status"] = "Closed"
+                    job["review_status"] = "Closed"
+                    job["Action"] = "Ignore"
+                    job["action"] = "Ignore"
+                    job["Disposition"] = "Closed"
+                    job["disposition"] = "Closed"
+                    job["Reason"] = reason_text
+                    job["reason"] = reason_text
+        except Exception as e:
+            console.print(f"[dim yellow]Could not check for recent applications to auto-cancel duplicates: {e}[/dim yellow]")
+
+        # Update jobs in-memory with their persisted workflow state. The persisted
+        # (DB) status wins unless the incoming status is a genuine improvement per
+        # should_prefer_status (dedup_utils) -- e.g. a still-"New" incoming status
+        # never displaces a persisted "Applied". On top of that, an active
+        # application status (Applied, Interviewing, ...) can never be
+        # automatically downgraded into a terminal status (Cancelled, Rejected,
+        # ...) by this parser-driven pass, even in the rare case
+        # should_prefer_status would otherwise allow a terminal status to win.
+        # This protection does NOT depend on status_source == "user" -- rows
+        # migrated from an older schema, or written before status_source
+        # existed, have a blank status_source and need the same protection as
+        # a status a human set by hand.
         for job in jobs_list:
             jid = job.get("Job ID", job.get("job_id"))
             if jid and jid in persisted_workflows:
                 pw = persisted_workflows[jid]
                 persisted_status = pw.get("tracker_status")
                 current_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
-                
-                if persisted_status in applied_statuses or (not current_status or current_status == "New"):
+
+                persisted_is_active_application = (
+                    persisted_status not in TERMINAL_STATUSES
+                    and persisted_status not in UNREVIEWED_STATUSES
+                )
+                parser_terminal_downgrade = (
+                    persisted_is_active_application
+                    and current_status in TERMINAL_STATUSES
+                )
+                keep_persisted = parser_terminal_downgrade or not should_prefer_status(persisted_status, current_status)
+
+                if keep_persisted:
                     for target_key, source_key in [
                         ("Tracker Status", "tracker_status"),
                         ("Review Status", "review_status"),
@@ -880,7 +1068,7 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                             if lower_key in job:
                                 job[lower_key] = val
         
-        try:
+        def _upsert_all_jobs():
             # Upsert jobs and job_workflow
             for job in jobs_list:
                 jid = job.get("Job ID", job.get("job_id"))
@@ -888,41 +1076,56 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                 review_status = job.get("Review Status", job.get("review_status"))
                 action = job.get("Action", job.get("action"))
                 disposition = job.get("Disposition", job.get("disposition"))
-                
+                status_source = job.get("_status_source", "parser")
+
                 if jid:
                     cursor.execute("""
-                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by)
-                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system')
+                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by, status_source)
+                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system', ?)
                         ON CONFLICT(job_id) DO UPDATE SET
-                            updated_at = CASE 
+                            updated_at = CASE
                                 WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
                                      OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
                                      OR coalesce(action, '') != coalesce(excluded.action, '')
                                      OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
-                                THEN excluded.updated_at 
-                                ELSE updated_at 
+                                THEN excluded.updated_at
+                                ELSE updated_at
                             END,
-                            updated_by = CASE 
+                            updated_by = CASE
                                 WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
                                      OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
                                      OR coalesce(action, '') != coalesce(excluded.action, '')
                                      OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
-                                THEN excluded.updated_by 
-                                ELSE updated_by 
+                                THEN excluded.updated_by
+                                ELSE updated_by
+                            END,
+                            status_source = CASE
+                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
+                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
+                                     OR coalesce(action, '') != coalesce(excluded.action, '')
+                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
+                                THEN excluded.status_source
+                                ELSE status_source
                             END,
                             tracker_status = excluded.tracker_status,
                             review_status = excluded.review_status,
                             action = excluded.action,
                             disposition = excluded.disposition
-                    """, (jid, tracker_status, review_status, action, disposition))
+                    """, (jid, tracker_status, review_status, action, disposition, status_source))
+
+                company = job.get("Company", job.get("company")) or ""
+                position = job.get("Position", job.get("position")) or ""
+                location = job.get("Location", job.get("location")) or ""
+                fingerprint = job.get("Fingerprint", job.get("fingerprint")) or canonical_job_key(company, position, location)
 
                 cursor.execute("""
                     INSERT INTO jobs (
-                        job_id, review_status, job_type, company, position, location, url, provider, 
-                        source_pdf, confidence, fit_score, priority, company_type, 
+                        job_id, review_status, job_type, company, position, location, url, provider,
+                        source_pdf, confidence, fit_score, priority, company_type,
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes, recruiter, hiring_manager
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        reason, matched_skills, missing_skills, date_added, last_seen, notes, recruiter, hiring_manager,
+                        fingerprint, previous_job_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -945,166 +1148,102 @@ def save_to_sqlite(db_path, jobs_list, returned_expired_ids=None, returned_appli
                         matched_skills=excluded.matched_skills,
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
+                        last_seen=excluded.last_seen,
                         notes=excluded.notes,
                         recruiter=excluded.recruiter,
-                        hiring_manager=excluded.hiring_manager
+                        hiring_manager=excluded.hiring_manager,
+                        fingerprint=excluded.fingerprint,
+                        previous_job_id=COALESCE(excluded.previous_job_id, previous_job_id)
                 """, (
-                    jid, 
-                    job.get("Review Status", job.get("review_status")), 
-                    job.get("Job Type", job.get("job_type")), 
-                    job.get("Company", job.get("company")), 
-                    job.get("Position", job.get("position")), 
-                    job.get("Location", job.get("location")),
-                    job.get("URL", job.get("url")), 
-                    job.get("Provider", job.get("provider")), 
-                    job.get("Source PDF", job.get("source_pdf")), 
+                    jid,
+                    job.get("Review Status", job.get("review_status")),
+                    job.get("Job Type", job.get("job_type")),
+                    company,
+                    position,
+                    location,
+                    job.get("URL", job.get("url")),
+                    job.get("Provider", job.get("provider")),
+                    job.get("Source PDF", job.get("source_pdf")),
                     job.get("Confidence", job.get("confidence")),
-                    job.get("Fit Score", job.get("fit_score")), 
-                    job.get("Priority", job.get("priority")), 
-                    job.get("Company Type", job.get("company_type")), 
+                    job.get("Fit Score", job.get("fit_score")),
+                    job.get("Priority", job.get("priority")),
+                    job.get("Company Type", job.get("company_type")),
                     job.get("Recommendation", job.get("recommendation")),
-                    tracker_status, 
-                    job.get("Disposition", job.get("disposition")), 
+                    tracker_status,
+                    job.get("Disposition", job.get("disposition")),
                     job.get("Action", job.get("action")),
                     job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
                     job.get("Reason", job.get("reason")),
                     job.get("Matched Skills", job.get("matched_skills")),
                     job.get("Missing Skills", job.get("missing_skills")),
-                    job.get("Date Added", job.get("date_added")), 
+                    job.get("Date Added", job.get("date_added")),
+                    job.get("Last Seen", job.get("last_seen", job.get("Date Added", job.get("date_added")))),
                     job.get("Notes", job.get("notes")),
                     job.get("Recruiter", job.get("recruiter")),
-                    job.get("Hiring Manager", job.get("hiring_manager"))
+                    job.get("Hiring Manager", job.get("hiring_manager")),
+                    fingerprint,
+                    job.get("Previous Job ID", job.get("previous_job_id")),
                 ))
+
+        try:
+            _upsert_all_jobs()
             conn.commit()
-        except sqlite3.OperationalError as oe:
-            # Table schema mismatch - drop and recreate jobs table only
+            return True
+        except sqlite3.OperationalError:
+            # Schema drift (e.g. an older jobs.db missing a column the current
+            # code writes) -- patch the schema additively and retry once, instead
+            # of dropping the jobs table and losing every row not present in this
+            # run's jobs_list.
             conn.rollback()
-            cursor.execute("DROP TABLE IF EXISTS jobs")
-            cursor.execute("""
-                CREATE TABLE jobs (
-                    job_id TEXT PRIMARY KEY,
-                    review_status TEXT,
-                    job_type TEXT,
-                    company TEXT,
-                    position TEXT,
-                    location TEXT,
-                    url TEXT,
-                    provider TEXT,
-                    source_pdf TEXT,
-                    confidence TEXT,
-                    fit_score INTEGER,
-                    priority TEXT,
-                    company_type TEXT,
-                    recommendation TEXT,
-                    tracker_status TEXT,
-                    disposition TEXT,
-                    action TEXT,
-                    existing_company TEXT,
-                    reason TEXT,
-                    matched_skills TEXT,
-                    missing_skills TEXT,
-                    date_added TEXT,
-                    notes TEXT,
-                    recruiter TEXT,
-                    hiring_manager TEXT
-                )
-            """)
-            for job in jobs_list:
-                jid = job.get("Job ID", job.get("job_id"))
-                tracker_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
-                review_status = job.get("Review Status", job.get("review_status"))
-                action = job.get("Action", job.get("action"))
-                disposition = job.get("Disposition", job.get("disposition"))
-                
-                if jid:
-                    cursor.execute("""
-                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by)
-                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system')
-                        ON CONFLICT(job_id) DO UPDATE SET
-                            updated_at = CASE 
-                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
-                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
-                                     OR coalesce(action, '') != coalesce(excluded.action, '')
-                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
-                                THEN excluded.updated_at 
-                                ELSE updated_at 
-                            END,
-                            updated_by = CASE 
-                                WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
-                                     OR coalesce(review_status, '') != coalesce(excluded.review_status, '')
-                                     OR coalesce(action, '') != coalesce(excluded.action, '')
-                                     OR coalesce(disposition, '') != coalesce(excluded.disposition, '')
-                                THEN excluded.updated_by 
-                                ELSE updated_by 
-                            END,
-                            tracker_status = excluded.tracker_status,
-                            review_status = excluded.review_status,
-                            action = excluded.action,
-                            disposition = excluded.disposition
-                    """, (jid, tracker_status, review_status, action, disposition))
-
-                cursor.execute("""
-                    INSERT INTO jobs (
-                        job_id, review_status, job_type, company, position, location, url, provider, 
-                        source_pdf, confidence, fit_score, priority, company_type, 
-                        recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, notes, recruiter, hiring_manager
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(job_id) DO UPDATE SET
-                        review_status=excluded.review_status,
-                        job_type=excluded.job_type,
-                        company=excluded.company,
-                        position=excluded.position,
-                        location=excluded.location,
-                        url=excluded.url,
-                        provider=excluded.provider,
-                        source_pdf=excluded.source_pdf,
-                        confidence=excluded.confidence,
-                        fit_score=excluded.fit_score,
-                        priority=excluded.priority,
-                        company_type=excluded.company_type,
-                        recommendation=excluded.recommendation,
-                        tracker_status=excluded.tracker_status,
-                        disposition=excluded.disposition,
-                        action=excluded.action,
-                        existing_company=excluded.existing_company,
-                        reason=excluded.reason,
-                        matched_skills=excluded.matched_skills,
-                        missing_skills=excluded.missing_skills,
-                        date_added=excluded.date_added,
-                        notes=excluded.notes,
-                        recruiter=excluded.recruiter,
-                        hiring_manager=excluded.hiring_manager
-                """, (
-                    jid, 
-                    job.get("Review Status", job.get("review_status")), 
-                    job.get("Job Type", job.get("job_type")), 
-                    job.get("Company", job.get("company")), 
-                    job.get("Position", job.get("position")), 
-                    job.get("Location", job.get("location")),
-                    job.get("URL", job.get("url")), 
-                    job.get("Provider", job.get("provider")), 
-                    job.get("Source PDF", job.get("source_pdf")), 
-                    job.get("Confidence", job.get("confidence")),
-                    job.get("Fit Score", job.get("fit_score")), 
-                    job.get("Priority", job.get("priority")), 
-                    job.get("Company Type", job.get("company_type")), 
-                    job.get("Recommendation", job.get("recommendation")),
-                    tracker_status, 
-                    job.get("Disposition", job.get("disposition")), 
-                    job.get("Action", job.get("action")),
-                    job.get("Existing Company", job.get("Already in Tracker", job.get("already_in_tracker"))),
-                    job.get("Reason", job.get("reason")),
-                    job.get("Matched Skills", job.get("matched_skills")),
-                    job.get("Missing Skills", job.get("missing_skills")),
-                    job.get("Date Added", job.get("date_added")), 
-                    job.get("Notes", job.get("notes")),
-                    job.get("Recruiter", job.get("recruiter")),
-                    job.get("Hiring Manager", job.get("hiring_manager"))
-                ))
+            _ensure_columns(cursor, "jobs", [
+                ("review_status", "TEXT"),
+                ("job_type", "TEXT"),
+                ("company", "TEXT"),
+                ("position", "TEXT"),
+                ("location", "TEXT"),
+                ("url", "TEXT"),
+                ("provider", "TEXT"),
+                ("source_pdf", "TEXT"),
+                ("confidence", "TEXT"),
+                ("fit_score", "INTEGER"),
+                ("priority", "TEXT"),
+                ("company_type", "TEXT"),
+                ("recommendation", "TEXT"),
+                ("tracker_status", "TEXT"),
+                ("disposition", "TEXT"),
+                ("action", "TEXT"),
+                ("existing_company", "TEXT"),
+                ("reason", "TEXT"),
+                ("matched_skills", "TEXT"),
+                ("missing_skills", "TEXT"),
+                ("date_added", "TEXT"),
+                ("last_seen", "TEXT"),
+                ("notes", "TEXT"),
+                ("recruiter", "TEXT"),
+                ("hiring_manager", "TEXT"),
+                ("fingerprint", "TEXT"),
+                ("previous_job_id", "TEXT"),
+            ])
+            _ensure_columns(cursor, "job_workflow", [
+                ("review_status", "TEXT"),
+                ("action", "TEXT"),
+                ("disposition", "TEXT"),
+                ("updated_at", "TEXT"),
+                ("updated_by", "TEXT"),
+                ("notes", "TEXT"),
+                ("follow_up_date", "TEXT"),
+                ("last_contact_date", "TEXT"),
+                ("status_source", "TEXT"),
+            ])
             conn.commit()
+            _upsert_all_jobs()
+            conn.commit()
+            return True
     except Exception as e:
+        if conn:
+            conn.rollback()
         console.print(f"[red]Failed to save to SQLite database: {e}[/red]")
+        return False
     finally:
         if conn:
             conn.close()
@@ -1121,7 +1260,7 @@ def load_tracker(tracker_path):
                     comp = row.get("Company", "").strip().lower()
                     pos = row.get("Position", "").strip().lower()
                     loc = row.get("Location", "").strip().lower()
-                    job_id = hashlib.md5(f"{comp}|{pos}|{loc}".encode('utf-8')).hexdigest()[:12]
+                    job_id = hashlib.md5(f"{comp}|{pos}|{loc}".encode('utf-8')).hexdigest()
                 existing_jobs[(job_id, row.get("Date Added", ""))] = row
     return existing_jobs
 
@@ -1730,8 +1869,11 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 if is_next_title or next_has_salary:
                     break
                 if state_city_pattern.search(next_line) or "remote" in next_line.lower():
-                    location = _clean_location(next_line)
-                    found_location = True
+                    if not found_location:
+                        location = _clean_location(next_line)
+                        found_location = True
+                    elif "on-site" in next_line.lower() or "remote" in next_line.lower() or "hybrid" in next_line.lower():
+                        location = f"{location} {next_line.strip()}"
                 if "http" in next_line or "www." in next_line or next_line.startswith("linkedin.com"):
                     url = next_line
                 next_idx += 1
@@ -1771,6 +1913,11 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
             # Collapse multiple spaces to a single space
             company = re.sub(r'\s+', ' ', company).strip()
             location = _clean_location(location)
+            
+            # Clean up title anomalies (e.g., ZipRecruiter's trailing 'New' badge, or unmatched parens from wrapping)
+            title = re.sub(r'\s+New$', '', title, flags=re.IGNORECASE).strip()
+            if title.endswith(')') and '(' not in title:
+                title = title[:-1].strip()
                 
             jobs.append({
                 "title": title,
@@ -2518,7 +2665,7 @@ def handle_interactive_update():
     position = selected_job[2]
     
     # New status selection
-    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
+    valid_statuses = VALID_STATUSES
     console.print(f"\nSelected: [bold]{company}[/bold] — {position}")
     console.print(f"Current Status: [yellow]{selected_job[3]}[/yellow]")
     console.print("\n[bold cyan]New Status:[/bold cyan]")
@@ -2552,7 +2699,7 @@ def handle_interactive_update():
 
 def handle_status_update(query, status, notes=None):
     # Validates status
-    valid_statuses = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
+    valid_statuses = VALID_STATUSES
     if status not in valid_statuses:
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
@@ -2566,11 +2713,14 @@ def handle_status_update(query, status, notes=None):
         
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+    # A human is issuing this update -- make sure status_source exists before
+    # the writes below stamp it, in case this DB predates that column.
+    _ensure_columns(cursor, "job_workflow", [("status_source", "TEXT")])
+
     # Query database for matches
     cursor.execute("""
-        SELECT job_id, company, position, location, tracker_status 
-        FROM jobs 
+        SELECT job_id, company, position, location, tracker_status
+        FROM jobs
         WHERE job_id = ? OR company LIKE ? OR position LIKE ?
     """, (query, f"%{query}%", f"%{query}%"))
     matches = cursor.fetchall()
@@ -2632,15 +2782,15 @@ def handle_status_update(query, status, notes=None):
     cursor.execute("SELECT 1 FROM job_workflow WHERE job_id = ?", (job_id,))
     if cursor.fetchone():
         cursor.execute("""
-            UPDATE job_workflow 
-            SET tracker_status = ?, review_status = ?, action = ?, disposition = ?, 
-                notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system'
+            UPDATE job_workflow
+            SET tracker_status = ?, review_status = ?, action = ?, disposition = ?,
+                notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system', status_source = 'user'
             WHERE job_id = ?
         """, (status, review_status, action, disposition, notes, now_str, job_id))
     else:
         cursor.execute("""
-            INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'system')
+            INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by, status_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'system', 'user')
         """, (job_id, status, review_status, action, disposition, notes, now_str))
         
     # Retrieve updated row for CSV synchronization
@@ -2857,7 +3007,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
                 status = "New"
             else:
                 # Prompt for status in the active statuses list
-                valid_statuses = ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
+                valid_statuses = VALID_STATUSES
                 console.print(f"Select status: {', '.join(valid_statuses)}")
                 status_input = input(f"Status [default: Applied]: ").strip()
                 if status_input in valid_statuses:
@@ -2924,11 +3074,26 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     else:
         already_in = "No"
         
-    # Generate job ID (date_added included for the same reason as the PDF-import
-    # path: avoids colliding with a stale row of the same company/title/location)
+    # Generate job ID. If an existing tracker row already matches this
+    # company/position/location, reuse its Job ID so re-running --add for the
+    # same opportunity updates that row instead of creating a duplicate --
+    # otherwise mint a fresh, permanent UUID, same as the PDF-import path.
     date_added = datetime.now().strftime("%Y-%m-%d")
-    job_id = hashlib.md5(f"{comp_cleaned}|{position.strip().lower()}|{location.strip().lower()}|{date_added}".encode('utf-8')).hexdigest()[:12]
-    
+    job_id = None
+    target_fingerprint = canonical_job_key(company, position, location)
+    if os.path.exists(tracker_path):
+        try:
+            with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    row_fingerprint = canonical_job_key(row.get("Company", ""), row.get("Position", ""), row.get("Location", ""))
+                    if row_fingerprint == target_fingerprint and row.get("Job ID"):
+                        job_id = row["Job ID"]
+                        break
+        except Exception:
+            pass
+    if not job_id:
+        job_id = uuid.uuid4().hex
+
     # Priority
     priority = compute_priority(recommendation, action)
     
@@ -2957,14 +3122,22 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
         "Matched Skills": "",
         "Missing Skills": "",
         "Date Added": date_added,
+        "Last Seen": date_added,
         "Notes": notes,
         "Recruiter": recruiter,
-        "Hiring Manager": hiring_manager
+        "Hiring Manager": hiring_manager,
+        "Fingerprint": canonical_job_key(company, position, location),
+        "Previous Job ID": "",
+        "Source Index": "",
+        "_status_source": "user"
     }
     
     # Save/upsert to jobs.db
-    save_to_sqlite("jobs.db", [job])
-    
+    success = save_to_sqlite("jobs.db", [job])
+    if not success:
+        console.print("[red]Database save failed, aborting CSV update to prevent data divergence.[/red]")
+        return False
+        
     # Append/update master_tracker.csv
     if os.path.exists(tracker_path):
         rows = []
@@ -3144,6 +3317,7 @@ def main():
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
     parser.add_argument("--analytics", action="store_true", help="Print analytics dashboard showing conversion rates and exit")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
+    parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
@@ -3243,14 +3417,18 @@ def main():
         "files_failed":    0,
     }
 
-    returned_expired_ids = set()
-    returned_applied_ids = set()
     all_recommendations = []
     found_any_pdf = False
 
     # Store all unique job cards collected during the scan before reviewing
     raw_collected_jobs = {}  # job_id -> job dict
     empty_pdfs = []
+
+    # Successful-parse processed_files records are held in memory and only
+    # written once the final jobs.db/CSV save succeeds -- otherwise a PDF
+    # whose jobs never made it to disk would be marked "success" and get
+    # silently skipped (and its jobs permanently lost) on the next run.
+    pending_success_records = []
     
     try:
         for root, dirs, files in os.walk(pdf_dir):
@@ -3281,14 +3459,20 @@ def main():
                 pdf_path = os.path.join(root, pdf_file)
                 pdf_uri = pathlib.Path(pdf_path).as_uri()
 
+                # Ignore application confirmation emails that were saved as PDFs
+                if "application was sent" in pdf_file.lower() or "application received" in pdf_file.lower():
+                    run_stats["pdfs_skipped"] += 1
+                    console.print(f"[dim]Skipping application confirmation: {pdf_file}[/dim]")
+                    continue
+
                 # --- Incremental sync: skip if content+parser-version unchanged ---
                 pdf_hash = hash_pdf_file(pdf_path)
                 if pdf_hash and check_pdf_processed(_db_conn, pdf_hash, PARSER_VERSION):
-                    console.print(f"[dim]Skipping {pdf_file} ({pdf_uri}) (unchanged)[/dim]")
+                    console.print(f"[dim]Skipping {pdf_file} (unchanged)[/dim]")
                     run_stats["pdfs_skipped"] += 1
                     continue
 
-                console.print(f"[cyan]Parsing {pdf_file} ({pdf_uri})...[/cyan]")
+                console.print(f"[cyan]Parsing {pdf_file}...[/cyan]")
 
                 try:
                     pdf_stat = os.stat(pdf_path)
@@ -3323,77 +3507,150 @@ def main():
                             if job.get("url", "N/A") == "N/A" and idx < len(page_urls):
                                 job["url"] = page_urls[idx]
 
-                            # Compute Job ID. date_added is always part of the hash so a
-                            # job that reappears after the reapply/merge windows lapse
-                            # (and is therefore added as a new row, not merged into the
-                            # old one) gets a distinct ID instead of colliding with the
-                            # stale row's ID -- duplicate detection itself is driven by
-                            # the canonical company/title/location key above, not by
-                            # Job ID equality, so this doesn't weaken deduplication.
-                            hash_input = f"{job['company'].strip().lower()}|{job['title'].strip().lower()}|{job['location'].strip().lower()}|{date_added}"
-                            job_id = hashlib.md5(hash_input.encode('utf-8')).hexdigest()[:12]
+                            # Compute Job ID. New records get a fresh, permanent UUID --
+                            # identity no longer depends on mutable fields, so a later
+                            # parser correction (e.g. a fixed title) can't mint a new ID
+                            # for what's really the same posting. A rediscovered posting
+                            # that matches an existing tracked record (below) reuses that
+                            # record's original Job ID instead of this freshly-generated one.
+                            job_id = uuid.uuid4().hex
 
                             # Deduplicate before review using Canonical Key
-                            def get_canonical_key(comp, pos, loc):
-                                c_norm = re.sub(r'[^a-z0-9]', '', comp.lower())
-                                p_norm = re.sub(r'[^a-z0-9]', '', pos.lower())
-                                l_norm = re.sub(r'[^a-z0-9]', '', loc.lower())
-                                return f"{c_norm}|{p_norm}|{l_norm}"
+                            current_canonical = canonical_job_key(job['company'], job['title'], job['location'])
+                            is_aggregator = is_aggregator_placeholder(job['company'])
 
-                            current_canonical = get_canonical_key(job['company'], job['title'], job['location'])
+                            # Aggregator/digest placeholder "companies" (e.g.
+                            # "Ladders-DailyDigest") don't identify a real employer, so
+                            # canonical-key matching on company+title+location must never
+                            # be used for them -- two unrelated digest postings would
+                            # otherwise look like the same job just because they share a
+                            # placeholder company name. Instead give them a strict
+                            # occurrence fingerprint (provider + source PDF + date + this
+                            # job's position within the PDF + normalized title) so that
+                            # reprocessing the *same* PDF (e.g. after a parser-version bump
+                            # defeats the incremental-sync hash skip) recognizes the row as
+                            # already tracked instead of minting a new random ID for it
+                            # every rescan.
+                            job_fingerprint = None
+                            if is_aggregator:
+                                job_fingerprint = build_occurrence_fingerprint(
+                                    job.get('provider', ''),
+                                    os.path.abspath(pdf_path),
+                                    date_added,
+                                    job.get('source_index', ''),
+                                    job['title'],
+                                )
+                                job['fingerprint'] = job_fingerprint
 
                             is_duplicate = False
                             existing_match = None
 
-                            # 1. Check existing_jobs for canonical match
-                            REAPPLY_DAYS = 30
+                            # 1. Check existing_jobs for a match. Real employers match on
+                            # canonical key (with a fuzzy-title fallback flagged for manual
+                            # review, never auto-merged); aggregator placeholders match only
+                            # on the strict occurrence fingerprint above.
+                            REAPPLY_DAYS = 60
                             REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
+                            possible_duplicate_note = None
                             for ej_id, ej in existing_jobs.items():
                                 # existing_jobs is keyed by (job_id, date_added); the
                                 # plain job_id is what jobs.db / job_workflow expect.
                                 ej_job_id = ej_id[0] if isinstance(ej_id, tuple) else ej_id
-                                ej_canonical = get_canonical_key(ej.get("Company", ""), ej.get("Position", ""), ej.get("Location", ""))
-                                if ej_canonical == current_canonical:
-                                    existing_date_str = ej.get("Date Added", "")
-                                    try:
-                                        existing_date = date.fromisoformat(existing_date_str)
-                                        current_date = date.fromisoformat(date_added)
-                                        age_days = (current_date - existing_date).days
-                                        ej_status = ej.get("Tracker Status", "New")
+                                ej_company = ej.get("Company", "")
+                                ej_title = ej.get("Position", "")
+                                ej_location = ej.get("Location", "")
 
-                                        # Re-apply window: if job was applied to 30+ days ago, treat as fresh
-                                        if ej_status in REAPPLY_STATUSES and age_days >= REAPPLY_DAYS:
-                                            returned_applied_ids.add(ej_job_id)
+                                if is_aggregator:
+                                    if not job_fingerprint or ej.get("Fingerprint") != job_fingerprint:
+                                        continue
+                                else:
+                                    ej_canonical = canonical_job_key(ej_company, ej_title, ej_location)
+
+                                    if ej_canonical != current_canonical:
+                                        # Similarity alone is never grounds for automatic
+                                        # merging -- two different requisitions ("Senior
+                                        # Software Engineer" vs "...II") can legitimately
+                                        # share a title. Flag it for a human to decide
+                                        # instead of silently collapsing the rows.
+                                        if (
+                                            not possible_duplicate_note
+                                            and normalize_string(ej_company) == normalize_string(job['company'])
+                                            and locations_compatible(ej_location, job['location'])
+                                            and title_similarity(ej_title, job['title']) >= 0.7
+                                        ):
+                                            possible_duplicate_note = (
+                                                f"Possible duplicate of existing job {ej_job_id} "
+                                                f"('{ej_title}') -- title is similar but not an exact "
+                                                f"match; needs manual review"
+                                            )
+                                        continue
+
+                                staleness_date_str = ej.get("Last Seen") or ej.get("Date Added", "")
+                                try:
+                                    existing_date = date.fromisoformat(staleness_date_str[:10])
+                                    current_date = date.fromisoformat(date_added)
+                                    age_days = (current_date - existing_date).days
+                                    if age_days < 0:
+                                        # Existing row is future-dated relative to this
+                                        # run -- don't treat it as a valid recent match.
+                                        continue
+                                    ej_status = ej.get("Tracker Status", "New")
+
+                                    # Re-apply window: if job was applied to
+                                    if ej_status in REAPPLY_STATUSES:
+                                        added_date = date.fromisoformat(ej.get("Date Added", staleness_date_str[:10]))
+                                        age_from_added = (current_date - added_date).days
+                                        if age_from_added <= REAPPLY_DAYS:
+                                            # Still within the reapply window -- merge into
+                                            # the existing Applied/Interview record instead
+                                            # of creating a duplicate row. This used to
+                                            # delete the existing row's workflow entirely,
+                                            # which lost real application history.
                                             reapply_note = (
                                                 f"Re-listed {age_days} days after original application "
-                                                f"(was {ej_status}, originally seen {existing_date_str})"
+                                                f"(was {ej_status}, originally seen {staleness_date_str})"
                                             )
-                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
-                                            # Do NOT mark as duplicate — let it re-enter as New
-                                            break
-
-                                        # Expired jobs can resurface immediately (no 30-day wait like
-                                        # active applications) since the user never acted on them.
-                                        if ej_status == "Expired":
-                                            returned_expired_ids.add(ej_job_id)
-                                            reapply_note = f"Re-listed after expiring (originally seen {existing_date_str})"
-                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
-                                            break
-
-                                        if age_days <= 90:
+                                            ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
                                             existing_match = ej
                                             is_duplicate = True
-                                            break
-                                    except (ValueError, TypeError):
+                                        else:
+                                            # Reapply window lapsed -- treat as a genuinely
+                                            # new opportunity, linked back to the prior
+                                            # application via Previous Job ID.
+                                            reapply_note = (
+                                                f"Re-listed {age_days} days after original application "
+                                                f"(was {ej_status}, originally seen {staleness_date_str})"
+                                            )
+                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                            job["previous_job_id"] = ej_job_id
+                                        break
+
+                                    # Expired jobs can resurface immediately (no 30-day wait like
+                                    # active applications) since the user never acted on them.
+                                    # Treated as a genuinely new opportunity, linked back to the
+                                    # expired posting via Previous Job ID -- the old row is kept
+                                    # as history instead of being deleted.
+                                    if ej_status == "Expired":
+                                        reapply_note = f"Re-listed after expiring (originally seen {staleness_date_str})"
+                                        job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                        job["previous_job_id"] = ej_job_id
+                                        break
+
+                                    if age_days <= 90:
                                         existing_match = ej
                                         is_duplicate = True
                                         break
+                                except (ValueError, TypeError):
+                                    existing_match = ej
+                                    is_duplicate = True
+                                    break
 
-                            # 2. Check raw_collected_jobs for canonical match
-                            if not is_duplicate:
+                            # 2. Check raw_collected_jobs for canonical match (skipped for
+                            # aggregator placeholders, for the same reason as above).
+                            if not is_duplicate and not is_aggregator:
                                 for rj_id, rj_item in raw_collected_jobs.items():
                                     rj_job = rj_item["job"]
-                                    rj_canonical = get_canonical_key(rj_job['company'], rj_job['title'], rj_job['location'])
+                                    rj_canonical = canonical_job_key(rj_job['company'], rj_job['title'], rj_job['location'])
                                     if rj_canonical == current_canonical:
                                         # Merge into the raw_collected_job
                                         is_duplicate = True
@@ -3422,14 +3679,13 @@ def main():
                                     job.get("source_pdf", ""),
                                 )
 
-                                # Append a discovery note if it doesn't already exist
-                                disc_note = f"Also discovered on {job['provider']} via {job['source_pdf']} on {date_added}"
-                                notes_val = existing_match.get("Notes", "")
-                                if notes_val:
-                                    if disc_note not in notes_val:
-                                        existing_match["Notes"] = f"{notes_val}; {disc_note}"
-                                else:
-                                    existing_match["Notes"] = disc_note
+                                # This is a fresh sighting of the existing record.
+                                existing_match["Last Seen"] = date_added
+
+                            # (Spammy "Also discovered on" notes generation has been removed)
+
+                            if not is_duplicate and possible_duplicate_note:
+                                job["notes"] = (job.get("notes", "") + "; " + possible_duplicate_note).lstrip("; ")
 
                             if is_duplicate or job_id in raw_collected_jobs:
                                 continue
@@ -3453,12 +3709,12 @@ def main():
                         if not any(pat in filename_lower for pat in ignored_patterns):
                             empty_pdfs.append(pathlib.Path(pdf_path).as_uri())
 
-                    # Record successful processing for future incremental-sync skipping
+                    # Defer marking this PDF as successfully processed until the
+                    # final jobs.db/CSV save succeeds (see pending_success_records).
                     run_stats["pdfs_processed"] += 1
                     if pdf_hash:
-                        record_pdf_processed(
-                            _db_conn, pdf_hash, PARSER_VERSION, pdf_path,
-                            pdf_stat.st_size, pdf_stat.st_mtime, "success"
+                        pending_success_records.append(
+                            (pdf_hash, pdf_path, pdf_stat.st_size, pdf_stat.st_mtime)
                         )
 
                 except Exception as e:
@@ -3477,6 +3733,7 @@ def main():
         
     if not found_any_pdf:
         console.print(f"[yellow]No PDF files found in {pdf_dir}[/yellow]")
+        _db_conn.close()
         return
 
     # Extract existing companies in the tracker to determine duplicate status
@@ -3488,11 +3745,18 @@ def main():
         date_added = item["date_added"]
         
         should_rec, confidence, notes, fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type = evaluate_job(job)
-        
+
+        # evaluate_job() builds its own notes from scratch, so the reapply/expired
+        # context recorded on job["notes"] during dedup detection above would
+        # otherwise be silently discarded -- merge it back in here.
+        reapply_note = job.get("notes", "")
+        if reapply_note:
+            notes = f"{reapply_note}; {notes}" if notes else reapply_note
+
         if should_rec:
-            tracker_status = "New"
-            review_status = "Imported"
-            disposition = "Apply"
+            tracker_status = job.get("force_status", "New")
+            review_status = "Closed" if tracker_status == "Cancelled" else "Imported"
+            disposition = "Closed" if tracker_status == "Cancelled" else "Apply"
             
             # Action mapping
             if company_type == "Recruiting Firm" and recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
@@ -3516,6 +3780,7 @@ def main():
                 "URL": job["url"],
                 "Provider": job["provider"],
                 "Source PDF": job["source_pdf"],
+                "Source Index": job.get("source_index", ""),
                 "Confidence": confidence,
                 "Fit Score": fit_score,
                 "Priority": priority,
@@ -3529,7 +3794,10 @@ def main():
                 "Matched Skills": matched_skills,
                 "Missing Skills": missing_skills,
                 "Date Added": date_added,
-                "Notes": notes
+                "Last Seen": date_added,
+                "Notes": notes,
+                "Fingerprint": job.get("fingerprint") or canonical_job_key(job["company"], job["title"], job["location"]),
+                "Previous Job ID": job.get("previous_job_id"),
             }
             all_recommendations.append(job_rec)
 
@@ -3554,10 +3822,32 @@ def main():
         # Classify if missing
         if "Job Type" not in row or not row["Job Type"]:
             row["Job Type"] = classify_job_type(row.get("Position", ""), row.get("Notes", ""))
-        
+
+        # Fingerprint is a derived audit field, not identity -- recompute it every
+        # run from current fields rather than trusting a stale stored value, so
+        # it stays accurate after manual corrections. Aggregator placeholders
+        # are the exception: their Fingerprint is an occurrence key (provider +
+        # source PDF + date + position-in-PDF + title), not derivable from the
+        # row's current Company/Position/Location, so recomputing it here would
+        # silently replace it with a canonical_job_key value that a later
+        # rescan can never reproduce -- see the aggregator-idempotency tests.
+        if is_aggregator_placeholder(row.get("Company", "")):
+            if not row.get("Fingerprint"):
+                row["Fingerprint"] = build_occurrence_fingerprint(
+                    row.get("Provider", ""),
+                    row.get("Source PDF", ""),
+                    row.get("Date Added", ""),
+                    "",
+                    row.get("Position", ""),
+                )
+        else:
+            row["Fingerprint"] = canonical_job_key(
+                row.get("Company", ""), row.get("Position", ""), row.get("Location", "")
+            )
+
         # Standardize Tracker Status
         status = row.get("Tracker Status", row.get("Status", "New"))
-        if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired"]:
+        if status not in VALID_STATUSES:
             if status == "Recruiter":
                 status = "Recruiter Submitted"
             elif status == "Interview":
@@ -3575,8 +3865,10 @@ def main():
         if status == "New":
             date_added_str = row.get("Date Added", "")
             try:
-                added_date = date.fromisoformat(date_added_str)
-                if (date.today() - added_date).days > AUTO_EXPIRE_DAYS:
+                staleness_date_str = row.get("Last Seen") or date_added_str
+                if not staleness_date_str: staleness_date_str = date.today().isoformat()
+                staleness_date = date.fromisoformat(staleness_date_str[:10])
+                if (date.today() - staleness_date).days > AUTO_EXPIRE_DAYS:
                     status = "Expired"
                     row["Tracker Status"] = "Expired"
                     row["Review Status"] = "Closed"
@@ -3627,10 +3919,11 @@ def main():
     
     # Write combined sorted jobs back to tracker CSV
     expected_headers = [
-        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", 
-        "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type", 
-        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", 
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Notes", "Recruiter", "Hiring Manager"
+        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
+        "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager",
+        "Fingerprint", "Previous Job ID"
     ]
     
     # Compute Age (days) for every row before writing
@@ -3643,12 +3936,32 @@ def main():
         except (ValueError, TypeError):
             row["Age (days)"] = ""
     
-    # Synchronize all combined jobs to SQLite database 'jobs.db'
+    # Synchronize all combined jobs to SQLite database 'jobs.db' and the
+    # tracker CSV. These are two separate writes, not one atomic transaction,
+    # so snapshot both first -- if the process is interrupted between them
+    # (or mid-write), there's a recoverable pre-sync copy of each to restore
+    # from instead of a jobs.db/master_tracker.csv pair that silently diverged.
     run_stats["jobs_created"] = len(all_recommendations)
-    save_to_sqlite("jobs.db", combined_jobs, returned_expired_ids, returned_applied_ids)
-    _db_conn.close()
+    backup_file_if_exists("jobs.db")
+    backup_file_if_exists(tracker_path)
+    success = save_to_sqlite("jobs.db", combined_jobs)
 
-    write_tracker_csv_atomic(tracker_path, expected_headers, combined_jobs, extrasaction='ignore')
+    try:
+        if success:
+            write_tracker_csv_atomic(tracker_path, expected_headers, combined_jobs, extrasaction='ignore')
+            # Only now mark this run's PDFs as successfully processed -- both the
+            # jobs.db and CSV writes landed, so it's safe to skip them next time.
+            for pdf_hash, pdf_path, file_size, modified_time in pending_success_records:
+                record_pdf_processed(
+                    _db_conn, pdf_hash, PARSER_VERSION, pdf_path,
+                    file_size, modified_time, "success"
+                )
+        else:
+            console.print("[red]Database save failed, aborting CSV write to prevent data divergence.[/red]")
+            console.print("[red]PDFs parsed this run were not marked as processed and will be retried next run.[/red]")
+            return
+    finally:
+        _db_conn.close()
 
     # Capture elapsed time
     _elapsed = time.monotonic() - _sync_start
