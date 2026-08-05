@@ -109,3 +109,9 @@ These two fields serve distinct purposes:
 - **Notes** - Longer parser-generated analyst comments. Example: `Existing company detected. Tech matches: .NET, C#. Missing: Kafka, Terraform. Legacy modernization detected.`
 
 Keep Reason concise (one line). Notes can be multi-sentence.
+
+---
+
+## Known Limitations / Future Improvements
+
+- **Scoring Inflation**: A role can receive a high Fit Score merely for containing keywords like "remote," "Utah," or ".NET," even when the position title is entirely irrelevant (e.g., Senior Data Scientist, Drupal Lead, Warehouse Specialist). Future iterations should treat these scores as retrieval hints rather than absolute fit judgments, or add severe penalties for irrelevant primary titles.

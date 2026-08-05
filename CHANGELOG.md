@@ -2,27 +2,38 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.1 — 2026-08-05
+
+### Data Integrity
+- Deferred successful PDF processing records until SQLite and CSV writes complete.
+- Prevented CSV updates following SQLite failures.
+- Preserved Offer, Accepted, and other user-managed workflow states.
+- Corrected expiration and relisting calculations using Last Seen.
+- Repaired legacy aggregator occurrence fingerprints.
+
+### Manual Jobs
+- Added Last Seen, Fingerprint, Previous Job ID, and Source Index.
+- Persisted manual status provenance as status_source='user'.
+
+### Reliability
+- Added unique microsecond backup names.
+- Closed database connections on all final-write paths.
+- Added regression coverage for SQLite failures, CSV failures, and processed-PDF state.
+
 ## v1.3.0 — 2026-08-05
 
 ### Audit & Architecture
 - **Stable Identifiers & Audit Fields**: Transitioned to `uuid.uuid4().hex`-based (32-character hex) UUIDs for stable job tracking. Added `Last Seen`, `Fingerprint`, `Previous Job ID`, and `Source Index` to better track deduplication and source lineage.
-- **SQLite Safety Guarantee**: `save_to_sqlite` now strictly enforces success state returns, causing the CSV sync to abort in case of a database failure, greatly reducing the risk of state divergence. This is not an atomic cross-file transaction -- the CSV write can still fail after the SQLite commit -- but the pre-write backups make that scenario recoverable.
 
 ### Deduplication Enhancements
 - **Intelligent Relisting Windows**: Split relisting windows into two distinct behaviors:
   - 60-day reapplication window (measured from `Date Added`) for previously Applied/Interviewing roles.
   - 90-day general rediscovery window (measured from `Last Seen`) for all other roles to prevent persistent postings from artificially resetting their expiration.
-- **Aggregator Migration Check**: Safeguarded missing source-index aggregator fingerprints from being destroyed by the migration pass.
 
-### CLI & Manual Jobs
-- **Manual Jobs Enhancements**: Manual additions via `--add` now properly populate all new audit fields, enforce `_status_source='user'`, and safely abort CSV writing on SQLite errors.
+### CLI & UI Improvements
 - **Query Tool UI**: `query_jobs.py` now outputs `Last Seen` and converts `Source PDF:` lines into clickable Markdown `file:///` links while preserving the visible filename.
-
-### Fixes & Tests
-- **Resilient PDF Status Tracking**: PDF processed states are now held in memory and only written to the database after the parsed jobs are successfully saved to SQLite and CSV. This prevents a crash during database write from permanently discarding jobs on the next run.
-- **Backup Uniqueness**: SQLite and CSV backup filenames now incorporate microseconds (`%f`) to prevent collisions during rapid iterative CLI executions.
-- **Tracker Initialization**: `Source Index` is correctly injected into the header when generating a brand-new tracker file.
-- **Regression Suite**: Expanded testing coverage significantly. (357 tests across 25 modules). Added specific regression tests covering SQLite failure aborts, manual add constraints, and backup unique names.
+- Improved `query_jobs.py` output formatting: cleaner labels (`Source PDF` instead of `PDF`), em-dashes in titles, and regex-based position normalization (strips stray leading words).
+- Made the `query` CLI argument in `query_jobs.py` optional — omitting it lists all tracked jobs.
 
 ### Bug Fixes
 - Removed spammy "Also discovered on … via … .pdf on …" discovery notes that were being appended to the `Notes` field every time a job reappeared in a new PDF. Retroactively cleaned 379 affected historical records from `master_tracker.csv` and `jobs.db`.
@@ -37,23 +48,14 @@ All notable changes to this project are documented here.
 ### Agent Skills & Workspace Rules
 - Added workspace rules to `.agents/AGENTS.md` covering: deduplication safety (exact-match only, no aggregator trust), the mandatory dual-update rule (both CSV and DB must be updated together), workspace cleanliness (temporary files go in `scratch/`), and running tests before every commit.
 - Updated all four agent skills (`db_query`, `sync_jobs`, `manage_jobs`, `git_manager`) to prefer existing helper scripts (`query_jobs.py`, `parse_jobs.py`), document the dual-update requirement, and enforce the `pytest`-first commit workflow.
+- Added custom AI agent skills in `.agents/skills/` for `git_manager`, `sync_jobs`, `daily_dashboard`, `db_query`, `manage_jobs`, and `calendar_events`.
 
 ### Test Suite
 - Added 7 new test modules covering: `clean_existing_tracker`, interactive CLI handlers, Ladders/generic parser gaps, main CLI, PDF/config utilities, `query_jobs.py`, and reporting.
 - Expanded 5 existing test modules with additional cases for scoring, save_to_sqlite, company validation, find_pdf, and parse_jobs.
 
-### Utility Enhancements
-- Improved `query_jobs.py` output formatting: cleaner labels (`Source PDF` instead of `PDF`), em-dashes in titles, and regex-based position normalization (strips stray leading words).
-- Made the `query` CLI argument in `query_jobs.py` optional — omitting it lists all tracked jobs.
-
-### Deduplication
-- Added automatic same-company application detection in `parse_jobs.py`: "New" jobs for companies already marked "Applied" within the last 60 days are automatically set to `Cancelled` with a calculated reason string.
-
 ### Code Cleanup & Maintenance
 - Extracted shared utility functions (`path_to_file_uri`, `split_multivalue_field`, `canonical_job_key`) into `dedup_utils.py` to reduce duplication across `find_pdf.py`, `parse_jobs.py`, and `query_jobs.py`.
-- Added custom AI agent skills in `.agents/skills/` for `git_manager`, `sync_jobs`, `daily_dashboard`, `db_query`, `manage_jobs`, and `calendar_events`.
-
----
 
 ## v1.2.8 — 2026-07-29
 
@@ -89,7 +91,9 @@ All notable changes to this project are documented here.
 ### Search Utility Improvements
 - Improved `find_pdf.py` search to use regex word boundaries, preventing short terms from falsely matching substrings embedded inside long URLs or IDs.
 
-## v1.2.2 — 2026-07-17
+> Version note: No v1.1.x releases were published. Version numbering resumed at v1.2.2; the omitted numbers do not represent missing public releases.
+
+## v1.2.2 — 2026-07-21
 
 ### Search Utility Improvements
 - Enhanced `find_pdf.py` to query both the SQLite database (`jobs.db`) and the master tracking spreadsheet (`master_tracker.csv`) case-insensitively, returning consolidated matches from both sources.
@@ -97,16 +101,26 @@ All notable changes to this project are documented here.
 ### CLI Improvements
 - Added support for non-interactive job addition (`--add`) using command-line arguments (e.g. `--company`, `--position`, `--location`, `--fit-score`, `--status`, `--notes`).
 - Automatically detect interactive vs. non-interactive modes to bypass prompts and use default values when sufficient fields are supplied.
+- Added `--update`, `--status`, and `--notes` CLI options to enable updating any job's tracking status directly from the command line.
+- Automatic recalculation of derived workflow attributes (e.g. `Review Status`, `Action`, `Disposition`) upon status updates.
+- Synchronized database records and master tracking spreadsheet outputs on CLI status updates.
 
 ### Parser & Board Integrations
 - Implemented dedicated layout-aware text parsers for **jobs.utah.gov** (Utah's Daily Job Summary) and **Ladders** daily digest email PDFs.
 - Standardized parser extraction to use source-specific company markers: `Jobs.utah.gov-DailySummary` and `Ladders-DailyDigest`.
 - Cleaned email subject line/notification artifacts (e.g. `Jobs at Brady Corporation` ➔ `Brady Corporation`) from extracted company names.
 - Excluded email headers (e.g. `Your job listings for [Date]`, `job summary`) from valid company name candidates.
+- Implemented wrapped LinkedIn title detection to prevent multiline job titles from splitting into incorrect company names.
+- Normalized whitespace surrounding commas in job locations to resolve OCR/text-extraction spacing artifacts.
 
 ### Deduplication & Reconciliation
 - Implemented **CanonicalKey Deduplication & Merging**: Groups identical opportunities by `normalize(employer) + normalize(position) + normalize(location)` within a 90-day window.
 - Rather than discarding duplicates, the system now merges metadata across multiple discovery job boards and source PDF documents (slash-separating values) and appends a chronological discovery trail to `Notes`.
+- Added logic to automatically re-suggest jobs that were previously marked as "Expired" if they return on a different day.
+- Clears the historical "Expired" status from the SQLite database (`jobs` and `job_workflow` tables) and re-evaluates the role as a new job recommendation.
+- Prevents immediate same-day re-suggestions of active expired jobs to avoid duplicate alerts during consecutive runs on the same day.
+- Allow identical jobs (same Company + Position + Location) to be re-imported as new opportunities after 90 days.
+- Appended `Date Added` to the MD5 hash for re-imported older opportunities to generate unique Job IDs and avoid primary key collisions in the SQLite database.
 
 ### Traceability & Audit Logs
 - Added deterministic sequential **Source Index Tracing** (e.g. `Source Index: 2-17` representing the 17th job card extracted from the 2nd sorted PDF processed in the folder), prepended to the `Notes` field.
@@ -129,26 +143,8 @@ All notable changes to this project are documented here.
 ### Parser & Company Name Validation
 - Blacklisted "just posted" (case-insensitive) to prevent UI posting timestamps from being extracted as company names.
 - Blacklisted exactly "systems" (case-insensitive) to filter out suspicious, truncated company name extraction artifacts.
-
-### Deduplication & Re-suggestion Logic
-- Added logic to automatically re-suggest jobs that were previously marked as "Expired" if they return on a different day.
-- Clears the historical "Expired" status from the SQLite database (`jobs` and `job_workflow` tables) and re-evaluates the role as a new job recommendation.
-- Prevents immediate same-day re-suggestions of active expired jobs to avoid duplicate alerts during consecutive runs on the same day.
-
-### CLI Status Updates
-- Added `--update`, `--status`, and `--notes` CLI options to enable updating any job's tracking status directly from the command line.
-- Automatic recalculation of derived workflow attributes (e.g. `Review Status`, `Action`, `Disposition`) upon status updates.
-- Synchronized database records and master tracking spreadsheet outputs on CLI status updates.
-
-### Parser Improvements
-- Implemented wrapped LinkedIn title detection to prevent multiline job titles from splitting into incorrect company names.
-- Normalized whitespace surrounding commas in job locations to resolve OCR/text-extraction spacing artifacts.
-- Added unit tests for title wrapping in `test_linkedin_parser.py`.
-
-### Company Name Validation
 - Added validation rules to reject Indeed recommendation banners (e.g. "Based on your title and location. Update", "Recommended for you", "Update your profile").
 - Added validation rules to reject digest/truncation artifacts at the end of company names (e.g. ending in "...", "more ...", "view more", "see more").
-- Added unit tests for new validation rules in `test_company_validation.py`.
 
 ### Persistent User Workflow & DB Schema Separation
 - Introduced a separate `job_workflow` table in SQLite (`jobs.db`) to store user-managed workflow state (`tracker_status`, `review_status`, `action`, `disposition`, `updated_at`, `updated_by`, `notes`, `follow_up_date`, `last_contact_date`) independently from the main `jobs` list.
@@ -156,12 +152,6 @@ All notable changes to this project are documented here.
 - Implemented automatic database migration to dynamically transition old `job_status` tables to the expanded `job_workflow` structure.
 - Upsert logic only modifies `updated_at` and `updated_by` when any tracking status, review status, action, or disposition changes, preventing overwrite of user-managed fields like `notes` and `follow_up_date` during routine PDF imports.
 - Re-ordered synchronization so that restored workflow states are written back to `master_tracker.csv` on run.
-
-### Deduplication
-- Allow identical jobs (same Company + Position + Location) to be re-imported as new opportunities after 90 days.
-- Appended `Date Added` to the MD5 hash for re-imported older opportunities to generate unique Job IDs and avoid primary key collisions in the SQLite database.
-
----
 
 ## v1.0.0 — 2026-06-29
 
@@ -211,8 +201,6 @@ Feature-complete initial release.
 - `docs/architecture.md` — pipeline diagram, data model, design decisions
 - `docs/scoring.md` — full scoring table, priority/action rules, Reason vs Notes distinction
 - `config.json.example` and `master_tracker.csv.example` for clean-install setup
-
----
 
 ## v0.9.x — 2026-06 (Pre-release iterations)
 
