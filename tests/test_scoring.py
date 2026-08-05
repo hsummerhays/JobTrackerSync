@@ -60,6 +60,24 @@ class TestComputePriority(unittest.TestCase):
         self.assertIn("\u2013", result)   # en-dash
         self.assertNotIn("-", result)    # no plain hyphen
 
+    def test_p1_downgraded_to_p2_when_aged_past_14_days(self):
+        self.assertEqual(
+            compute_priority("\u2605\u2605\u2605\u2605\u2605 Apply Now", "Apply", age_days=20),
+            "P2 \u2013 Apply this week"
+        )
+
+    def test_p2_downgraded_to_p3_when_aged_past_14_days(self):
+        self.assertEqual(
+            compute_priority("\u2605\u2605\u2605\u2605\u2606 Strong", "Apply", age_days=20),
+            "P3 \u2013 Investigate"
+        )
+
+    def test_age_decay_does_not_affect_recent_jobs(self):
+        self.assertEqual(
+            compute_priority("\u2605\u2605\u2605\u2605\u2605 Apply Now", "Apply", age_days=14),
+            "P1 \u2013 Apply today"
+        )
+
 
 class TestClassifyJobType(unittest.TestCase):
     """Test cases for classify_job_type function."""
@@ -88,6 +106,13 @@ class TestClassifyJobType(unittest.TestCase):
     def test_default_is_software_engineer(self):
         # Unknown title defaults to Software Engineer
         self.assertEqual(classify_job_type("Some Random Title", ""), "Software Engineer")
+
+    def test_ambiguous_title_falls_back_to_ops_context(self):
+        # Title alone has no ops/swe signal; the context tips it to Operations.
+        self.assertEqual(
+            classify_job_type("Team Member", "warehouse production procurement"),
+            "Operations"
+        )
 
 
 if __name__ == "__main__":

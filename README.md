@@ -95,7 +95,8 @@ See **[docs/scoring.md](docs/scoring.md)** for the full scoring table, Priority 
 - **Pipeline Health Dashboard**: Real-time conversion metrics including Application Rate and Interview Rate to track process trends over time.
 - **Robust PDF extraction** with pytesseract OCR fallback for image-only PDFs
 - **Glassdoor reverse-layout parsing** — handles alert formats where location follows the title
-- **Deterministic dedup** via MD5 hash of Company + Position + Location — stable across daily imports, allowing identical postings to be re-imported as new opportunities after 90 days (with a date-suffixed ID) or immediately re-suggested if previously marked as "Expired" and returned on a different day.
+- **Stable Tracking Architecture**: Tracker records use stable, permanently generated UUIDs. Fingerprint-based deduplication (Company + Position + Location) associates newly parsed occurrences with existing tracker records if found within the relisting window, preserving historical application states without relying on unstable hashes.
+- **Exact-match deduplication safety**: Rows are only merged or cancelled when the normalized company, title, date, source PDF, and status are all identical. Generic aggregator labels (e.g. `Jobs.utah.gov-DailySummary`) are never trusted as employer identities for merging.
 - **Idempotent re-scoring** — editing `config.json` and re-running automatically recalculates all historic rows
 - **Company type detection** — classifies Recruiting Firm, Consulting, Defense, Healthcare, Financial, Enterprise, or Small/Medium from the company name
 - **Local/onsite warnings** — 30-point deduction when postings contain "local candidates", "onsite only", "must relocate", or "no remote"
@@ -121,6 +122,7 @@ JobTrackerSync/
 ├── parse_jobs.py              # Main CLI entry point
 ├── find_pdf.py                # Database and CSV search utility for PDFs and jobs
 ├── query_jobs.py              # Permanent SQLite lookup utility for jobs
+├── dedup_utils.py             # Shared status-ranking, merge, and file-URI helpers
 ├── config.json                # Resume skills and scoring criteria (git-ignored)
 ├── config.json.example        # Template for new installations
 ├── master_tracker.csv         # Master tracking spreadsheet (git-ignored)
@@ -187,10 +189,14 @@ python find_pdf.py "<search_term>"
 
 **7. Permanent SQLite Lookup Utility**
 
-You can query the SQLite database directly for jobs matching a specific company using the `query_jobs.py` utility. This provides a quick, human-readable summary of matched jobs directly in your terminal:
+You can query the SQLite database directly for jobs matching a specific company using the `query_jobs.py` utility. This provides a quick, human-readable summary of matched jobs directly in your terminal. If you omit the query string, it will list all tracked jobs:
 
 ```bash
+# Query for a specific company
 python query_jobs.py "Company Name"
+
+# List all tracked jobs
+python query_jobs.py
 ```
 
 **8. Running Tests**
@@ -200,6 +206,18 @@ Run the complete test suite using `pytest`:
 ```bash
 python -m pytest tests/ -v
 ```
+
+**9. AI Agent Integration**
+
+This project includes built-in AI agent skills (located in `.agents/skills/`) to automate common workflows using AI assistants:
+- **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
+- **`sync_jobs`**: Automates the parsing pipeline (opens a folder picker or accepts `--pdf-dir`).
+- **`daily_dashboard`**: Displays formatted analytics and action queues.
+- **`db_query`**: Looks up jobs via `query_jobs.py`; falls back to raw SQL for ad-hoc analysis.
+- **`manage_jobs`**: Adds new jobs or updates the status of existing ones via the CLI.
+- **`calendar_events`**: Generates pre-filled Google Calendar links for interviews.
+
+Workspace rules are defined in `.agents/AGENTS.md` and cover deduplication safety, mandatory dual-update (CSV + DB), temp file hygiene, and the test-before-commit policy. To persist new rules, use the `/learn` command.
 
 ---
 
@@ -224,7 +242,7 @@ This discovery reinforced an important architectural principle: job providers of
 The roadmap focuses on making parsed data more actionable and improving workflow visibility.
 
 ### 1. Polish and Reliability
-- [ ] **More unit tests** around parsing and merge logic.
+- [x] **More unit tests** around parsing and merge logic. *(163 tests across 16 modules as of v1.3.1)*
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

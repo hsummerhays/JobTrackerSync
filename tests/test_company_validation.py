@@ -209,6 +209,54 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertEqual(clean_company_name("Informativ is hiring for Sr. PHP Engineer"), "Informativ")
         self.assertEqual(clean_company_name("PlayOn Sports is looking for candidates"), "PlayOn Sports")
 
+    def test_clean_company_name_empty_input(self):
+        from parse_jobs import clean_company_name
+        self.assertEqual(clean_company_name(""), "")
+        self.assertEqual(clean_company_name(None), "")
+
+    def test_rejects_company_composed_entirely_of_tech_keywords(self):
+        self.assertFalse(is_valid_company("Java, AWS"))
+        self.assertFalse(is_valid_company("React"))
+
+    def test_rejects_company_name_over_100_chars(self):
+        self.assertFalse(is_valid_company("A" + "b" * 100))
+
+    def test_rejects_company_containing_date_pattern(self):
+        self.assertFalse(is_valid_company("Acme Corp 3/15/2024"))
+        self.assertFalse(is_valid_company("Acme Corp 3:15 PM"))
+
+    def test_rejects_trailing_period_on_long_word(self):
+        self.assertFalse(is_valid_company("Acme Corporation."))
+
+    def test_accepts_trailing_period_on_short_abbreviation(self):
+        self.assertTrue(is_valid_company("Acme Corp."))
+
+    def test_rejects_job_board_provider_names_as_company(self):
+        for name in [
+            "Ladders", "TheLadders", "The Ladders",
+            "LinkedIn", "Indeed", "Glassdoor", "ZipRecruiter",
+            "jobs.utah.gov", "Actively Recruiting",
+        ]:
+            self.assertFalse(is_valid_company(name), f"expected {name!r} to be rejected")
+
+    def test_dailydigest_allowance_takes_priority_over_provider_name_rejection(self):
+        # The dailysummary/dailydigest allowance is checked before the bare
+        # provider_names rejection, so these known digest-placeholder rows
+        # (not real employers, but valid tracker rows) are let through even
+        # though their un-suffixed provider name is separately rejected by
+        # test_rejects_job_board_provider_names_as_company above.
+        self.assertTrue(is_valid_company("ladders-DailyDigest"))
+        self.assertTrue(is_valid_company("Jobs.Utah.Gov-DailySummary"))
+
+    def test_unrelated_dailydigest_company_is_still_allowed(self):
+        # The dailysummary/dailydigest allowance should still let through
+        # names that aren't in the explicit provider_names reject set.
+        self.assertTrue(is_valid_company("Acme DailyDigest"))
+
+    def test_rejects_posted_prefix(self):
+        self.assertFalse(is_valid_company("Posted: 2 days ago"))
+        self.assertFalse(is_valid_company("posted:Yesterday"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

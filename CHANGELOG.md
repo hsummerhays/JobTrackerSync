@@ -2,6 +2,56 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.1 — 2026-08-04
+
+### Bug Fixes
+- Removed spammy "Also discovered on … via … .pdf on …" discovery notes that were being appended to the `Notes` field every time a job reappeared in a new PDF. Retroactively cleaned 379 affected historical records from `master_tracker.csv` and `jobs.db`.
+- Fixed a resource leak: `_db_conn.close()` is now called when no PDF files are found in the selected directory.
+- Added a blocklist to `is_valid_company()` to prevent known job aggregator/provider names (e.g. `Ladders`, `Indeed`, `LinkedIn`) from being incorrectly stored as employer names when they appear within the body of digest emails.
+- Corrected 3 stale records in the database and CSV where `Ladders` had been incorrectly listed as the hiring company.
+
+### Data Integrity
+- **Strict deduplication pass**: Identified and physically deleted 15 exact-match duplicate rows (same normalized company, title, date, source PDF, and status) from both `master_tracker.csv` and `jobs.db`. Two groups were aggregator (`Jobs.utah.gov-DailySummary`) Expired entries; the others were Cancelled rows that had been missed by prior cleanup runs.
+- Corrected Mitratech (`b7af764d5fd8`) status from `Cancelled` to `Applied / Waiting / Already Applied` after confirming application confirmation was received.
+
+### Agent Skills & Workspace Rules
+- Added workspace rules to `.agents/AGENTS.md` covering: deduplication safety (exact-match only, no aggregator trust), the mandatory dual-update rule (both CSV and DB must be updated together), workspace cleanliness (temporary files go in `scratch/`), and running tests before every commit.
+- Updated all four agent skills (`db_query`, `sync_jobs`, `manage_jobs`, `git_manager`) to prefer existing helper scripts (`query_jobs.py`, `parse_jobs.py`), document the dual-update requirement, and enforce the `pytest`-first commit workflow.
+
+### Test Suite
+- Added 7 new test modules covering: `clean_existing_tracker`, interactive CLI handlers, Ladders/generic parser gaps, main CLI, PDF/config utilities, `query_jobs.py`, and reporting.
+- Expanded 5 existing test modules with additional cases for scoring, save_to_sqlite, company validation, find_pdf, and parse_jobs.
+
+---
+
+## v1.3.0 — 2026-08-03
+
+### Utility Enhancements
+- Improved `query_jobs.py` output formatting: cleaner labels (`Source PDF` instead of `PDF`), em-dashes in titles, and regex-based position normalization (strips stray leading words).
+- Made the `query` CLI argument in `query_jobs.py` optional — omitting it lists all tracked jobs.
+
+### Deduplication
+- Added automatic same-company application detection in `parse_jobs.py`: "New" jobs for companies already marked "Applied" within the last 60 days are automatically set to `Cancelled` with a calculated reason string.
+
+### Code Cleanup & Maintenance
+- Extracted shared utility functions (`path_to_file_uri`, `split_multivalue_field`, `canonical_job_key`) into `dedup_utils.py` to reduce duplication across `find_pdf.py`, `parse_jobs.py`, and `query_jobs.py`.
+- Added custom AI agent skills in `.agents/skills/` for `git_manager`, `sync_jobs`, `daily_dashboard`, `db_query`, `manage_jobs`, and `calendar_events`.
+
+---
+
+## v1.2.9 — 2026-08-03
+
+
+### Utility Enhancements
+- Improved `query_jobs.py` output formatting to use cleaner labels (e.g., `Source PDF` instead of `PDF`), em-dashes for titles, and regex-based position normalization (stripping stray leading words).
+- Updated `query_jobs.py` to make the `query` CLI argument optional, defaulting to listing all jobs if omitted.
+
+### Deduplication Enhancements
+- Added automatic logic to `parse_jobs.py` to check for recent applications (within the last 60 days) to the same company. "New" jobs matching this criteria are automatically set to `Cancelled` with a calculated reason string.
+
+### Code Cleanup & Maintenance
+- Extracted shared utility functions (`path_to_file_uri`, `split_multivalue_field`, and `canonical_job_key`) into `dedup_utils.py` to centralize formatting logic and reduce duplication across `find_pdf.py`, `parse_jobs.py`, and `query_jobs.py`.
+
 ## v1.2.8 — 2026-07-29
 
 ### New Features

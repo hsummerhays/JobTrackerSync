@@ -12,6 +12,9 @@ import hashlib
 # Allow importing from parent directory
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import parse_jobs
+from dedup_utils import canonical_job_key, normalize_string, locations_compatible, title_similarity
+
 
 class TestJobIdDeterminism(unittest.TestCase):
     """Verify that MD5 job IDs are stable across identical inputs."""
@@ -200,18 +203,80 @@ class TestCanonicalKeyMerging(unittest.TestCase):
                 new_pdf
             )
             
-        disc_note = f"Also discovered on {new_provider} via {new_pdf} on {date_added}"
-        notes_val = existing_match.get("Notes", "")
-        if notes_val:
-            if disc_note not in notes_val:
-                existing_match["Notes"] = f"{notes_val}; {disc_note}"
-        else:
-            existing_match["Notes"] = disc_note
-            
         # They should be merged with the | delimiter
         self.assertEqual(existing_match["Provider"], "LinkedIn|Indeed")
         self.assertEqual(existing_match["Source PDF"], "alert1.pdf|alert2.pdf")
-        self.assertEqual(existing_match["Notes"], "Original note; Also discovered on Indeed via alert2.pdf on 2026-07-10")
+        self.assertEqual(existing_match["Notes"], "Original note")
+
+
+class TestAggregatorPlaceholderGuard(unittest.TestCase):
+    """Aggregator/digest placeholder "companies" (e.g. "Ladders-DailyDigest")
+    must never participate in canonical-key matching -- parse_jobs.py's main
+    loop skips the matching loop entirely when is_aggregator_placeholder()
+    returns True for a job's company."""
+
+    def test_known_aggregator_placeholders_are_flagged(self):
+        for company in ["Ladders-DailyDigest", "Jobs.utah.gov-DailySummary", "ladders", "LinkedIn"]:
+            self.assertTrue(parse_jobs.is_aggregator_placeholder(company), company)
+
+    def test_real_company_names_are_not_flagged(self):
+        for company in ["Acme Corp", "Alivia Analytics", "Citi"]:
+            self.assertFalse(parse_jobs.is_aggregator_placeholder(company), company)
+
+    def test_two_aggregator_postings_would_not_be_treated_as_the_same_job(self):
+        """Two unrelated postings surfaced through the same digest placeholder
+        "company" must not look like the same job just because they share that
+        placeholder name -- documents why the main loop gates matching on
+        `not is_aggregator_placeholder(...)` rather than relying on the
+        canonical key alone (which would otherwise treat them as duplicates
+        whenever the placeholder title/location also happened to coincide)."""
+        company = "Ladders-DailyDigest"
+        self.assertTrue(parse_jobs.is_aggregator_placeholder(company))
+        key_a = canonical_job_key(company, "Software Engineer", "Remote")
+        key_b = canonical_job_key(company, "Software Engineer", "Remote")
+        # Same canonical key -- without the is_aggregator_placeholder gate this
+        # would incorrectly merge two distinct digest-sourced postings.
+        self.assertEqual(key_a, key_b)
+
+
+class TestFuzzyTitleMatchCondition(unittest.TestCase):
+    """The main PDF-scan loop in parse_jobs.py never auto-merges on title
+    similarity alone -- two different requisitions ("Senior Software
+    Engineer" vs "...II") can legitimately share a title, so only an exact
+    canonical-key match reuses an existing Job ID. A fuzzy title match (same
+    company, compatible location, title_similarity >= 0.7) instead adds a
+    "possible duplicate ... needs manual review" note to the new row and
+    still creates it as a separate record. This exercises that exact
+    flagging condition using the real dedup_utils helpers parse_jobs.py
+    calls."""
+
+    def _is_fuzzy_match(self, ej_company, ej_title, ej_location, new_company, new_title, new_location):
+        ej_canonical = canonical_job_key(ej_company, ej_title, ej_location)
+        current_canonical = canonical_job_key(new_company, new_title, new_location)
+        return (
+            ej_canonical != current_canonical
+            and normalize_string(ej_company) == normalize_string(new_company)
+            and locations_compatible(ej_location, new_location)
+            and title_similarity(ej_title, new_title) >= 0.7
+        )
+
+    def test_minor_title_correction_is_flagged_for_review(self):
+        self.assertTrue(self._is_fuzzy_match(
+            "Acme Corp", "Senior Software Engineer", "Remote",
+            "Acme Corp", "Senior Software Engineer II", "Remote",
+        ))
+
+    def test_unrelated_title_at_same_company_is_not_flagged(self):
+        self.assertFalse(self._is_fuzzy_match(
+            "Acme Corp", "Senior Software Engineer", "Remote",
+            "Acme Corp", "Marketing Manager", "Remote",
+        ))
+
+    def test_same_title_different_company_is_not_flagged(self):
+        self.assertFalse(self._is_fuzzy_match(
+            "Acme Corp", "Senior Software Engineer", "Remote",
+            "Globex Inc", "Senior Software Engineer", "Remote",
+        ))
 
 
 if __name__ == "__main__":

@@ -29,8 +29,7 @@ class TestAnalytics(unittest.TestCase):
                 job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT, position TEXT, location TEXT, 
                 url TEXT, provider TEXT, source_pdf TEXT, confidence TEXT, fit_score INTEGER, priority TEXT, 
                 company_type TEXT, recommendation TEXT, tracker_status TEXT, disposition TEXT, action TEXT, 
-                existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT, date_added TEXT, 
-                notes TEXT, recruiter TEXT, hiring_manager TEXT
+                existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT, date_added TEXT, last_seen TEXT, notes TEXT, recruiter TEXT, hiring_manager TEXT
             )
         """)
         cursor.execute("""
