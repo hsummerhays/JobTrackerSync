@@ -306,6 +306,8 @@ class TestAggregatorIdempotency(MainIntegrationTestBase):
         
         rows = self._read_tracker()
         matching = [r for r in rows if r["Company"] == "Jobs.utah.gov-DailySummary"]
+        print("MATCHING ROWS:", [r["Source Index"] for r in matching])
+        print("FINGERPRINTS:", [r["Fingerprint"] for r in matching])
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["Job ID"], "legacy_digest_1")
         self.assertEqual(matching[0]["Source Index"], "1-1")
@@ -332,6 +334,8 @@ class TestAggregatorIdempotency(MainIntegrationTestBase):
         
         rows = self._read_tracker()
         matching = [r for r in rows if r["Company"] == "Jobs.utah.gov-DailySummary"]
+        print("MATCHING ROWS:", [r["Source Index"] for r in matching])
+        print("FINGERPRINTS:", [r["Fingerprint"] for r in matching])
         self.assertEqual(len(matching), 1)
         self.assertEqual(matching[0]["Job ID"], "legacy_digest_2")
         self.assertEqual(matching[0]["Source Index"], "1-1")

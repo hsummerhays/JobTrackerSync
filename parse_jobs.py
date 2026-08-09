@@ -3310,12 +3310,97 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
 
 
 
+def handle_dedup_physical():
+    """Find and combine physical duplicate rows in the tracker."""
+    db_path = 'jobs.db'
+    csv_path = 'master_tracker.csv'
+    csv_out = 'master_tracker_temp.csv'
+    
+    if not os.path.exists(csv_path):
+        console.print("[red]master_tracker.csv not found.[/red]")
+        return
+        
+    with open(csv_path, mode='r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+
+    groups = {}
+    for i, row in enumerate(rows):
+        key = (
+            normalize_string(row.get('Company', '')),
+            normalize_string(row.get('Position', '')),
+            row.get('Date Added', ''),
+            row.get('Source PDF', ''),
+            row.get('Tracker Status', '')
+        )
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(i)
+
+    duplicates_found = 0
+    to_delete_ids = []
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    for key, indices in groups.items():
+        if len(indices) > 1:
+            base_idx = indices[0]
+            base_row = rows[base_idx]
+            base_id = base_row['Job ID']
+            
+            for dup_idx in indices[1:]:
+                dup_row = rows[dup_idx]
+                dup_id = dup_row['Job ID']
+                duplicates_found += 1
+                to_delete_ids.append(dup_id)
+                
+                base_row['Source Index'] = merge_delimited_field(base_row.get('Source Index', ''), dup_row.get('Source Index', ''))
+                
+                notes1 = base_row.get('Notes', '').strip()
+                notes2 = dup_row.get('Notes', '').strip()
+                new_notes = notes1
+                if notes2 and notes2 not in notes1:
+                    new_notes = notes1 + "; " + notes2 if notes1 else notes2
+                base_row['Notes'] = new_notes
+
+            cursor.execute(
+                "UPDATE jobs SET notes = ? WHERE job_id = ?",
+                (base_row['Notes'], base_id)
+            )
+
+    if duplicates_found == 0:
+        console.print("[green]No physical duplicates found.[/green]")
+        conn.close()
+        return
+
+    for dup_id in to_delete_ids:
+        cursor.execute("DELETE FROM job_workflow WHERE job_id = ?", (dup_id,))
+        cursor.execute("DELETE FROM jobs WHERE job_id = ?", (dup_id,))
+    
+    conn.commit()
+    conn.close()
+
+    with open(csv_out, mode='w', encoding='utf-8', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        to_delete_set = set(to_delete_ids)
+        for i, row in enumerate(rows):
+            if row['Job ID'] not in to_delete_set:
+                writer.writerow(row)
+    
+    shutil.move(csv_out, csv_path)
+    console.print(f"[green]Deleted {duplicates_found} duplicate jobs. Kept and merged into base rows.[/green]")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
     parser.add_argument("--dashboard", action="store_true", help="Print daily action dashboard from tracker and exit")
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
     parser.add_argument("--analytics", action="store_true", help="Print analytics dashboard showing conversion rates and exit")
+    parser.add_argument("--dedup-physical", action="store_true", help="Find and combine physical duplicate rows in the tracker")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
@@ -3364,6 +3449,10 @@ def main():
         else:
             handle_status_update(args.update, args.status, args.notes)
             return
+            
+    if args.dedup_physical:
+        handle_dedup_physical()
+        return
     
     if args.dashboard:
         _print_dashboard()
