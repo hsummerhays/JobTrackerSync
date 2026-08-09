@@ -38,6 +38,11 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         │       └─ Re-scores all existing rows on every run
         │           so resume changes propagate automatically
         │
+        ├─ [Optional] --rescore flag
+        │       └─ Recalculates scores for all active jobs in jobs.db
+        │           without re-parsing PDFs. Preserves manual fields
+        │           (tracker_status, notes, recruiter, hiring_manager).
+        │
         ├─ 7. Merge & Sort
         │       └─ New + existing rows sorted by Fit Score desc
         │
@@ -57,6 +62,8 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 | `find_pdf.py` | Database and CSV search utility for PDFs and jobs |
 | `query_jobs.py` | Permanent SQLite lookup utility for jobs |
 | `dedup_utils.py` | Shared status-ranking, merge, and file-URI helpers used by the above |
+| `run_sql.py` | Ad-hoc read-only SQL query helper (used by the `db_query` agent skill) |
+| `create_calendar_event.py` | Generates pre-filled Google Calendar event links for interviews |
 | `config.json` | Resume skills, job type criteria, keyword weights |
 | `config.json.example` | Template for new installations |
 | `master_tracker.csv` | Primary working spreadsheet (git-ignored) |

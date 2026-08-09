@@ -10,7 +10,7 @@ The Fit Score is the sum of up to 7 weighted criteria. It is recalculated on eve
 
 | # | Criterion | Points | Condition |
 |---|-----------|--------|-----------|
-| 1 | **Remote or Utah** | 20 | Location contains "remote", "ut", "utah", "salt lake", "slc", "lehi", "provo", or "ogden" |
+| 1 | **Remote or Utah** | 20 | Location field contains a word-boundary match for: "remote", "\but\b", "utah", "salt lake", "slc", "lehi", "provo", or "ogden". Word boundaries prevent false matches on substrings (e.g. "Southlake", "Sutter"). |
 | 2a | **Experienced title** | 15 | Title contains: senior, lead, principal, staff, architect, engineering manager, sme, mid, ii, iii, 2, 3, level ii, level iii |
 | 2b | **Role match** | 10 | Title contains: software engineer, backend engineer, full stack, developer, sde, swe |
 | 3 | **Backend / Full Stack** | 15 | Title or notes contains: backend, full stack, fullstack, full-stack, distributed, data |
@@ -20,10 +20,13 @@ The Fit Score is the sum of up to 7 weighted criteria. It is recalculated on eve
 | 6 | **Small/medium company** | 10 | Company Type is "Small / Medium" |
 | 7 | **Legacy modernization** | 10 | Notes contain: legacy, modernization |
 | 8 | **Onsite/Local penalty** | -30 | Title or notes contain: local candidate, onsite only, on-site only, must relocate, no remote |
+| 9 | **Aggregator penalty** | -30 | Provider is `jobs.utah.gov`, `Ladders`, or company name contains "DailySummary" / "DailyDigest" |
 
 **Maximum possible score: 100**
 
 > Note: Criteria 4a and 4b are mutually exclusive. If both .NET and Java are present, the full 20 points are awarded.
+
+> Note: The aggregator penalty (Criterion 9) applies to all jobs from digest providers regardless of how well the title matches. The intent is to keep "apply today" and "apply this week" queues populated only by jobs with verifiable company information.
 
 ---
 
@@ -57,14 +60,18 @@ Recommendation categories are determined by combining the **Fit Score** and the 
 
 ## Priority
 
-Priority is derived from Action and Recommendation together:
+Priority is derived from **Recommendation first**, then Action. Recommendation always wins for low-scoring jobs — `Action = Apply` cannot elevate a Skip or Low job into the P1/P2 queue.
 
 | Priority | Condition |
 |----------|-----------|
-| P1 – Apply today | Action = Apply AND Recommendation = 5 stars |
-| P2 – Apply this week | Action = Apply OR Contact Recruiter |
-| P3 – Investigate | Action = Review |
-| P4 – Ignore | All other cases |
+| **P4 – Ignore** | Recommendation = ★☆☆☆☆ Skip OR ★★☆☆☆ Low (regardless of Action) |
+| **P3 – Investigate** | Recommendation = ★★★☆☆ Maybe (regardless of Action) |
+| **P1 – Apply today** | Action = Apply AND Recommendation = ★★★★★ Apply Now |
+| **P2 – Apply this week** | Action = Apply OR Contact Recruiter (and Recommendation ≥ ★★★★☆) |
+| **P3 – Investigate** | Action = Review |
+| **P4 – Ignore** | All other cases |
+
+> **Aggregator cap**: Jobs from digest providers (Criterion 9 above) are additionally capped at ★★★☆☆ Maybe, so their maximum possible priority is **P3** regardless of score.
 
 ---
 

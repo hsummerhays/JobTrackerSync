@@ -23,3 +23,9 @@ The tracker uses `config.json` to define how jobs are parsed and scored. It cont
    - Is it a skill the user possesses? (Add to `resume_skills` list in the appropriate profile).
    - Should it grant fit-score credit? (Add to `tech_keywords` list in the appropriate profile).
 3. Write a small Python script to safely load, modify, and rewrite `config.json` to ensure the JSON formatting is perfectly preserved, or use surgical text replacement. Do NOT overwrite the entire file blindly.
+4. After saving `config.json`, **always run `--rescore`** so existing database records are immediately updated with the new skill/alias matching — otherwise changes only take effect on the next full PDF sync:
+
+```bash
+python parse_jobs.py --rescore
+```
+

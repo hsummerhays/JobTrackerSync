@@ -2,7 +2,30 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.2 — 2026-08-09
+
+### Scoring & Priority Fixes
+- **Utah detection hardened**: `is_utah` now uses word-boundary regex (`\b`) so strings like "Southlake" or "Sutter" never falsely match the two-letter state abbreviation `ut`. Salt Lake City, UT continues to score as local; Southlake, TX now correctly triggers the relocation penalty.
+- **Priority follows recommendation**: `compute_priority` now unconditionally returns P4 for Skip/Low recommendations and P3 for Maybe, regardless of the job's `Action` field. Previously, `Action = Apply` could silently elevate a low-score job to P2.
+- **Aggregator cap**: Jobs originating from `jobs.utah.gov`, `Ladders`, or any provider whose company name contains "DailySummary" / "DailyDigest" receive a 30-point fit-score penalty and are capped at ★★★☆☆ Maybe (P3). They can no longer flood the P1/P2 application queue.
+- **Backup rotation**: `backup_file_if_exists` now keeps the most recent `MAX_BACKUPS_TO_KEEP` (3) backups instead of deleting all but the newest one. This prevents the first backup in a multi-file run from being erased before the run finishes.
+
+### Parser Fixes
+- **Email metadata leak**: The generic card parser now detects "Years Exp Required" (an Indeed email header) when it appears in the company-name position and skips back one more line to retrieve the true employer name. The `clean_company_name` hardcoded override has been removed; the fix now lives in the parser where it can apply to any future re-import of the same PDF.
+- **Skill boundary matching**: Extracted `_skill_boundary_pattern()` helper so skills whose name begins or ends with punctuation (e.g. `.NET`, `C#`) use asymmetric lookarounds instead of the blanket `(?<![a-z0-9])` prefix that previously blocked matches like "ASP.NET".
+
+### Bulk Rescoring
+- **`--rescore` flag**: Running `python parse_jobs.py --rescore` recalculates fit score, priority, recommendation, matched/missing skills, and reason for every active job in `jobs.db` without re-parsing any PDFs. Manual fields (`tracker_status`, `notes`, `recruiter`, `hiring_manager`) are preserved.
+
+### Regression Tests
+- Added `tests/test_fix_regression_suite.py` with 6 targeted tests covering: Utah detection, aggregator cap, priority/action interaction, Vue alias normalisation, Porch Software metadata parsing, and `--rescore` idempotency plus field preservation.
+
+### Agent Skills
+- Added `.agents/skills/manage_config/`, `.agents/skills/deduplicate_jobs/`, and `.agents/skills/find_pdf/` skill directories.
+- Added `create_calendar_event.py` and `run_sql.py` standalone helpers.
+
 ## v1.3.1 — 2026-08-05
+
 
 ### Data Integrity
 - Deferred successful PDF processing records until SQLite and CSV writes complete.

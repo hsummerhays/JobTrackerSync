@@ -201,8 +201,6 @@ def record_pdf_processed(conn, file_hash, parser_version, file_path, file_size, 
 
 def clean_company_name(comp):
     if not comp: return ""
-    if "years exp required" in comp.lower():
-        return "Porch Software"
     # Strip common email subject/notification formatting artifacts
     # "Jobs at Brady Corporation" -> "Brady Corporation"
     # "(Remote) at Globe Life" -> "Globe Life"
@@ -306,7 +304,7 @@ def is_valid_company(company, provider=None):
     if any(comp_lower.endswith(suf) for suf in ui_label_endings):
         return False
     # Check for exclusion words
-    exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message", "do not share this email", "be seen first", "1-click apply", "your job listings", "job listings", "job summary"]
+    exclude_words = ["application", "interest", "submit", "hiring", "apply", "gmail", "http", "resume", "position", "salary", "compensation", "message", "do not share this email", "be seen first", "1-click apply", "your job listings", "job listings", "job summary", "years exp required", "yrs exp required"]
     if any(w in comp_lower for w in exclude_words):
         return False
     # Reject if contains date/time timestamp pattern
@@ -361,29 +359,42 @@ def compute_priority(recommendation, action, age_days=0):
             
     return priority
 
+MAX_OLD_BACKUPS_TO_KEEP = 3
+# Snapshot taken once, at import time, so every backup_file_if_exists() call
+# in this process can tell "made during this run" from "made by a past run".
+_RUN_START_TIMESTAMP = datetime.now().strftime('%Y%m%d%H%M%S%f')
+
+def _backup_timestamp(backup_path):
+    return backup_path.rsplit(".bak.", 1)[-1]
+
 def backup_file_if_exists(path):
     """Copy `path` to a timestamped `.bak.<timestamp>` sibling before a risky
     write, so there's a recoverable snapshot to restore from if the write is
     interrupted partway through. No-op if `path` doesn't exist yet.
-    Removes all older .bak files for this path to save space."""
+    Prunes down to the most recent MAX_OLD_BACKUPS_TO_KEEP .bak files from
+    past runs to save space, but never removes a backup made during this
+    run -- a single run can call this multiple times (e.g. once before
+    jobs.db and once before the tracker CSV, or an extra one-time backfill
+    snapshot), and every one of those must survive until the run finishes,
+    regardless of how many calls that turns out to be."""
     if not os.path.exists(path):
         return None
     backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     try:
         shutil.copy2(path, backup_path)
-        
-        # Clean up older backups
+
         import glob
         directory = os.path.dirname(os.path.abspath(path))
         base_name = os.path.basename(path)
         pattern = os.path.join(directory, f"{base_name}.bak.*")
-        for old_backup in glob.glob(pattern):
-            if old_backup != os.path.abspath(backup_path) and old_backup != backup_path:
-                try:
-                    os.remove(old_backup)
-                except OSError:
-                    pass
-                    
+        existing_backups = sorted(glob.glob(pattern), reverse=True)
+        older_run_backups = [b for b in existing_backups if _backup_timestamp(b) < _RUN_START_TIMESTAMP]
+        for old_backup in older_run_backups[MAX_OLD_BACKUPS_TO_KEEP:]:
+            try:
+                os.remove(old_backup)
+            except OSError:
+                pass
+
         return backup_path
     except OSError as e:
         console.print(f"[dim yellow]Could not back up {path} before writing: {e}[/dim yellow]")
@@ -884,7 +895,8 @@ def save_to_sqlite(db_path, jobs_list):
                 recruiter TEXT,
                 hiring_manager TEXT,
                 fingerprint TEXT,
-                previous_job_id TEXT
+                previous_job_id TEXT,
+                raw_context TEXT
             )
         """)
 
@@ -929,6 +941,7 @@ def save_to_sqlite(db_path, jobs_list):
             ("hiring_manager", "TEXT"),
             ("fingerprint", "TEXT"),
             ("previous_job_id", "TEXT"),
+            ("raw_context", "TEXT"),
         ])
         _ensure_columns(cursor, "job_workflow", [
             ("review_status", "TEXT"),
@@ -1144,8 +1157,8 @@ def save_to_sqlite(db_path, jobs_list):
                         source_pdf, confidence, fit_score, priority, company_type,
                         recommendation, tracker_status, disposition, action, existing_company,
                         reason, matched_skills, missing_skills, date_added, last_seen, notes, recruiter, hiring_manager,
-                        fingerprint, previous_job_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        fingerprint, previous_job_id, raw_context
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -1173,7 +1186,8 @@ def save_to_sqlite(db_path, jobs_list):
                         recruiter=excluded.recruiter,
                         hiring_manager=excluded.hiring_manager,
                         fingerprint=excluded.fingerprint,
-                        previous_job_id=COALESCE(excluded.previous_job_id, previous_job_id)
+                        previous_job_id=COALESCE(excluded.previous_job_id, previous_job_id),
+                        raw_context=COALESCE(NULLIF(excluded.raw_context, ''), raw_context)
                 """, (
                     jid,
                     job.get("Review Status", job.get("review_status")),
@@ -1203,6 +1217,7 @@ def save_to_sqlite(db_path, jobs_list):
                     job.get("Hiring Manager", job.get("hiring_manager")),
                     fingerprint,
                     job.get("Previous Job ID", job.get("previous_job_id")),
+                    job.get("Raw Context", job.get("raw_context")),
                 ))
 
         try:
@@ -1325,6 +1340,9 @@ def load_config():
         global POTENTIAL_SKILLS, SKILL_DISPLAY_NAMES
         for canon_skill, aliases in config["skill_aliases"].items():
             canon_display = SKILL_DISPLAY_NAMES.get(canon_skill, canon_skill.title())
+            if canon_skill not in POTENTIAL_SKILLS:
+                POTENTIAL_SKILLS.append(canon_skill)
+            SKILL_DISPLAY_NAMES[canon_skill] = canon_display
             for alias in aliases:
                 if alias not in POTENTIAL_SKILLS:
                     POTENTIAL_SKILLS.append(alias)
@@ -1494,9 +1512,22 @@ def _looks_like_title(line):
         return False
     return any(kw in line_lower for kw in TITLE_KEYWORDS)
 
+def _skill_boundary_pattern(skill):
+    """Build a word-boundary regex for `skill`, requiring a non-alnum
+    boundary only on sides where the skill itself starts/ends with an alnum
+    character. Skills like ".net" start with punctuation, which is already
+    a natural boundary -- requiring the char before that punctuation to
+    also be non-alnum would reject legitimate matches like "ASP.NET" or
+    "VB.NET"."""
+    if not skill:
+        return r'(?!)'  # never matches
+    lookbehind = r'(?<![a-z0-9])' if skill[0].isalnum() else ''
+    lookahead = r'(?![a-z0-9])' if skill[-1].isalnum() else ''
+    return lookbehind + re.escape(skill) + lookahead
+
 def _find_skills(text):
     text_lower = text.lower()
-    return [skill for skill in POTENTIAL_SKILLS if re.search(r'(?<![a-z0-9])' + re.escape(skill) + r'(?![a-z0-9])', text_lower)]
+    return [skill for skill in POTENTIAL_SKILLS if re.search(_skill_boundary_pattern(skill), text_lower)]
 
 def _title_preferred_skills(title, context):
     title_skills = _find_skills(title)
@@ -1876,6 +1907,13 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                         potential_company = filtered_lines[i-1]
                         potential_company = re.split(r'\s+·\s+|\s+\d\.\d', potential_company)[0].strip()
                         potential_company = re.sub(r'[,\s•]+$', '', potential_company).strip()
+                        
+                        # Fix for email metadata leaking into company name
+                        if "years exp required" in potential_company.lower() and i > 1:
+                            potential_company = filtered_lines[i-2]
+                            potential_company = re.split(r'\s+·\s+|\s+\d\.\d', potential_company)[0].strip()
+                            potential_company = re.sub(r'[,\s•]+$', '', potential_company).strip()
+                            
                         if is_valid_company(potential_company):
                             company = potential_company
                         else:
@@ -2073,7 +2111,7 @@ def evaluate_job(job):
     # prefer it over nearby posting text that may belong to another card.
     title_skill_names = _find_skills(title)
     tech_search = title.lower() if title_skill_names else f"{title} {context}".lower()
-    matched_techs = [tech for tech in tech_keywords if re.search(r'(?<![a-z0-9])' + re.escape(tech.lower()) + r'(?![a-z0-9])', tech_search)]
+    matched_techs = [tech for tech in tech_keywords if re.search(_skill_boundary_pattern(tech.lower()), tech_search)]
     notes = []
     if job.get("source_index"):
         notes.append(f"Source Index: {job.get('source_index')}")
@@ -2185,7 +2223,8 @@ def evaluate_job(job):
         fit_score = max(0, fit_score - 15)
         
     # Incomplete listing penalty
-    if job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower():
+    is_incomplete_listing = job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower()
+    if is_incomplete_listing:
         fit_score = max(0, fit_score - 30)
         
     # Recommendation calculation (normalized)
@@ -2209,9 +2248,8 @@ def evaluate_job(job):
             recommendation = "★☆☆☆☆ Skip"
             
     # Cap incomplete listings at P3 (Maybe)
-    if recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
-        if job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower():
-            recommendation = "★★★☆☆ Maybe"
+    if is_incomplete_listing and recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+        recommendation = "★★★☆☆ Maybe"
             
     # Reason calculation
     reasons = []
@@ -3444,12 +3482,20 @@ def handle_rescore():
     cursor.execute(f"SELECT * FROM jobs WHERE tracker_status NOT IN ({placeholders})", tuple(TERMINAL_STATUSES))
     jobs = cursor.fetchall()
     
+    legacy_rows_approximated = 0
     for row in jobs:
         job_dict = dict(row)
         job_dict['title'] = job_dict.get('position', '')
-        # Synthesize raw context using previously extracted skills so they can be re-evaluated
-        job_dict['raw_context'] = f"{job_dict.get('position', '')} {job_dict.get('company', '')} {job_dict.get('matched_skills', '')} {job_dict.get('missing_skills', '')} {job_dict.get('reason', '')} {job_dict.get('notes', '')}" 
-        
+        if not job_dict.get('raw_context'):
+            # Rows saved before raw_context was persisted have no original
+            # posting text to re-evaluate against. Fall back to a synthesized
+            # approximation from previously extracted fields, but this loses
+            # signals that never made it into those fields (e.g. relocation
+            # restrictions, degree requirements) and can under- or over-score
+            # the job relative to its original evaluation.
+            job_dict['raw_context'] = f"{job_dict.get('position', '')} {job_dict.get('company', '')} {job_dict.get('matched_skills', '')} {job_dict.get('missing_skills', '')} {job_dict.get('reason', '')} {job_dict.get('notes', '')}"
+            legacy_rows_approximated += 1
+
         should_recommend, confidence, notes, fit_score, temp_priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type = evaluate_job(job_dict)
         
         priority = compute_priority(recommendation, job_dict.get('action', ''), 0)
@@ -3463,9 +3509,11 @@ def handle_rescore():
     
     conn.commit()
     conn.close()
-    
+
     clean_existing_tracker("master_tracker.csv")
     console.print(f"[green]Successfully rescored {len(jobs)} active jobs and synced master_tracker.csv.[/green]")
+    if legacy_rows_approximated:
+        console.print(f"[yellow]{legacy_rows_approximated} job(s) predate stored posting text and were rescored from an approximated context -- their restriction/degree-requirement signals may not be fully accurate.[/yellow]")
 
 def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
@@ -3965,6 +4013,7 @@ def main():
                 "Notes": notes,
                 "Fingerprint": job.get("fingerprint") or canonical_job_key(job["company"], job["title"], job["location"]),
                 "Previous Job ID": job.get("previous_job_id"),
+                "Raw Context": job.get("raw_context", ""),
             }
             all_recommendations.append(job_rec)
 
