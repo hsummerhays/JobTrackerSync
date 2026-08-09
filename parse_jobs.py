@@ -580,112 +580,44 @@ def clean_existing_tracker(tracker_path):
                 job_id = hashlib.md5(f"{company.strip().lower()}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()
             migrated_row["Job ID"] = job_id
             
-            # Job Type
-            job_type = row.get("Job Type")
-            if not job_type:
-                job_type = classify_job_type(position, notes)
-            migrated_row["Job Type"] = job_type
-            
-            # Load criteria from config for this job type
-            config = load_config()
-            criteria_map = config.get("job_type_criteria", {})
-            criteria = criteria_map.get(job_type, criteria_map.get("Software Engineer", {}))
-            resume_skills = criteria.get("resume_skills", [])
-            
-            # Company Type calculation (always recomputed to fix stale values)
-            comp_lower = company.lower()
-            c_search = f"{company} {notes}".lower()
-            if any(k in comp_lower for k in ["recruiting", "staffing", "placement", "navigators", "personnel", "robert half", "binit", "headhunters", "recruiter", "search partners"]):
-                comp_type = "Recruiting Firm"
-            elif any(k in c_search for k in ["consulting", "solutions", "services", "cgi", "pwc"]):
-                comp_type = "Consulting"
-            elif any(k in c_search for k in ["defense", "leidos", "harris", "lockheed", "raytheon", "boeing", "northrop", "military"]):
-                comp_type = "Defense"
-            elif any(k in c_search for k in ["health", "medical", "hosp", "care", "pharm", "optum", "clinical", "dental"]):
-                comp_type = "Healthcare"
-            elif any(k in c_search for k in ["finance", "wealth", "bank", "capital", "valuations", "investment", "insurance", "insurtech", "credit", "fidelity"]):
-                comp_type = "Financial"
-            elif any(faang.lower() in comp_lower for faang in FAANG_COMPANIES):
-                comp_type = "Enterprise"
-            else:
-                comp_type = "Small / Medium"
-            migrated_row["Company Type"] = comp_type
+            # Score this row through evaluate_job() -- the same rules engine
+            # used for freshly-parsed postings -- instead of a second, drifted
+            # copy of the scoring math. That duplicate never enforced Rule 6
+            # (reject postings outside Utah/Remote) or the incomplete-listing
+            # recommendation cap, so out-of-state and digest-only postings
+            # could silently regain Strong/Apply Now every time the tracker
+            # was cleaned -- and this runs on every sync, not just --rescore,
+            # which is why those scores kept coming back. The CSV has no
+            # persisted posting text, so context is approximated from fields
+            # already on the row, the same fallback --rescore uses for DB
+            # rows that predate raw_context.
+            approx_context = f"{position} {company} {row.get('Matched Skills', '')} {row.get('Missing Skills', '')} {row.get('Reason', '')} {notes}"
+            eval_job = {
+                "title": position,
+                "company": company,
+                "location": location,
+                "raw_context": approx_context,
+                "provider": row.get("Provider"),
+                "source_index": row.get("Source Index"),
+                "url": row.get("URL", row.get("Link")),
+            }
+            (
+                _, confidence, eval_notes, fit_score, _temp_priority, comp_type,
+                rec, reason, matched_skills, missing_skills, job_type,
+            ) = evaluate_job(eval_job)
 
-            # Unconditionally recalculate derived metrics to stay in sync with resume updates
-            score = 0
-            notes_lower = notes.lower()
-            
-            # 1. Remote or Utah (20 points)
-            if "remote" in pos_lower or "remote" in location.lower() or any(w in location.lower() for w in ["ut", "utah", "salt lake", "slc", "lehi", "provo", "ogden"]):
-                score += 20
-                
-            # 2. Senior (15 points)
-            if any(w in pos_lower for w in ["senior", "lead", "principal", "sme", "staff", "architect", "manager"]):
-                score += 15
-                
-            # 3. Backend / Full Stack / Leadership (15 points)
-            if job_type == "Software Engineer":
-                score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["backend", "full stack", "fullstack", "full-stack", "distributed", "data"]) else 0
-                title_skill_names = _find_skills(position)
-                stack_search = pos_lower if title_skill_names else f"{position} {notes}".lower()
-                has_dotnet = any(w in stack_search for w in [".net", "c#"])
-                has_java = any(w in stack_search for w in ["java", "spring"])
-                if has_dotnet:
-                    score_dotnet_java = 20
-                elif has_java:
-                    score_dotnet_java = 10  # Priority adjustment: 10 points for Java-only Software Engineer roles
-                else:
-                    score_dotnet_java = 0
-            else:
-                score_backend_fs = 15 if any(w in pos_lower or w in notes_lower for w in ["director", "supervisor", "manager", "lead"]) else 0
-                score_dotnet_java = 20 if any(w in pos_lower or w in notes_lower for w in ["manufacturing", "logistics", "inventory", "supply chain"]) else 0
-                
-            score += score_backend_fs + score_dotnet_java
-            
-            # 5. No degree requirement known (10 points)
-            degree_required = "degree requirement" in notes_lower or "bachelor" in notes_lower or "bs required" in notes_lower
-            score += 10 if not degree_required else 0
-            
-            # 6. Small/medium company (10 points)
-            if comp_type == "Small / Medium":
-                score += 10
-                
-            # 7. Legacy modernization (10 points)
-            if "legacy modernization" in notes_lower or "legacy" in notes_lower or "modernization" in notes_lower:
-                score += 10
-                
-            # Check for local candidate/onsite restrictions
-            restriction_phrases = ["local candidate", "onsite only", "on-site only", "must relocate", "no remote"]
-            has_restriction = any(p in pos_lower or p in notes_lower for p in restriction_phrases)
-            if has_restriction:
-                score = max(0, score - 30)
-                if "Local/Onsite restriction detected" not in notes:
-                    notes = notes + "; Local/Onsite restriction detected" if notes else "Local/Onsite restriction detected"
-                    migrated_row["Notes"] = notes
-            
-            # Operations type penalty: -15 pts to keep SE roles ranked above Ops roles
-            if job_type == "Operations":
-                score = max(0, score - 15)
-                
-            fit_score = score
+            migrated_row["Job Type"] = job_type
+            migrated_row["Company Type"] = comp_type
             migrated_row["Fit Score"] = int(fit_score)
-            
-            # Recommendation calculation (normalized)
-            conf = migrated_row["Confidence"]
-            if conf == "🔴 Low":
-                rec = "★☆☆☆☆ Skip"
-            else:
-                if fit_score >= 80 and conf == "🟢 High":
-                    rec = "★★★★★ Apply Now"
-                elif fit_score >= 60:
-                    rec = "★★★★☆ Strong"
-                elif fit_score >= 40:
-                    rec = "★★★☆☆ Maybe"
-                elif fit_score >= 20:
-                    rec = "★★☆☆☆ Low"
-                else:
-                    rec = "★☆☆☆☆ Skip"
-            
+            migrated_row["Confidence"] = confidence
+            migrated_row["Reason"] = reason
+            migrated_row["Matched Skills"] = matched_skills
+            migrated_row["Missing Skills"] = missing_skills
+
+            if "Local/Onsite restriction detected" in eval_notes and "Local/Onsite restriction detected" not in notes:
+                notes = notes + "; Local/Onsite restriction detected" if notes else "Local/Onsite restriction detected"
+                migrated_row["Notes"] = notes
+
             # Apply Digest-Based Priority Decay (Half-Life) for "New" (un-actioned) jobs
             company_lower = company.lower()
             provider_lower = migrated_row.get("Provider", "").lower()
@@ -760,48 +692,6 @@ def clean_existing_tracker(tracker_path):
                 migrated_row["Existing Company"] = "No"
             else:
                 migrated_row["Existing Company"] = current_val if current_val in ["Yes", "No"] else "No"
-            
-            # Reason calculation
-            reasons = []
-            if "remote" in pos_lower or "remote" in location.lower():
-                reasons.append("Remote")
-            elif any(w in location.lower() for w in ["ut", "utah", "salt lake"]):
-                reasons.append("Utah")
-                
-            if has_restriction:
-                reasons.append("Onsite/Local Restriction")
-            
-            matched_skills_list = []
-            search_str = f"{position} {notes}".lower()
-            if job_type == "Software Engineer":
-                if ".net" in search_str or "c#" in search_str: matched_skills_list.append(".NET")
-                if "java" in search_str: matched_skills_list.append("Java")
-                if "spring" in search_str: matched_skills_list.append("Spring")
-            else:
-                if "manufacturing" in search_str: matched_skills_list.append("Manufacturing")
-                if "logistics" in search_str: matched_skills_list.append("Logistics")
-                if "inventory" in search_str: matched_skills_list.append("Inventory")
-            
-            if matched_skills_list:
-                reasons.append(" + ".join(matched_skills_list))
-                
-            if comp_type == "Small / Medium":
-                reasons.append("Small company")
-            elif comp_type == "Recruiting Firm":
-                reasons.append("Recruiter")
-            else:
-                reasons.append(comp_type)
-            
-            reason = " + ".join(reasons)
-            migrated_row["Reason"] = reason
-            
-            # Matched Skills & Missing Skills
-            found_skills = _title_preferred_skills(position, notes)
-            if job_type == "Operations":
-                found_skills = [s for s in found_skills if s in resume_skills or s in criteria.get("tech_keywords", [])]
-            matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
-            migrated_row["Matched Skills"] = matched_skills
-            migrated_row["Missing Skills"] = missing_skills
             
             # Preserve Recruiter & Hiring Manager
             migrated_row["Recruiter"] = row.get("Recruiter", "")
@@ -3472,17 +3362,30 @@ def handle_dedup_physical():
 
 
 
-def handle_rescore():
+def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
     console.print("[cyan]Rescoring active jobs...[/cyan]")
-    conn = sqlite3.connect("jobs.db")
+    resolved_db = os.path.abspath(db_path)
+    resolved_csv = os.path.abspath(csv_path)
+    resolved_config = os.path.abspath(CONFIG_PATH)
+    console.print(f"[dim]Database:  {resolved_db}[/dim]")
+    console.print(f"[dim]Tracker:   {resolved_csv}[/dim]")
+    console.print(f"[dim]Config:    {resolved_config}[/dim]")
+
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    
+
     placeholders = ",".join(["?"] * len(TERMINAL_STATUSES))
     cursor.execute(f"SELECT * FROM jobs WHERE tracker_status NOT IN ({placeholders})", tuple(TERMINAL_STATUSES))
     jobs = cursor.fetchall()
-    
+
     legacy_rows_approximated = 0
+    rows_changed = 0
+    # Field-level updates keyed by job_id, reused below to patch master_tracker.csv
+    # in place -- without this, the CSV keeps stale pre-rescore values and a later
+    # normal sync (which treats the CSV as the "existing" state) silently reverts
+    # jobs.db back to those stale values on its next upsert.
+    updated_fields_by_id = {}
     for row in jobs:
         job_dict = dict(row)
         job_dict['title'] = job_dict.get('position', '')
@@ -3497,21 +3400,71 @@ def handle_rescore():
             legacy_rows_approximated += 1
 
         should_recommend, confidence, notes, fit_score, temp_priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type = evaluate_job(job_dict)
-        
+
         priority = compute_priority(recommendation, job_dict.get('action', ''), 0)
-        
+
+        if (fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills) != (
+            job_dict.get('fit_score'), job_dict.get('priority'), job_dict.get('company_type'),
+            job_dict.get('recommendation'), job_dict.get('reason'), job_dict.get('matched_skills'),
+            job_dict.get('missing_skills'),
+        ):
+            rows_changed += 1
+
         cursor.execute("""
-            UPDATE jobs SET 
-                fit_score = ?, priority = ?, company_type = ?, recommendation = ?, 
+            UPDATE jobs SET
+                fit_score = ?, priority = ?, company_type = ?, recommendation = ?,
                 reason = ?, matched_skills = ?, missing_skills = ?
             WHERE job_id = ?
         """, (fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_dict['job_id']))
-    
+
+        updated_fields_by_id[job_dict['job_id']] = {
+            "Fit Score": fit_score,
+            "Priority": priority,
+            "Company Type": company_type,
+            "Recommendation": recommendation,
+            "Reason": reason,
+            "Matched Skills": matched_skills,
+            "Missing Skills": missing_skills,
+        }
+
     conn.commit()
     conn.close()
 
-    clean_existing_tracker("master_tracker.csv")
-    console.print(f"[green]Successfully rescored {len(jobs)} active jobs and synced master_tracker.csv.[/green]")
+    console.print(f"[dim]Rows evaluated: {len(jobs)} | Rows changed: {rows_changed}[/dim]")
+
+    csv_rows_updated = 0
+    csv_rows_missing = 0
+    if os.path.exists(csv_path):
+        with open(csv_path, mode='r', newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            csv_rows = list(reader)
+
+        seen_ids = set()
+        if fieldnames:
+            for csv_row in csv_rows:
+                jid = csv_row.get('Job ID')
+                if jid in updated_fields_by_id:
+                    csv_row.update(updated_fields_by_id[jid])
+                    csv_rows_updated += 1
+                    seen_ids.add(jid)
+
+            csv_rows_missing = len(updated_fields_by_id) - len(seen_ids)
+
+            backup_file_if_exists(csv_path)
+            csv_out = f"{csv_path}.rescore_tmp"
+            with open(csv_out, mode='w', encoding='utf-8', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer.writeheader()
+                writer.writerows(csv_rows)
+            shutil.move(csv_out, csv_path)
+
+    console.print(f"[dim]CSV rows updated: {csv_rows_updated}[/dim]")
+    if csv_rows_missing:
+        console.print(f"[yellow]{csv_rows_missing} rescored job(s) exist in {resolved_db} but have no matching Job ID in {resolved_csv} -- their new scores are in the database but were not written to the CSV.[/yellow]")
+
+    clean_existing_tracker(csv_path)
+    console.print(f"[green]Successfully rescored {len(jobs)} active jobs and synced {os.path.basename(csv_path)}.[/green]")
     if legacy_rows_approximated:
         console.print(f"[yellow]{legacy_rows_approximated} job(s) predate stored posting text and were rescored from an approximated context -- their restriction/degree-requirement signals may not be fully accurate.[/yellow]")
 

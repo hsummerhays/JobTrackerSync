@@ -142,6 +142,12 @@ class TestCleanExistingTrackerScoring(CleanExistingTrackerTestBase):
         rows = [{
             "Company": "Acme Corp", "Position": "Senior Backend Engineer (C#)",
             "Location": "Remote", "Confidence": "\U0001F7E2 High", "Tracker Status": "New",
+            # Notes carries the boilerplate evaluate_job() always appends for a
+            # real (non-FAANG) posting -- any row that actually went through
+            # scoring once has this, and it's what keeps the CSV's approximated
+            # context (there's no persisted posting text to re-evaluate against)
+            # long enough for evaluate_job()'s confidence heuristic to trust it.
+            "Notes": "Small-to-mid-sized (preferred)",
         }]
         self._write_tracker(rows)
         clean_existing_tracker(self.tracker_path)
@@ -168,6 +174,46 @@ class TestCleanExistingTrackerScoring(CleanExistingTrackerTestBase):
         clean_existing_tracker(self.tracker_path)
         result = self._read_tracker()[0]
         self.assertEqual(result["Job Type"], "Operations")
+
+    def test_out_of_state_job_never_recommended_regardless_of_stale_score(self):
+        """Regression: a prior duplicate scoring implementation in
+        clean_existing_tracker had no equivalent of evaluate_job()'s Rule 6
+        relocation gate, so an out-of-state row that had been (mis-)scored as
+        Strong/P2 before that gate existed would keep coming back on every
+        sync/rescore instead of being corrected to Skip."""
+        rows = [{
+            "Company": "Charles Schwab", "Position": "Senior Backend Engineer (.NET)",
+            "Location": "Southlake, TX (Hybrid)", "Confidence": "\U0001F7E2 High", "Tracker Status": "New",
+            "Fit Score": "90", "Priority": "P2 - Apply this week",
+            "Recommendation": "★★★★☆ Strong",
+            "Reason": "Utah + .NET + Small company", "Matched Skills": ".NET",
+            "Notes": "Small-to-mid-sized (preferred)",
+        }]
+        self._write_tracker(rows)
+        clean_existing_tracker(self.tracker_path)
+        result = self._read_tracker()[0]
+        self.assertEqual(result["Recommendation"], "★☆☆☆☆ Skip")
+        self.assertEqual(result["Priority"], "P4 – Ignore")
+        self.assertNotIn("Utah", result["Reason"])
+
+    def test_incomplete_listing_capped_at_maybe_regardless_of_stale_score(self):
+        """Regression: the same duplicate scoring implementation had no
+        equivalent of evaluate_job()'s incomplete-listing cap, so a
+        DailySummary/digest posting that had been (mis-)scored as
+        Strong/P2 could keep regenerating that score on every sync instead of
+        being capped at Maybe/P3."""
+        rows = [{
+            "Company": "Jobs.utah.gov-DailySummary", "Position": "Senior Software Engineer- Full Stack- Java/Angular",
+            "Location": "Salt Lake City, UT", "Provider": "jobs.utah.gov", "Confidence": "\U0001F7E2 High",
+            "Tracker Status": "New", "Fit Score": "80", "Priority": "P2 - Apply this week",
+            "Recommendation": "★★★★☆ Strong", "Reason": "Utah + Java + Small company",
+            "Notes": "Employer not included in daily summary PDF",
+        }]
+        self._write_tracker(rows)
+        clean_existing_tracker(self.tracker_path)
+        result = self._read_tracker()[0]
+        self.assertEqual(result["Recommendation"], "★★★☆☆ Maybe")
+        self.assertEqual(result["Priority"], "P3 – Investigate")
 
     def test_digest_priority_decay_downgrades_aged_recommendations(self):
         aged_date = (date.today() - timedelta(days=10)).isoformat()
@@ -202,6 +248,7 @@ class TestCleanExistingTrackerActionAndExistingCompany(CleanExistingTrackerTestB
             "Company": "Acme Corp", "Position": "Senior Backend Engineer (C#)",
             "Location": "Remote", "Confidence": "\U0001F7E2 High", "Tracker Status": "Applied",
             "Action": "Contact Recruiter",
+            "Notes": "Small-to-mid-sized (preferred)",
         }]
         self._write_tracker(rows)
         clean_existing_tracker(self.tracker_path)
