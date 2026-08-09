@@ -126,6 +126,27 @@ class TestMainPdfPipeline(unittest.TestCase):
                 parse_jobs.main()
         self.assertIn("No PDF files found", buf.getvalue())
 
+    def test_sync_complete_box_rows_are_aligned(self):
+        """Regression: the "New ★★★★★/★★★★☆ ..." rows in the SYNC COMPLETE
+        box previously used a longer label ("... recommendations this run:")
+        than every other row's hand-padded template accounted for, pushing
+        those two rows 13 characters past the box's right border. Every
+        content row between the box's top and bottom borders must render at
+        the same width."""
+        self._write_dummy_pdf()
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["parse_jobs.py", "--pdf-dir", self.pdf_dir]), \
+             patch("parse_jobs.pypdf.PdfReader", side_effect=FakeReader):
+            with redirect_stdout(buf):
+                parse_jobs.main()
+
+        out = buf.getvalue()
+        box_lines = [line for line in out.splitlines() if line.startswith("║") and line.endswith("║")]
+        self.assertTrue(box_lines, "expected at least one SYNC COMPLETE box content row")
+        lengths = {len(line) for line in box_lines}
+        self.assertEqual(len(lengths), 1, f"box rows have mismatched widths: {box_lines}")
+
     def test_full_pipeline_creates_tracker_and_db_rows(self):
         self._write_dummy_pdf()
 

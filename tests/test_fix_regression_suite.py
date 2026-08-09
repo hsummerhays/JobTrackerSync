@@ -5,7 +5,9 @@ from parse_jobs import (
     evaluate_job,
     compute_priority,
     _find_skills,
+    _format_skill_lists,
     parse_job_cards_from_text,
+    normalize_ocr_spacing,
     handle_rescore,
 )
 
@@ -77,6 +79,55 @@ def test_vue_aliases_normalize_correctly():
     nuxt_skills = [s.lower() for s in _find_skills("We need someone with Nuxt experience")]
     assert "nuxt" in nuxt_skills or any("vue" in s for s in nuxt_skills), \
         "Nuxt (or its Vue.js alias) not found in skills"
+
+
+def test_vuejs_alias_matches_resume_skill_listed_as_vue_dot_js():
+    """A resume_skills config that lists only 'vue.js' must still recognize a
+    posting title that says 'Vuejs' as a matched skill, not a missing one --
+    _find_skills returns whichever POTENTIAL_SKILLS alias literally appeared
+    in the text ('vuejs'), which must be compared against resume_skills by
+    canonical display name, not by the raw alias string."""
+    matched, missing = _format_skill_lists(["vuejs", "c#"], ["vue.js", "c#"])
+    assert "Vue.js" in matched
+    assert "Vue.js" not in missing
+
+
+def test_zip_code_digit_spacing_is_collapsed():
+    """A ZIP code split apart by PDF kerning ("UT 8 4 0 2 0") must be
+    rejoined, the same way normalize_ocr_spacing already rejoins
+    letter-by-letter kerning splits."""
+    assert normalize_ocr_spacing("Draper, UT 8 4 0 2 0 (Remote)") == "Draper, UT 84020 (Remote)"
+
+
+def test_apply_now_requires_a_technical_signal():
+    """Remote + senior + small-company alone must not produce Apply Now/P1 --
+    those are generic preferences any senior-sounding remote posting
+    satisfies. Without a matched resume skill, a tech_keywords hit, or a
+    legacy-modernization hit, the posting is capped at whatever its
+    fit_score alone earns (Strong/P2 or Maybe/P3), never Apply Now/P1 --
+    even if fit_score and confidence would otherwise clear the P1 bar."""
+    job_generic = {
+        "title": "Senior Software Engineer",
+        "company": "Headway",
+        "location": "Remote",
+        "raw_context": "Senior Software Engineer Headway Remote full stack backend distributed data",
+    }
+    _, _, _, fit_score, _, _, recommendation, _, matched_skills, _, _ = evaluate_job(job_generic)
+    assert fit_score >= 80, "fixture should still score high enough to have hit the old P1 bar"
+    assert matched_skills == ""
+    assert recommendation != "★★★★★ Apply Now"
+    assert compute_priority(recommendation, "Apply") != "P1 – Apply today"
+
+    # A real matched skill must still be able to reach Apply Now/P1.
+    job_matched = {
+        "title": "Senior .NET Engineer",
+        "company": "Acme",
+        "location": "Remote",
+        "raw_context": "Senior .NET Engineer Acme Remote full stack backend distributed data",
+    }
+    _, _, _, _, _, _, recommendation_matched, _, matched_skills_matched, _, _ = evaluate_job(job_matched)
+    assert matched_skills_matched != ""
+    assert recommendation_matched == "★★★★★ Apply Now"
 
 
 def test_porch_software_metadata_parses_correctly():

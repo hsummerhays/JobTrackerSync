@@ -1426,10 +1426,17 @@ def _title_preferred_skills(title, context):
     return _find_skills(context)
 
 def _format_skill_lists(found_skills, resume_skills):
-    matched_list = [s for s in found_skills if s in resume_skills]
-    missing_list = [s for s in found_skills if s not in resume_skills]
-    matched_skills = ", ".join([SKILL_DISPLAY_NAMES[s] for s in matched_list])
-    missing_skills = ", ".join([SKILL_DISPLAY_NAMES[s] for s in missing_list])
+    # Compare on the canonical display name, not the raw matched key --
+    # "vue", "vue.js", "vuejs", and "nuxt" are all distinct POTENTIAL_SKILLS
+    # entries that alias to the same "Vue.js" skill (see SKILL_DISPLAY_NAMES).
+    # A config listing only "vue.js" under resume_skills would otherwise
+    # never match a title that says "Vuejs", showing an owned skill as
+    # missing.
+    resume_display = {SKILL_DISPLAY_NAMES.get(s, s) for s in resume_skills}
+    matched_list = [s for s in found_skills if SKILL_DISPLAY_NAMES.get(s, s) in resume_display]
+    missing_list = [s for s in found_skills if SKILL_DISPLAY_NAMES.get(s, s) not in resume_display]
+    matched_skills = ", ".join(dict.fromkeys(SKILL_DISPLAY_NAMES.get(s, s) for s in matched_list))
+    missing_skills = ", ".join(dict.fromkeys(SKILL_DISPLAY_NAMES.get(s, s) for s in missing_list))
     return matched_skills, missing_skills
 
 def normalize_ocr_spacing(text):
@@ -1449,7 +1456,12 @@ def normalize_ocr_spacing(text):
     text = re.sub(r'\b([a-zA-Z]{2,})\s+([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\b(?![#+])', r'\1\2', text)
     # 2. Start of word separated by space: "p hoto" -> "photo" (consonant followed by length >=2)
     text = re.sub(r'\b([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\s+([a-zA-Z]{2,})\b', r'\1\2', text)
-    
+    # 3. Same kerning artifact hitting digit runs, most visibly a ZIP code
+    # split apart ("Draper, UT 8 4 0 2 0" instead of "84020"). Scoped to 5-9
+    # single digits (ZIP or ZIP+4) so it doesn't swallow legitimate spaced
+    # numbers like a version or a short list.
+    text = re.sub(r'\b\d(?:\s+\d){4,8}\b', lambda m: m.group(0).replace(' ', ''), text)
+
     return text
 
 def _clean_location(location):
@@ -2117,16 +2129,34 @@ def evaluate_job(job):
     if is_incomplete_listing:
         fit_score = max(0, fit_score - 30)
         
+    # Skills found in the title/context, split against resume_skills -- also
+    # doubles as the technical-signal check for Rule 17 below, so it has to
+    # run before the recommendation is decided rather than after.
+    found_skills = _title_preferred_skills(title, context)
+    if job_type == "Operations":
+        found_skills = [s for s in found_skills if s in resume_skills or s in tech_keywords]
+    matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
+
     # Recommendation calculation (normalized)
     try:
         conf_num = int(str(confidence).replace("%", "").strip())
     except ValueError:
         conf_num = 0
 
+    # Rule 17: Remote + small-company + seniority alone must not produce an
+    # Apply Now -- those are generic preferences that any senior-sounding
+    # remote posting satisfies regardless of whether it actually matches a
+    # target skill. Apply Now additionally requires a real technical/domain
+    # signal: a resume-matched skill, a config tech_keywords hit, or a legacy
+    # modernization hit. Without one, the posting still gets whatever tier
+    # its fit_score alone earns (Strong/P2 or Maybe/P3) -- it just can't
+    # reach the top tier on preferences alone.
+    has_technical_signal = bool(matched_skills) or bool(matched_techs) or bool(matched_legacy)
+
     if conf_num <= 20:
         recommendation = "★☆☆☆☆ Skip"
     else:
-        if fit_score >= 80 and conf_num >= 90:
+        if fit_score >= 80 and conf_num >= 90 and has_technical_signal:
             recommendation = "★★★★★ Apply Now"
         elif fit_score >= 60:
             recommendation = "★★★★☆ Strong"
@@ -2181,12 +2211,7 @@ def evaluate_job(job):
         reasons.append("Enterprise scale")
         
     reason = " + ".join(reasons)
-    
-    found_skills = _title_preferred_skills(title, context)
-    if job_type == "Operations":
-        found_skills = [s for s in found_skills if s in resume_skills or s in tech_keywords]
-    matched_skills, missing_skills = _format_skill_lists(found_skills, resume_skills)
-            
+
     # Rule 16: Low confidence jobs are never recommended
     should_recommend = conf_num >= 40
     
@@ -4147,8 +4172,8 @@ def main():
     console.print("[bold green]║                                              ║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Jobs created:           [bold cyan]{run_stats['jobs_created']:<6}[/bold cyan]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Duplicates merged:      [bold cyan]{run_stats['jobs_merged']:<6}[/bold cyan]              [bold green]║[/bold green]")
-    console.print(f"[bold green]║[/bold green]  New ★★★★★ recommendations this run:  [bold yellow]{five_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
-    console.print(f"[bold green]║[/bold green]  New ★★★★☆ recommendations this run:  [bold yellow]{four_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  New ★★★★★ (Apply Now):  [bold yellow]{five_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  New ★★★★☆ (Strong):     [bold yellow]{four_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Files failed:           [bold red]{run_stats['files_failed']:<6}[/bold red]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Elapsed:                [bold white]{f'{_elapsed:.1f}s':<6}[/bold white]              [bold green]║[/bold green]")
     console.print("[bold green]╚══════════════════════════════════════════════╝[/bold green]\n")
