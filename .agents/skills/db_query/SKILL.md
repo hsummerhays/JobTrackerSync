@@ -18,10 +18,10 @@ This returns a nicely formatted result with clickable PDF links. The only permit
 
 ## Fallback: Raw SQL for ad-hoc analysis
 
-For more complex queries not covered by `query_jobs.py`, run a Python one-liner directly:
+For more complex queries not covered by `query_jobs.py`, use the `run_sql.py` helper script:
 
 ```bash
-python -c "import sqlite3; conn = sqlite3.connect('jobs.db'); [print(row) for row in conn.execute('SELECT company, position, tracker_status FROM jobs LIMIT 10').fetchall()]"
+python run_sql.py "SELECT company, position, tracker_status FROM jobs LIMIT 10"
 ```
 
 Use this sparingly — prefer `query_jobs.py` for any user-facing lookup.

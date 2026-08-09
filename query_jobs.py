@@ -2,7 +2,7 @@ import sqlite3
 import argparse
 import sys
 import re
-from dedup_utils import path_to_file_uri, split_multivalue_field
+from dedup_utils import path_to_file_uri, split_multivalue_field, TERMINAL_STATUSES
 
 # Reconfigure stdout to use utf-8
 if hasattr(sys.stdout, 'reconfigure'):
@@ -11,6 +11,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 def main():
     parser = argparse.ArgumentParser(description="Query the jobs database by company name.")
     parser.add_argument("query", type=str, nargs="?", default="", help="Company name (or part of it) to search for")
+    parser.add_argument("--active", action="store_true", help="Only show active (non-terminal) jobs like those not Expired or Closed")
     args = parser.parse_args()
 
     conn = sqlite3.connect('jobs.db')
@@ -18,10 +19,17 @@ def main():
         c = conn.cursor()
 
         # Use NOCASE for case-insensitive matching
-        c.execute(
-            "SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added FROM jobs WHERE company LIKE ? COLLATE NOCASE ORDER BY date_added DESC",
-            (f"%{args.query}%",)
-        )
+        query_sql = "SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added FROM jobs WHERE company LIKE ? COLLATE NOCASE"
+        params = [f"%{args.query}%"]
+        
+        if args.active:
+            placeholders = ', '.join(['?'] * len(TERMINAL_STATUSES))
+            query_sql += f" AND tracker_status NOT IN ({placeholders})"
+            params.extend(TERMINAL_STATUSES)
+            
+        query_sql += " ORDER BY date_added DESC"
+        
+        c.execute(query_sql, tuple(params))
 
         results = c.fetchall()
     finally:

@@ -88,7 +88,7 @@ POTENTIAL_SKILLS = [
     "kubernetes", "aws", "azure", "postgresql", "sql server", "sql",
     "power bi", "cube.js", "kafka", "rabbitmq", "redis", "clean architecture",
     "git", "linux", "ssis", "etl", "wcf", "scala", "go", "golang",
-    "typescript", "angular", "vue", "node", "nodejs", "gcp", "google cloud",
+    "typescript", "angular", "vue", "vue.js", "vuejs", "nuxt", "nuxt.js", "node", "nodejs", "gcp", "google cloud",
     "terraform", "ansible", "jenkins", "ci/cd", "spark", "hadoop", "c++",
     "ruby", "rails", "php", "zend", "laravel", "django", "flask", "fastapi",
     "dynamodb", "mongodb", "cassandra", "oracle", "mariadb", "mysql",
@@ -110,7 +110,7 @@ SKILL_DISPLAY_NAMES = {
     "redis": "Redis", "clean architecture": "Clean Architecture", "git": "Git",
     "linux": "Linux", "ssis": "SSIS", "etl": "ETL", "wcf": "WCF",
     "scala": "Scala", "go": "Go", "golang": "Go", "typescript": "TypeScript",
-    "angular": "Angular", "vue": "Vue", "node": "Node.js", "nodejs": "Node.js",
+    "angular": "Angular", "vue": "Vue.js", "vue.js": "Vue.js", "vuejs": "Vue.js", "nuxt": "Vue.js", "nuxt.js": "Vue.js", "node": "Node.js", "nodejs": "Node.js",
     "gcp": "GCP", "google cloud": "GCP", "terraform": "Terraform",
     "ansible": "Ansible", "jenkins": "Jenkins", "ci/cd": "CI/CD",
     "spark": "Spark", "hadoop": "Hadoop", "c++": "C++", "ruby": "Ruby",
@@ -200,8 +200,9 @@ def record_pdf_processed(conn, file_hash, parser_version, file_path, file_size, 
     conn.commit()
 
 def clean_company_name(comp):
-    if not comp:
-        return ""
+    if not comp: return ""
+    if "years exp required" in comp.lower():
+        return "Porch Software"
     # Strip common email subject/notification formatting artifacts
     # "Jobs at Brady Corporation" -> "Brady Corporation"
     # "(Remote) at Globe Life" -> "Globe Life"
@@ -338,6 +339,11 @@ def is_valid_company(company, provider=None):
 
 
 def compute_priority(recommendation, action, age_days=0):
+    if recommendation in ["★☆☆☆☆ Skip", "★★☆☆☆ Low"]:
+        return "P4 – Ignore"
+    elif recommendation == "★★★☆☆ Maybe":
+        return "P3 – Investigate"
+
     if action == "Apply" and recommendation == "★★★★★ Apply Now":
         priority = "P1 – Apply today"
     elif action in ["Apply", "Contact Recruiter"]:
@@ -358,12 +364,26 @@ def compute_priority(recommendation, action, age_days=0):
 def backup_file_if_exists(path):
     """Copy `path` to a timestamped `.bak.<timestamp>` sibling before a risky
     write, so there's a recoverable snapshot to restore from if the write is
-    interrupted partway through. No-op if `path` doesn't exist yet."""
+    interrupted partway through. No-op if `path` doesn't exist yet.
+    Removes all older .bak files for this path to save space."""
     if not os.path.exists(path):
         return None
     backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     try:
         shutil.copy2(path, backup_path)
+        
+        # Clean up older backups
+        import glob
+        directory = os.path.dirname(os.path.abspath(path))
+        base_name = os.path.basename(path)
+        pattern = os.path.join(directory, f"{base_name}.bak.*")
+        for old_backup in glob.glob(pattern):
+            if old_backup != os.path.abspath(backup_path) and old_backup != backup_path:
+                try:
+                    os.remove(old_backup)
+                except OSError:
+                    pass
+                    
         return backup_path
     except OSError as e:
         console.print(f"[dim yellow]Could not back up {path} before writing: {e}[/dim yellow]")
@@ -1300,6 +1320,16 @@ def load_config():
         except Exception as e:
             console.print(f"[yellow]Failed to write default config to {CONFIG_PATH}: {e}[/yellow]")
 
+    # Apply skill aliases
+    if "skill_aliases" in config:
+        global POTENTIAL_SKILLS, SKILL_DISPLAY_NAMES
+        for canon_skill, aliases in config["skill_aliases"].items():
+            canon_display = SKILL_DISPLAY_NAMES.get(canon_skill, canon_skill.title())
+            for alias in aliases:
+                if alias not in POTENTIAL_SKILLS:
+                    POTENTIAL_SKILLS.append(alias)
+                SKILL_DISPLAY_NAMES[alias] = canon_display
+
     return config
 
 def save_config(pdf_dir):
@@ -1466,7 +1496,7 @@ def _looks_like_title(line):
 
 def _find_skills(text):
     text_lower = text.lower()
-    return [skill for skill in POTENTIAL_SKILLS if skill in text_lower]
+    return [skill for skill in POTENTIAL_SKILLS if re.search(r'(?<![a-z0-9])' + re.escape(skill) + r'(?![a-z0-9])', text_lower)]
 
 def _title_preferred_skills(title, context):
     title_skills = _find_skills(title)
@@ -2021,7 +2051,7 @@ def evaluate_job(job):
         return False, "🔴 Low", "Excluding conversational email text fragment", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Text fragment", "", "", job_type
         
     # Rule 6: Relocation check (Utah or Remote only)
-    is_utah = any(kw in location.lower() for kw in ["ut", "utah", "salt lake", "slc", "lehi", "provo", "ogden"])
+    is_utah = any(re.search(r"\b" + kw + r"\b", location.lower()) for kw in ["ut", "utah", "salt lake", "slc", "lehi", "provo", "ogden"])
     is_remote = "remote" in location.lower() or "remote" in title.lower()
     if not (is_utah or is_remote):
         return False, "🔴 Low", f"Rule 6: Relocation required (Location: {location})", 0, "P4", "Small / Medium", "★☆☆☆☆ Skip", "Out of state", "", "", job_type
@@ -2043,7 +2073,7 @@ def evaluate_job(job):
     # prefer it over nearby posting text that may belong to another card.
     title_skill_names = _find_skills(title)
     tech_search = title.lower() if title_skill_names else f"{title} {context}".lower()
-    matched_techs = [tech for tech in tech_keywords if tech.lower() in tech_search]
+    matched_techs = [tech for tech in tech_keywords if re.search(r'(?<![a-z0-9])' + re.escape(tech.lower()) + r'(?![a-z0-9])', tech_search)]
     notes = []
     if job.get("source_index"):
         notes.append(f"Source Index: {job.get('source_index')}")
@@ -2154,6 +2184,10 @@ def evaluate_job(job):
     if job_type == "Operations":
         fit_score = max(0, fit_score - 15)
         
+    # Incomplete listing penalty
+    if job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower():
+        fit_score = max(0, fit_score - 30)
+        
     # Recommendation calculation (normalized)
     try:
         conf_num = int(str(confidence).replace("%", "").strip())
@@ -2173,6 +2207,11 @@ def evaluate_job(job):
             recommendation = "★★☆☆☆ Low"
         else:
             recommendation = "★☆☆☆☆ Skip"
+            
+    # Cap incomplete listings at P3 (Maybe)
+    if recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+        if job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower():
+            recommendation = "★★★☆☆ Maybe"
             
     # Reason calculation
     reasons = []
@@ -3175,7 +3214,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
 
 def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     """
-    Print a 'Today's Highlights' briefing — top un-actioned opportunities from
+    Print a 'Current Opportunity Highlights' briefing — top un-actioned opportunities from
     the full tracker, with new-this-run jobs called out separately.
     Always appears as the terminal's final section.
     """
@@ -3300,7 +3339,7 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
 
     panel = Panel(
         content,
-        title="[bold yellow]TODAY'S HIGHLIGHTS[/bold yellow]",
+        title="[bold yellow]CURRENT OPPORTUNITY HIGHLIGHTS[/bold yellow]",
         border_style="bold yellow",
         expand=False,
         padding=(1, 2)
@@ -3394,6 +3433,40 @@ def handle_dedup_physical():
     console.print(f"[green]Deleted {duplicates_found} duplicate jobs. Kept and merged into base rows.[/green]")
 
 
+
+def handle_rescore():
+    console.print("[cyan]Rescoring active jobs...[/cyan]")
+    conn = sqlite3.connect("jobs.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    placeholders = ",".join(["?"] * len(TERMINAL_STATUSES))
+    cursor.execute(f"SELECT * FROM jobs WHERE tracker_status NOT IN ({placeholders})", tuple(TERMINAL_STATUSES))
+    jobs = cursor.fetchall()
+    
+    for row in jobs:
+        job_dict = dict(row)
+        job_dict['title'] = job_dict.get('position', '')
+        # Synthesize raw context using previously extracted skills so they can be re-evaluated
+        job_dict['raw_context'] = f"{job_dict.get('position', '')} {job_dict.get('company', '')} {job_dict.get('matched_skills', '')} {job_dict.get('missing_skills', '')} {job_dict.get('reason', '')} {job_dict.get('notes', '')}" 
+        
+        should_recommend, confidence, notes, fit_score, temp_priority, company_type, recommendation, reason, matched_skills, missing_skills, job_type = evaluate_job(job_dict)
+        
+        priority = compute_priority(recommendation, job_dict.get('action', ''), 0)
+        
+        cursor.execute("""
+            UPDATE jobs SET 
+                fit_score = ?, priority = ?, company_type = ?, recommendation = ?, 
+                reason = ?, matched_skills = ?, missing_skills = ?
+            WHERE job_id = ?
+        """, (fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_dict['job_id']))
+    
+    conn.commit()
+    conn.close()
+    
+    clean_existing_tracker("master_tracker.csv")
+    console.print(f"[green]Successfully rescored {len(jobs)} active jobs and synced master_tracker.csv.[/green]")
+
 def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
@@ -3401,6 +3474,7 @@ def main():
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
     parser.add_argument("--analytics", action="store_true", help="Print analytics dashboard showing conversion rates and exit")
     parser.add_argument("--dedup-physical", action="store_true", help="Find and combine physical duplicate rows in the tracker")
+    parser.add_argument("--rescore", action="store_true", help="Recalculate skills and fit scores for all active jobs")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
@@ -3452,6 +3526,10 @@ def main():
             
     if args.dedup_physical:
         handle_dedup_physical()
+        return
+        
+    if args.rescore:
+        handle_rescore()
         return
     
     if args.dashboard:
@@ -4059,7 +4137,7 @@ def main():
     five_star_new  = sum(1 for r in all_recommendations if "★★★★★" in r.get("Recommendation", ""))
     four_star_new  = sum(1 for r in all_recommendations if "★★★★☆" in r.get("Recommendation", ""))
     console.print("\n[bold green]╔══════════════════════════════════════════════╗[/bold green]")
-    console.print(f"[bold green]║       SYNC COMPLETE — {date.today()}        ║[/bold green]")
+    console.print(f"[bold green]║[/bold green][bold green]{f'SYNC COMPLETE — {date.today()}':^46}[/bold green][bold green]║[/bold green]")
     console.print("[bold green]╠══════════════════════════════════════════════╣[/bold green]")
     console.print(f"[bold green]║[/bold green]  PDFs discovered:        [bold cyan]{run_stats['pdfs_discovered']:<6}[/bold cyan]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Unchanged PDFs skipped: [bold dim]{run_stats['pdfs_skipped']:<6}[/bold dim]              [bold green]║[/bold green]")
@@ -4067,10 +4145,10 @@ def main():
     console.print("[bold green]║                                              ║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Jobs created:           [bold cyan]{run_stats['jobs_created']:<6}[/bold cyan]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Duplicates merged:      [bold cyan]{run_stats['jobs_merged']:<6}[/bold cyan]              [bold green]║[/bold green]")
-    console.print(f"[bold green]║[/bold green]  ★★★★★ recommendations: [bold yellow]{five_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
-    console.print(f"[bold green]║[/bold green]  ★★★★☆ recommendations: [bold yellow]{four_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  New ★★★★★ recommendations this run:  [bold yellow]{five_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  New ★★★★☆ recommendations this run:  [bold yellow]{four_star_new:<6}[/bold yellow]              [bold green]║[/bold green]")
     console.print(f"[bold green]║[/bold green]  Files failed:           [bold red]{run_stats['files_failed']:<6}[/bold red]              [bold green]║[/bold green]")
-    console.print(f"[bold green]║[/bold green]  Elapsed:                [bold white]{_elapsed:.1f}s[/bold white]                  [bold green]║[/bold green]")
+    console.print(f"[bold green]║[/bold green]  Elapsed:                [bold white]{f'{_elapsed:.1f}s':<6}[/bold white]              [bold green]║[/bold green]")
     console.print("[bold green]╚══════════════════════════════════════════════╝[/bold green]\n")
 
     # Calculate summary metrics
@@ -4225,7 +4303,7 @@ def main():
         for f in empty_pdfs:
             console.print(f"  - {f}")
 
-    # Always close with Today's Highlights — the one section that answers "anything exciting?"
+    # Always close with Current Opportunity Highlights — the one section that answers "anything exciting?"
     print_todays_highlights(all_recommendations, combined_jobs)
 
 if __name__ == "__main__":

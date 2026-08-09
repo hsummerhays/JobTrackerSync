@@ -7,8 +7,10 @@ description: Generate a pre-filled Google Calendar event link for interviews or 
 Use this skill whenever the user asks to add an event (like an interview or phone screen) to their calendar.
 
 ## Instructions
-Do not create the event via an API directly. Instead, generate a pre-filled Google Calendar event link.
-Format:
-`https://calendar.google.com/calendar/r/eventedit?text=[Event+Title]&details=[Description]&dates=[StartDate]/[EndDate]`
+Do not create the event via an API directly. Instead, use the helper script to generate a pre-filled Google Calendar event link:
 
-Ensure all values are URL-encoded. Present the link to the user as a clickable Markdown link.
+```bash
+python create_calendar_event.py --title "[Event Title]" --description "[Optional Description]" --start "[StartDate]" --end "[EndDate]"
+```
+
+The script will automatically URL-encode the parameters and print a clickable Markdown link. Present this link directly to the user.
