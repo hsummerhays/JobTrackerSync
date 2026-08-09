@@ -39,3 +39,9 @@
 
 - **Git Rules:**
   - Always run tests before a commit.
+
+- **Scoring & Priority Rules:**
+  - Priority is always governed by Recommendation first, then Action. `Action = Apply` cannot elevate a Skip or Low job into P1/P2. The order is: Skip/Low → P4, Maybe → P3, Strong/Apply Now + Apply → P1/P2.
+  - Aggregator listings (`Jobs.utah.gov-DailySummary`, `Ladders-DailyDigest`, any company name containing "DailySummary" or "DailyDigest") are capped at ★★★☆☆ Maybe (P3) regardless of fit score.
+  - After any change to `config.json` (adding skills, aliases, or keywords), always run `python parse_jobs.py --rescore` so existing database records are immediately updated. Without this, changes only take effect on the next full PDF sync.
+

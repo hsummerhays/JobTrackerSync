@@ -203,7 +203,30 @@ python query_jobs.py "Company Name"
 python query_jobs.py
 ```
 
-**8. Running Tests**
+**8. View Dashboards & Analytics**
+
+```bash
+# Today's P1/P2 action queue + active pipeline
+python parse_jobs.py --dashboard
+
+# Compact apply-now list only
+python parse_jobs.py --today
+
+# Full analytics: conversion rates, weekly volume, funnel metrics
+python parse_jobs.py --analytics
+```
+
+**9. Bulk Rescore After Config Changes**
+
+After updating `config.json` (e.g., adding a new resume skill or alias), recalculate scores for all active jobs without re-parsing any PDFs:
+
+```bash
+python parse_jobs.py --rescore
+```
+
+Manual fields (`Tracker Status`, `Notes`, `Recruiter`, `Hiring Manager`) are preserved.
+
+**10. Running Tests**
 
 Run the complete test suite using `pytest`:
 
@@ -211,7 +234,7 @@ Run the complete test suite using `pytest`:
 python -m pytest tests/ -v
 ```
 
-**9. AI Agent Integration**
+**11. AI Agent Integration**
 
 This project includes built-in AI agent skills (located in `.agents/skills/`) to automate common workflows using AI assistants:
 - **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
