@@ -249,6 +249,14 @@ This project includes built-in AI agent skills (located in `.agents/skills/`) to
 
 Workspace rules are defined in `.agents/AGENTS.md` and cover deduplication safety, mandatory dual-update (CSV + DB), temp file hygiene, and the test-before-commit policy. To persist new rules, use the `/learn` command.
 
+**12. Deduplicate Physical Rows**
+
+Find and safely combine exact physical duplicate rows in the tracker (e.g., missed during manual edits or parsing overlaps):
+
+```bash
+python parse_jobs.py --dedup-physical
+```
+
 ---
 
 ## Technical Highlights
@@ -272,7 +280,7 @@ This discovery reinforced an important architectural principle: job providers of
 The roadmap focuses on making parsed data more actionable and improving workflow visibility.
 
 ### 1. Polish and Reliability
-- [x] **More unit tests** around parsing and merge logic. *(367 tests across 17 modules as of v1.3.2)*
+- [x] **More unit tests** around parsing and merge logic. *(374 tests across 17 modules as of v1.3.2)*
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

@@ -21,20 +21,22 @@ VALID_STATUSES = ["New", "Applied", "Phone Screen", "Technical Interview", "Recr
 TERMINAL_STATUSES = {"Rejected", "Ghosted", "Cancelled", "Expired", "Closed"}
 
 STATUS_RANKS = {
-    "Offer": 100,
+    "Accepted": 100,
+    "Offer": 95,
     "Interviewing": 90,
-    "Technical Interview": 85,
-    "Phone Screen": 80,
-    "Recruiter Contact": 75,
-    "Applied": 60,
-    "Waiting": 55,
-    "New": 50,
-    "Imported": 45,
-    "Rejected": 10,
-    "Ghosted": 10,
-    "Cancelled": 10,
-    "Expired": 10,
-    "Closed": 10,
+    "Interview": 90,
+    "Technical Interview": 90,
+    "Phone Screen": 85,
+    "Recruiter Contact": 80,
+    "Recruiter Submitted": 80,
+    "Applied": 70,
+    "Waiting": 65,
+    "Rejected": 50,
+    "Ghosted": 40,
+    "Cancelled": 30,
+    "Expired": 20,
+    "New": 10,
+    "Imported": 5,
 }
 
 
@@ -50,21 +52,14 @@ def should_prefer_status(base_status, candidate_status):
     base_status = (base_status or "").strip()
     candidate_status = (candidate_status or "").strip()
 
-    base_unreviewed = base_status in UNREVIEWED_STATUSES
-    candidate_unreviewed = candidate_status in UNREVIEWED_STATUSES
+    base_rank = get_status_rank(base_status)
+    candidate_rank = get_status_rank(candidate_status)
 
-    if base_unreviewed != candidate_unreviewed:
-        return base_unreviewed and not candidate_unreviewed
+    # Active human applications (Applied, Interviewing, Offer) and explicit
+    # user Rejections must never be clobbered by weaker or automated statuses
+    # (like Expired, Cancelled, or New).
+    return candidate_rank > base_rank
 
-    base_terminal = base_status in TERMINAL_STATUSES
-    candidate_terminal = candidate_status in TERMINAL_STATUSES
-
-    if base_terminal != candidate_terminal:
-        # A terminal status is sticky: a still-active status never displaces
-        # it, even though "Applied" outranks "Rejected" numerically.
-        return candidate_terminal
-
-    return get_status_rank(candidate_status) > get_status_rank(base_status)
 
 
 def is_clean_location(loc):
@@ -107,11 +102,65 @@ def canonical_key(company, position, date_added):
     return f"{normalize_string(company)}|{normalize_string(position)}|{date_added}"
 
 
+def normalize_location(loc: str) -> str:
+    """Return a clean, canonical location string.
+
+    Rules applied in order:
+    1. Strip LinkedIn/Indeed work-type suffixes: (On-site), (Hybrid), (Remote),
+       (In person), (Contract), (Part-time) — they're redundant with other fields.
+    2. Resolve "X Metropolitan Area [qualifier]" → "X, UT" (all known uses are SLC).
+    3. Resolve "Jobs in X" artifacts from digest scraping → "X, UT".
+    4. Map bare state codes, blanks, or explicit "Unknown" → "Unknown".
+    5. Normalise known shorthand ("Remote" variations stay as-is).
+    """
+    if not loc:
+        return "Unknown"
+    loc = loc.strip()
+    if not loc or loc.lower() == "unknown":
+        return "Unknown"
+
+    # Strip LinkedIn/Indeed trailing work-type qualifiers
+    loc = re.sub(
+        r'\s*\((On-site|On site|Onsite|Hybrid|Remote|In person|In-person|Contract|Part-time|Full-time)\)',
+        '', loc, flags=re.IGNORECASE
+    ).strip()
+
+    # Resolve Metropolitan Area variants (all are SLC for this tracker)
+    metro_match = re.match(
+        r'^(.+?)\s+Metropolitan\s+Area\b', loc, re.IGNORECASE
+    )
+    if metro_match:
+        city = metro_match.group(1).strip()
+        # Map known cities; default to UT
+        STATE_MAP = {
+            "Salt Lake City": "UT", "Denver": "CO", "Phoenix": "AZ",
+            "Dallas": "TX", "Austin": "TX", "Seattle": "WA",
+        }
+        state = STATE_MAP.get(city, "UT")
+        return f"{city}, {state}"
+
+    # Resolve "Jobs in X" digest artifacts (assume Utah)
+    jobs_in = re.match(r'^Jobs\s+in\s+(.+)$', loc, re.IGNORECASE)
+    if jobs_in:
+        return f"{jobs_in.group(1).strip()}, UT"
+
+    # Bare state code → Unknown
+    if re.match(r'^[A-Z]{2}$', loc):
+        return "Unknown"
+
+    # Empty after stripping → Unknown
+    if not loc:
+        return "Unknown"
+
+    return loc
+
+
 def canonical_job_key(company, position, location):
     """Group parsed jobs by company + position + location (no date), used
     while scanning a single run to catch the same posting appearing on
     multiple pages/PDFs before it's ever written to the tracker."""
-    return f"{normalize_string(company)}|{normalize_string(position)}|{normalize_string(location)}"
+    return f"{normalize_string(company)}|{normalize_string(position)}|{normalize_string(normalize_location(location))}"
+
 
 
 def build_occurrence_fingerprint(provider, source_pdf, date_added, source_index, title):

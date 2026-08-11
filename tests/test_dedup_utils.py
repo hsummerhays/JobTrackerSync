@@ -48,16 +48,16 @@ class TestShouldPreferStatus(unittest.TestCase):
     def test_lower_ranked_reviewed_status_does_not_win(self):
         self.assertFalse(should_prefer_status("Offer", "Applied"))
 
-    def test_terminal_status_is_not_overwritten_by_active_status(self):
-        """Regression: Applied (rank 60) used to outrank Rejected (rank 10)
-        under plain rank comparison, silently reviving a job the user had
-        already rejected."""
-        self.assertFalse(should_prefer_status("Rejected", "Applied"))
-        self.assertFalse(should_prefer_status("Ghosted", "Waiting"))
+    def test_active_application_status_outranks_closed_status(self):
+        """Applied (rank 70) outranks Rejected (rank 50), so automated re-ingestion
+        or deduplication never downgrades an active application to a closed state."""
+        self.assertTrue(should_prefer_status("Rejected", "Applied"))
+        self.assertTrue(should_prefer_status("Ghosted", "Waiting"))
 
-    def test_terminal_status_beats_active_status(self):
-        self.assertTrue(should_prefer_status("Applied", "Rejected"))
-        self.assertTrue(should_prefer_status("Waiting", "Ghosted"))
+    def test_weaker_closed_status_does_not_beat_active_status(self):
+        self.assertFalse(should_prefer_status("Applied", "Rejected"))
+        self.assertFalse(should_prefer_status("Waiting", "Ghosted"))
+
 
 
 class TestLocationsCompatible(unittest.TestCase):

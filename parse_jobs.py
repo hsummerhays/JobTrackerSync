@@ -20,6 +20,7 @@ from dedup_utils import (
     build_occurrence_fingerprint,
     should_prefer_status,
     normalize_string,
+    normalize_location,
     locations_compatible,
     title_similarity,
     TERMINAL_STATUSES,
@@ -260,6 +261,11 @@ def is_valid_company(company, provider=None):
     # Reject job board / provider names that should never appear as employer names.
     if comp_lower in AGGREGATOR_PROVIDER_NAMES:
         return False
+    # Whitelist specific known multi-entity/numbered valid companies before generic rejections
+    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics"}
+    if comp_lower in whitelisted_companies:
+        return True
+
     # Reject if contains slash or backslash (typically indicates a tech stack heading)
     if "/" in comp or "\\" in comp:
         return False
@@ -272,7 +278,7 @@ def is_valid_company(company, provider=None):
     # Reject placeholders
     if comp_lower in ["unknown", "unknown/other", "undisclosed", "undisclosed company"]:
         return False
-    # Check if starts with lowercase letter or number
+    # Check if starts with lowercase letter or number (except allowed company names)
     if comp[0].islower() or comp[0].isdigit():
         return False
     # Check length
@@ -454,6 +460,52 @@ def clean_existing_tracker(tracker_path):
         # Check if any expected header is missing
         if any(h not in fieldnames for h in expected_headers):
             migrated_schema = True
+
+        # Load any missing rows from jobs.db so valid DB records missing from CSV are restored
+        if os.path.exists("jobs.db"):
+            try:
+                conn = sqlite3.connect("jobs.db")
+                conn.row_factory = sqlite3.Row
+                db_rows = conn.execute("SELECT * FROM jobs").fetchall()
+                conn.close()
+                csv_ids = {r.get("Job ID") for r in rows if r.get("Job ID")}
+                for db_r in db_rows:
+                    d = dict(db_r)
+                    jid = d.get("job_id")
+                    if jid and jid not in csv_ids:
+                        rows.append({
+                            "Job ID": d.get("job_id"),
+                            "Review Status": d.get("review_status"),
+                            "Job Type": d.get("job_type"),
+                            "Company": d.get("company"),
+                            "Position": d.get("position"),
+                            "Location": d.get("location"),
+                            "URL": d.get("url"),
+                            "Provider": d.get("provider"),
+                            "Source PDF": d.get("source_pdf"),
+                            "Confidence": d.get("confidence"),
+                            "Fit Score": d.get("fit_score"),
+                            "Priority": d.get("priority"),
+                            "Company Type": d.get("company_type"),
+                            "Recommendation": d.get("recommendation"),
+                            "Tracker Status": d.get("tracker_status"),
+                            "Disposition": d.get("disposition"),
+                            "Action": d.get("action"),
+                            "Existing Company": d.get("existing_company"),
+                            "Reason": d.get("reason"),
+                            "Matched Skills": d.get("matched_skills"),
+                            "Missing Skills": d.get("missing_skills"),
+                            "Date Added": d.get("date_added"),
+                            "Last Seen": d.get("last_seen"),
+                            "Notes": d.get("notes"),
+                            "Recruiter": d.get("recruiter"),
+                            "Hiring Manager": d.get("hiring_manager"),
+                            "Fingerprint": d.get("fingerprint"),
+                            "Previous Job ID": d.get("previous_job_id"),
+                        })
+            except Exception:
+                pass
+
             
         company_counts = {}
         for row in rows:
@@ -523,7 +575,9 @@ def clean_existing_tracker(tracker_path):
             migrated_row = {}
             migrated_row["Company"] = company
             migrated_row["Position"] = position
-            migrated_row["Location"] = location
+            migrated_row["Location"] = normalize_location(location)
+            location = migrated_row["Location"]  # use normalised value for fingerprint etc.
+
             migrated_row["URL"] = row.get("URL", row.get("Link", ""))
             migrated_row["Provider"] = row.get("Provider", "Unknown")
             migrated_row["Source PDF"] = row.get("Source PDF", "Unknown")
@@ -677,9 +731,16 @@ def clean_existing_tracker(tracker_path):
                     act = "Apply" if rec in ["★★★★★ Apply Now", "★★★★☆ Strong"] else "Review"
             migrated_row["Action"] = act
             
+            # Age (days) -- always computed fresh from Date Added so it
+            # never stays blank or stale across CSV/DB round-trips.
+            try:
+                _added = date.fromisoformat(migrated_row.get("Date Added", ""))
+                age_days = (date.today() - _added).days
+            except (ValueError, TypeError):
+                age_days = 0
+            migrated_row["Age (days)"] = age_days
+
             # Priority calculation (always recalculated to standardize formatting)
-            age_val = migrated_row.get("Age (days)")
-            age_days = int(age_val) if age_val and str(age_val).isdigit() else 0
             migrated_row["Priority"] = compute_priority(rec, act, age_days)
             
             # Existing Company (same employer already tracked)
@@ -696,10 +757,10 @@ def clean_existing_tracker(tracker_path):
             # Preserve Recruiter & Hiring Manager
             migrated_row["Recruiter"] = row.get("Recruiter", "")
             migrated_row["Hiring Manager"] = row.get("Hiring Manager", "")
-            
+
             source_index = row.get("Source Index", "")
             if not source_index and notes:
-                match = re.search(r"Source Index:\s*([^\n,]+)", notes)
+                match = re.search(r"Source Index:\s*([^\n,;]+)", notes)
                 if match:
                     source_index = match.group(1).strip()
             migrated_row["Source Index"] = source_index
@@ -721,6 +782,101 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Previous Job ID"] = row.get("Previous Job ID", "")
 
             rows_to_keep.append(migrated_row)
+
+        # --- Fingerprint-based deduplication pass ----------------------------
+        # Merge rows that share the same canonical fingerprint (same company +
+        # title + location) into one canonical record. This repairs duplicates
+        # already persisted in the CSV/DB; new-ingestion deduplication alone
+        # cannot fix these.
+        #
+        # Merge rules (per the canonical Weave example):
+        #   - Keep the row with the earliest Date Added as the base (i.e. the
+        #     original Job ID is preserved).
+        #   - Advance Last Seen to the latest of all merged rows.
+        #   - Prefer the higher-rank Tracker Status (same should_prefer_status
+        #     logic used during ingestion).
+        #   - Merge Source PDF and Provider fields (deduplicated slash-list).
+        #   - Rewrite the backward relisting note if present.
+        #   - Aggregator-placeholder fingerprints (occurrence-keyed) are unique
+        #     by construction and are excluded from this pass.
+        seen_fingerprints: dict = {}
+        deduped_rows: list = []
+        for mrow in rows_to_keep:
+            fp = mrow.get("Fingerprint", "")
+            if not fp or "|" not in fp or is_aggregator_placeholder(mrow.get("Company", "")):
+                # Aggregators or rows without a canonical fingerprint pass through.
+                deduped_rows.append(mrow)
+                continue
+            if fp not in seen_fingerprints:
+                seen_fingerprints[fp] = mrow
+                deduped_rows.append(mrow)
+            else:
+                # Only merge rows that share the same Date Added (true duplicates
+                # scanned twice on the same day, e.g. from two digest sources).
+                # Rows with a different Date Added are legitimate relisting history
+                # (Expired then re-posted as New) and must remain as separate rows.
+                this_date = mrow.get("Date Added", "")
+                canon_date = seen_fingerprints[fp].get("Date Added", "")
+                if this_date != canon_date:
+                    # Different date -- keep as a separate row (relisting history).
+                    deduped_rows.append(mrow)
+                    continue
+                # Duplicate fingerprint -- merge into the canonical (earlier) row.
+                # (this_date and canon_date already set by the guard block above;
+                #  for same-date pairs the "chronologically first" swap is a no-op
+                #  but kept for completeness in case of sub-day ordering.)
+                canonical = seen_fingerprints[fp]
+                # Determine which row is chronologically first (no-op for same date).
+                try:
+                    this_added = date.fromisoformat(this_date)
+                    canon_added = date.fromisoformat(canon_date)
+                    if this_added < canon_added:
+                        canonical["Job ID"] = mrow["Job ID"]
+                        canonical["Date Added"] = this_date
+                except (ValueError, TypeError):
+                    pass
+
+                # Advance Last Seen.
+                canonical["Last Seen"] = max(
+                    canonical.get("Last Seen", canonical.get("Date Added", "")),
+                    mrow.get("Last Seen", mrow.get("Date Added", ""))
+                )
+                # Prefer higher-rank status.
+                if should_prefer_status(canonical.get("Tracker Status"), mrow.get("Tracker Status")):
+                    canonical["Tracker Status"] = mrow["Tracker Status"]
+                # Merge Source PDF and Provider.
+                canonical["Source PDF"] = merge_delimited_field(
+                    canonical.get("Source PDF", ""), mrow.get("Source PDF", "")
+                )
+                canonical["Provider"] = merge_delimited_field(
+                    canonical.get("Provider", ""), mrow.get("Provider", "")
+                )
+                # Fix backward relisting note if present.
+                canon_notes = canonical.get("Notes", "")
+                # Remove any note that says "originally seen" a date LATER than Date Added
+                try:
+                    _canon_added = date.fromisoformat(canonical.get("Date Added", ""))
+                    _last_seen = date.fromisoformat(canonical.get("Last Seen", ""))
+                    bad_note_pat = re.compile(
+                        r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*'
+                    )
+                    # Remove all existing relisting notes; we'll add a correct one if dates differ.
+                    canon_notes = bad_note_pat.sub('', canon_notes).strip().strip(';').strip()
+                    if _last_seen > _canon_added:
+                        relisting_note = (
+                            f"Re-listed on {_last_seen.isoformat()}; originally seen {_canon_added.isoformat()}."
+                        )
+                        if relisting_note not in canon_notes:
+                            canon_notes = (canon_notes + "; " + relisting_note).lstrip("; ")
+                except (ValueError, TypeError):
+                    pass
+                canonical["Notes"] = canon_notes
+                # Recompute Age.
+                try:
+                    canonical["Age (days)"] = (date.today() - date.fromisoformat(canonical["Date Added"])).days
+                except (ValueError, TypeError):
+                    pass
+        rows_to_keep = deduped_rows
                 
         # Always sync with SQLite database 'jobs.db' on launch. Snapshot both
         # files first -- these are two separate writes, not one transaction.
@@ -2114,8 +2270,8 @@ def evaluate_job(job):
     score_no_degree = 10 if not degree_required else 0
     score_small_med = 10 if company_type == "Small / Medium" else 0
     score_legacy = 10 if bool(matched_legacy) else 0
-    
     fit_score = score_remote_utah + score_experience + score_role + score_backend_fs + score_dotnet_java + score_no_degree + score_small_med + score_legacy
+    fit_score = min(100, max(0, fit_score))
     if has_restriction:
         fit_score = max(0, fit_score - 30)
     
@@ -2128,6 +2284,8 @@ def evaluate_job(job):
     is_incomplete_listing = job.get("provider") in ["jobs.utah.gov", "Ladders"] or "dailysummary" in company.lower() or "dailydigest" in company.lower()
     if is_incomplete_listing:
         fit_score = max(0, fit_score - 30)
+    fit_score = min(100, max(0, fit_score))
+
         
     # Skills found in the title/context, split against resume_skills -- also
     # doubles as the technical-signal check for Rule 17 below, so it has to
@@ -3625,6 +3783,7 @@ def main():
     
     try:
         for root, dirs, files in os.walk(pdf_dir):
+            dirs.sort()
             pdf_files = sorted([f for f in files if f.lower().endswith('.pdf')])
             if not pdf_files:
                 continue
@@ -3758,8 +3917,14 @@ def main():
                                         continue
                                 else:
                                     ej_canonical = canonical_job_key(ej_company, ej_title, ej_location)
+                                    
+                                    # Require stronger identity matching: if titles match but explicit URLs/Req IDs conflict, treat as distinct
+                                    urls_conflict = False
+                                    if job.get('url') and ej.get('URL'):
+                                        if job['url'].strip() != ej['URL'].strip():
+                                            urls_conflict = True
 
-                                    if ej_canonical != current_canonical:
+                                    if ej_canonical != current_canonical or urls_conflict:
                                         # Similarity alone is never grounds for automatic
                                         # merging -- two different requisitions ("Senior
                                         # Software Engineer" vs "...II") can legitimately
@@ -3782,38 +3947,33 @@ def main():
                                 try:
                                     existing_date = date.fromisoformat(staleness_date_str[:10])
                                     current_date = date.fromisoformat(date_added)
-                                    age_days = (current_date - existing_date).days
-                                    if age_days < 0:
-                                        # Existing row is future-dated relative to this
-                                        # run -- don't treat it as a valid recent match.
-                                        continue
+                                    true_first_date = min(current_date, existing_date)
+                                    true_last_date = max(current_date, existing_date)
+                                    age_days = (true_last_date - true_first_date).days
                                     ej_status = ej.get("Tracker Status", "New")
 
                                     # Re-apply window: if job was applied to
                                     if ej_status in REAPPLY_STATUSES:
                                         added_date = date.fromisoformat(ej.get("Date Added", staleness_date_str[:10]))
-                                        age_from_added = (current_date - added_date).days
+                                        true_first_added = min(current_date, added_date)
+                                        true_last_added = max(current_date, added_date)
+                                        age_from_added = (true_last_added - true_first_added).days
                                         if age_from_added <= REAPPLY_DAYS:
                                             # Still within the reapply window -- merge into
                                             # the existing Applied/Interview record instead
                                             # of creating a duplicate row. This used to
                                             # delete the existing row's workflow entirely,
                                             # which lost real application history.
-                                            reapply_note = (
-                                                f"Re-listed {age_days} days after original application "
-                                                f"(was {ej_status}, originally seen {staleness_date_str})"
-                                            )
-                                            ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
+                                            reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                            if reapply_note not in ej.get("Notes", ""):
+                                                ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
                                             existing_match = ej
                                             is_duplicate = True
                                         else:
                                             # Reapply window lapsed -- treat as a genuinely
                                             # new opportunity, linked back to the prior
                                             # application via Previous Job ID.
-                                            reapply_note = (
-                                                f"Re-listed {age_days} days after original application "
-                                                f"(was {ej_status}, originally seen {staleness_date_str})"
-                                            )
+                                            reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
                                             job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                             job["previous_job_id"] = ej_job_id
                                         break
@@ -3824,7 +3984,7 @@ def main():
                                     # expired posting via Previous Job ID -- the old row is kept
                                     # as history instead of being deleted.
                                     if ej_status == "Expired":
-                                        reapply_note = f"Re-listed after expiring (originally seen {staleness_date_str})"
+                                        reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
                                         job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                         job["previous_job_id"] = ej_job_id
                                         break
@@ -3832,7 +3992,22 @@ def main():
                                     if age_days <= 90:
                                         existing_match = ej
                                         is_duplicate = True
+                                        # Record a chronologically correct relisting note on the
+                                        # existing row. This runs for any status that falls through
+                                        # to the 90-day window (e.g. Rejected, Cancelled, Ghosted,
+                                        # New) so the note is present regardless of ingestion order.
+                                        relisting_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                        if relisting_note not in ej.get("Notes", ""):
+                                            # Remove any stale/backward relisting note first.
+                                            import re as _re
+                                            existing_notes = _re.sub(
+                                                r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
+                                                '',
+                                                ej.get("Notes", "")
+                                            ).strip().strip(';').strip()
+                                            ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
                                         break
+
                                 except (ValueError, TypeError):
                                     existing_match = ej
                                     is_duplicate = True
@@ -3873,8 +4048,13 @@ def main():
                                 )
 
                                 # This is a fresh sighting of the existing record.
-                                existing_match["Last Seen"] = date_added
-
+                                existing_match["Last Seen"] = max(existing_match.get("Last Seen", date_added), date_added)
+                                existing_match["Date Added"] = min(existing_match.get("Date Added", date_added), date_added)
+                                
+                                new_status = job.get("force_status", "New")
+                                if should_prefer_status(existing_match.get("Tracker Status"), new_status):
+                                    existing_match["Tracker Status"] = new_status
+                                    
                             # (Spammy "Also discovered on" notes generation has been removed)
 
                             if not is_duplicate and possible_duplicate_note:
