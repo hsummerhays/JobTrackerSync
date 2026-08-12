@@ -18,9 +18,10 @@ def main():
     try:
         c = conn.cursor()
 
-        # Use NOCASE for case-insensitive matching
-        query_sql = "SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added FROM jobs WHERE company LIKE ? COLLATE NOCASE"
-        params = [f"%{args.query}%"]
+        # Use NOCASE and apostrophe stripping for tolerant matching (e.g. Lowes -> Lowe's)
+        query_sql = "SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added FROM jobs WHERE (company LIKE ? OR REPLACE(REPLACE(company, '''', ''), '’', '') LIKE ?) COLLATE NOCASE"
+        clean_q = args.query.replace("'", "").replace("’", "")
+        params = [f"%{args.query}%", f"%{clean_q}%"]
         
         if args.active:
             placeholders = ', '.join(['?'] * len(TERMINAL_STATUSES))

@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -275,6 +276,109 @@ class TestCleanExistingTrackerActionAndExistingCompany(CleanExistingTrackerTestB
         engineer_b = next(r for r in result if r["Position"] == "Engineer B")
         self.assertEqual(engineer_a["Existing Company"], "No")
         self.assertEqual(engineer_b["Existing Company"], "Yes")
+
+
+class TestCleanExistingTrackerDuplicateOrphanCleanup(CleanExistingTrackerTestBase):
+    """2026-08-13 end-to-end regression: clean_existing_tracker() dedupes its
+    row list in memory *before* calling save_to_sqlite(), so a losing
+    duplicate whose jobs.db row predates the merge never reaches the ordinary
+    upsert loop and its delete-the-loser branch never fires. The row then
+    sits orphaned in jobs.db, gets restored into the CSV's row list by the
+    "missing from CSV" recovery step on the very next run, and is merged
+    away again in memory each time -- so it never becomes visibly wrong, but
+    it's never actually cleaned out of jobs.db either. This exercises the
+    full pipeline (not save_to_sqlite() directly) so the CSV-side dedup pass
+    and the DB cleanup it now triggers are both covered together."""
+
+    def _job_ids_in_db(self):
+        conn = sqlite3.connect("jobs.db")
+        ids = {r[0] for r in conn.execute("SELECT job_id FROM jobs").fetchall()}
+        conn.close()
+        return ids
+
+    def test_duplicate_orphan_is_deleted_from_db_and_not_resurrected(self):
+        company, position, location = "Podium", "Backend Engineer", "Lehi, UT"
+        date_added = "2026-06-01"
+
+        # Two rows for the same real job, each already living in jobs.db
+        # under its own legacy fingerprint -- as if scanned twice before a
+        # canonical fingerprint existed to catch the collision.
+        import parse_jobs as pj
+        pj.save_to_sqlite("jobs.db", [{
+            "Job ID": "owner1", "Company": company, "Position": position, "Location": location,
+            "Date Added": date_added, "Tracker Status": "Applied", "Fingerprint": "legacy-fp-owner",
+        }])
+        pj.save_to_sqlite("jobs.db", [{
+            "Job ID": "loser1", "Company": company, "Position": position, "Location": location,
+            "Date Added": date_added, "Tracker Status": "New", "Fingerprint": "legacy-fp-loser",
+        }])
+        self.assertEqual(self._job_ids_in_db(), {"owner1", "loser1"})
+
+        rows = [
+            {"Job ID": "owner1", "Company": company, "Position": position, "Location": location,
+             "Date Added": date_added, "Tracker Status": "Applied"},
+            {"Job ID": "loser1", "Company": company, "Position": position, "Location": location,
+             "Date Added": date_added, "Tracker Status": "New"},
+        ]
+        self._write_tracker(rows)
+
+        clean_existing_tracker(self.tracker_path)
+
+        csv_ids = {r["Job ID"] for r in self._read_tracker()}
+        self.assertEqual(csv_ids, {"owner1"})
+        self.assertEqual(
+            self._job_ids_in_db(), {"owner1"},
+            "loser1's stale jobs.db row must be deleted by the merge, not left orphaned",
+        )
+
+        # Run again -- the orphan must not come back. Before the fix, this
+        # step alone would not have surfaced anything wrong (the CSV-side
+        # dedup pass re-merges the restored loser away every time), which is
+        # exactly why the bug was invisible without checking jobs.db directly.
+        clean_existing_tracker(self.tracker_path)
+
+        self.assertEqual({r["Job ID"] for r in self._read_tracker()}, {"owner1"})
+        self.assertEqual(self._job_ids_in_db(), {"owner1"})
+
+    def test_manual_score_survives_csv_side_dedup_merge(self):
+        company, position, location = "Zenith Robotics", "Firmware Engineer", "Draper, UT"
+        date_added = "2026-06-10"
+
+        import parse_jobs as pj
+        pj.save_to_sqlite("jobs.db", [{
+            "Job ID": "owner1", "Company": company, "Position": position, "Location": location,
+            "Date Added": date_added, "Tracker Status": "New", "Fingerprint": "legacy-fp-a",
+        }])
+        pj.save_to_sqlite("jobs.db", [{
+            "Job ID": "loser1", "Company": company, "Position": position, "Location": location,
+            "Date Added": date_added, "Tracker Status": "New", "Fingerprint": "legacy-fp-b",
+            "Fit Score": 97, "Priority": "P1 – Apply today", "Recommendation": "★★★★★ Apply Now",
+            "Score Source": "manual",
+        }])
+
+        rows = [
+            {"Job ID": "owner1", "Company": company, "Position": position, "Location": location,
+             "Date Added": date_added, "Tracker Status": "New"},
+            {"Job ID": "loser1", "Company": company, "Position": position, "Location": location,
+             "Date Added": date_added, "Tracker Status": "New"},
+        ]
+        self._write_tracker(rows)
+
+        clean_existing_tracker(self.tracker_path)
+
+        result = self._read_tracker()
+        self.assertEqual(len(result), 1)
+        survivor = result[0]
+        self.assertEqual(survivor["Job ID"], "owner1")
+        self.assertEqual(survivor["Score Source"], "manual")
+        self.assertEqual(survivor["Fit Score"], "97")
+
+        conn = sqlite3.connect("jobs.db")
+        db_row = conn.execute(
+            "SELECT fit_score, score_source FROM jobs WHERE job_id = 'owner1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(db_row, (97, "manual"))
 
 
 class TestCleanExistingTrackerExceptionHandling(CleanExistingTrackerTestBase):

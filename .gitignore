@@ -155,11 +155,17 @@ cython_debug/
 *.sw?
 
 # Local database, configuration, and tracking files
-jobs.db
-jobs.db.session.sql
-jobs.db-journal
+jobs.db*
 config.json
-master_tracker.csv
+!config.json.example
+master_tracker*.csv
+!master_tracker.csv.example
+*.pdf
+
+# Frozen recovery-baseline snapshots (contain the same data as jobs.db /
+# master_tracker.csv, so excluded for the same reason -- see
+# docs/stabilization_baseline.md for what's frozen and why)
+baseline/
 
 # PDF Directory
 PDFs/

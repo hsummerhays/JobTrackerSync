@@ -10,7 +10,9 @@ from dedup_utils import (
     is_clean_location,
     locations_compatible,
     merge_delimited_field,
+    normalize_company_for_matching,
     normalize_location,
+    normalize_title,
     should_prefer_status,
     title_similarity,
 )
@@ -28,6 +30,20 @@ class TestCanonicalKey(unittest.TestCase):
         key1 = canonical_key("Epicor Inc.", "Staff Software Engineer", "2026-07-01")
         key2 = canonical_key("epicor inc", "Staff  Software-Engineer", "2026-07-01")
         self.assertEqual(key1, key2)
+
+    def test_roman_numeral_title_normalization_matches_arabic_numeral(self):
+        """'Senior Developer I' and 'Senior Developer 1' must produce identical keys."""
+        key_roman = canonical_job_key("Verisk", "Senior Developer I", "Lehi, UT")
+        key_arabic = canonical_job_key("Verisk", "Senior Developer 1", "Lehi, UT")
+        self.assertEqual(key_roman, key_arabic)
+
+        key_roman_ii = canonical_job_key("Verisk", "Software Engineer II", "Remote")
+        key_arabic_2 = canonical_job_key("Verisk", "Software Engineer 2", "Remote")
+        self.assertEqual(key_roman_ii, key_arabic_2)
+
+        self.assertEqual(normalize_title("Developer III"), "Developer 3")
+        self.assertEqual(normalize_title("Analyst IV"), "Analyst 4")
+        self.assertEqual(normalize_title("Engineer V"), "Engineer 5")
 
 
 class TestShouldPreferStatus(unittest.TestCase):
@@ -125,6 +141,37 @@ class TestNormalizeLocation(unittest.TestCase):
         key1 = canonical_job_key("Zions Bancorporation", "Full Stack Developer (Technology Enablement)", "Midvale, UT")
         key2 = canonical_job_key("Zions Bancorporation", "Full Stack Developer (Technology Enablement)", "Midvale, UT 84047")
         self.assertEqual(key1, key2)
+
+    def test_canonical_job_key_does_not_strip_company_suffixes(self):
+        """canonical_job_key() is stored as a row's Fingerprint and recomputed
+        from current fields on every clean_existing_tracker() pass, so it must
+        stay a strict literal identity key -- an earlier version applied
+        normalize_company_for_matching()'s suffix stripping here directly and
+        it changed 484 stored fingerprints in one pass, collapsing several
+        *unrelated* pre-existing rows into collisions that the write-path's
+        duplicate-fingerprint guard then silently dropped (including a human-
+        Rejected row). 'Wheeler Machinery Company' and 'Wheeler Machinery Co'
+        must therefore produce *different* canonical_job_key values -- their
+        equivalence is handled by a local merge-decision comparison instead,
+        see test_wheeler_company_vs_co_suffix_match_in_merge_decision."""
+        key1 = canonical_job_key("Wheeler Machinery Company", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
+        key2 = canonical_job_key("Wheeler Machinery Co", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
+        self.assertNotEqual(key1, key2)
+
+        key3 = canonical_job_key("Cox Automotive", "Sr Lead Software Engineer", "Draper, UT")
+        key4 = canonical_job_key("Cox Automotive Inc.", "Sr Lead Software Engineer", "Draper, UT")
+        self.assertNotEqual(key3, key4)
+
+
+class TestNormalizeCompanyForMatching(unittest.TestCase):
+    def test_strips_trailing_corporate_suffix(self):
+        self.assertEqual(normalize_company_for_matching("Wheeler Machinery Company"), "Wheeler Machinery")
+        self.assertEqual(normalize_company_for_matching("Wheeler Machinery Co"), "Wheeler Machinery")
+        self.assertEqual(normalize_company_for_matching("Cox Automotive Inc."), "Cox Automotive")
+
+    def test_leaves_non_suffixed_names_unchanged(self):
+        self.assertEqual(normalize_company_for_matching("Podium"), "Podium")
+        self.assertEqual(normalize_company_for_matching("Zions Bancorporation"), "Zions Bancorporation")
 
 
 class TestTitleSimilarity(unittest.TestCase):

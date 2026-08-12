@@ -295,5 +295,349 @@ class TestSaveToSqliteWorkflowProvenance(unittest.TestCase):
         self.assertEqual(row[0], "Applied")
 
 
+class TestSaveToSqliteValidityDedupFilter(unittest.TestCase):
+    """2026-08-12: jobs.db had no equivalent of the is_valid_company() gate
+    evaluate_job() applies, or the CSV-side fingerprint-dedup pass, so junk
+    company names and legacy-Job-ID duplicates of already-tracked jobs
+    accumulated there indefinitely even though the CSV correctly excluded
+    them (see docs/stabilization_baseline.md). These tests cover the write
+    path filter added to close that gap."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.old_cwd = os.getcwd()
+        os.chdir(self.tmp_dir.name)
+        self.db_path = "jobs.db"
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        self.tmp_dir.cleanup()
+
+    def _job_ids(self):
+        conn = sqlite3.connect(self.db_path)
+        ids = {r[0] for r in conn.execute("SELECT job_id FROM jobs").fetchall()}
+        conn.close()
+        return ids
+
+    def test_invalid_company_row_is_not_written(self):
+        jobs_list = [{
+            "Job ID": "junk1", "Company": "Actively recruiting", "Position": "Senior Engineer",
+            "Location": "Draper, UT", "Tracker Status": "Expired", "Date Added": "2026-07-20",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), set())
+
+    def test_valid_company_row_is_still_written(self):
+        jobs_list = [{
+            "Job ID": "good1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), {"good1"})
+
+    def test_legacy_id_duplicate_same_fingerprint_and_date_is_skipped(self):
+        # "current1" already occupies this (fingerprint, date_added) pair --
+        # a second row for the same job under a different (legacy) Job ID
+        # must not be written as a second row.
+        first = {
+            "Job ID": "current1", "Company": "Onebrief, Inc", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "Applied", "Date Added": "2026-07-20",
+            "Fingerprint": "onebriefinc|seniorengineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [first])
+
+        legacy_dupe = {
+            "Job ID": "legacy_old_hash", "Company": "Onebrief, Inc", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "Applied", "Date Added": "2026-07-20",
+            "Fingerprint": "onebriefinc|seniorengineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [legacy_dupe])
+
+        self.assertEqual(self._job_ids(), {"current1"})
+
+    def test_duplicate_fingerprint_collision_merges_instead_of_silently_dropping(self):
+        """2026-08-12 regression: two independently-tracked rows for the same
+        real employer (e.g. "Podium" tracked twice, or "Collective Health" vs
+        "Collectivehealth, Inc.") had never collided before, so each carried
+        its own human-set status and notes. A canonical_job_key() change that
+        made them collide caused the loser to vanish with no trace -- including
+        a human-Rejected row's status and notes. The loser must never get its
+        own row (that's still correct dedup behavior), but its status and
+        notes must be merged into the surviving row, not discarded."""
+        owner = {
+            "Job ID": "owner1", "Company": "Collective Health", "Position": "Lead Backend Engineer",
+            "Location": "Lehi, UT", "Tracker Status": "New", "Date Added": "2026-07-08",
+            "Fingerprint": "collectivehealth|leadbackendengineer|lehiut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        losing = {
+            "Job ID": "loser1", "Company": "Collectivehealth, Inc.", "Position": "Lead Backend Engineer",
+            "Location": "Lehi, UT", "Tracker Status": "Rejected", "Date Added": "2026-07-08",
+            "Notes": "Poor fit in February. Applied and was rejected in July",
+            "Fingerprint": "collectivehealth|leadbackendengineer|lehiut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [losing])
+
+        self.assertEqual(self._job_ids(), {"owner1"})
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT tracker_status, notes FROM jobs WHERE job_id = 'owner1'").fetchone()
+        conn.close()
+        # Rejected (rank 50) outranks New (rank 10) -- the surviving row picks
+        # up the more-decided status instead of staying "New".
+        self.assertEqual(row[0], "Rejected")
+        self.assertIn("loser1", row[1])
+        self.assertIn("Poor fit in February. Applied and was rejected in July", row[1])
+
+    def test_duplicate_fingerprint_collision_deletes_preexisting_loser_row(self):
+        """2026-08-13 regression: when the loser already has its OWN row in
+        jobs.db from an earlier run (not just a freshly-parsed card that never
+        got inserted), merging it into the owner must delete that row, not
+        just leave it un-refreshed. clean_existing_tracker() restores to the
+        CSV any jobs.db row whose Job ID the CSV doesn't already have -- an
+        orphaned-but-still-present loser row would get silently resurrected
+        as a duplicate on the very next ordinary sync, undoing the merge."""
+        owner = {
+            "Job ID": "owner1", "Company": "Brady Corporation", "Position": "Senior Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Expired", "Date Added": "2026-06-14",
+            "Fingerprint": "bradycorporation|seniorengineer|saltlakecityut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        loser = {
+            "Job ID": "loser1", "Company": "Brady", "Position": "Senior Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Expired", "Date Added": "2026-06-14",
+            "Notes": "Source Index: 17-5", "Fingerprint": "brady|seniorengineer|saltlakecityut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [loser])
+        self.assertEqual(self._job_ids(), {"owner1", "loser1"})
+
+        # Now re-submit the loser with a fingerprint forced to collide with
+        # the owner -- simulating the consolidation pass that discovered the
+        # two rows are the same real employer under different spellings.
+        loser_colliding = dict(loser)
+        loser_colliding["Fingerprint"] = "bradycorporation|seniorengineer|saltlakecityut"
+        parse_jobs.save_to_sqlite(self.db_path, [loser_colliding])
+
+        self.assertEqual(self._job_ids(), {"owner1"})
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT notes FROM jobs WHERE job_id = 'owner1'").fetchone()
+        wf_row = conn.execute("SELECT job_id FROM job_workflow WHERE job_id = 'loser1'").fetchone()
+        conn.close()
+        self.assertIn("Source Index: 17-5", row[0])
+        self.assertIsNone(wf_row)
+
+    def test_pre_collapsed_losers_param_deletes_row_absent_from_jobs_list(self):
+        """2026-08-13 regression: clean_existing_tracker() dedupes its row
+        list in memory *before* calling save_to_sqlite(), so a loser's stale
+        jobs.db row from an earlier run never appears in jobs_list and the
+        ordinary upsert loop's own duplicate detection never sees it -- the
+        pre_collapsed_losers param exists so a caller that already resolved
+        the collision elsewhere can still get the orphaned row cleaned up in
+        the same transaction, even without listing it in jobs_list."""
+        owner = {
+            "Job ID": "owner1", "Company": "Brady Corporation", "Position": "Senior Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2026-06-14",
+            "Fingerprint": "bradycorporation|seniorengineer|saltlakecityut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        loser = {
+            "Job ID": "loser1", "Company": "Brady", "Position": "Senior Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "New", "Date Added": "2026-06-14",
+            "Fingerprint": "brady|seniorengineer|saltlakecityut",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [loser])
+        self.assertEqual(self._job_ids(), {"owner1", "loser1"})
+
+        # loser1 is intentionally NOT in jobs_list this time -- it was already
+        # collapsed out by the caller and is only named via pre_collapsed_losers.
+        parse_jobs.save_to_sqlite(self.db_path, [owner], pre_collapsed_losers=[("owner1", "loser1")])
+
+        self.assertEqual(self._job_ids(), {"owner1"})
+        conn = sqlite3.connect(self.db_path)
+        wf_row = conn.execute("SELECT job_id FROM job_workflow WHERE job_id = 'loser1'").fetchone()
+        conn.close()
+        self.assertIsNone(wf_row)
+
+    def test_duplicate_fingerprint_collision_promotes_manual_score_from_losing_row(self):
+        """A losing row carrying a manual score override (set via --update
+        --fit-score) must not lose that override just because it collided
+        with an auto-scored row on the same fingerprint -- 'manual' always
+        wins, same precedence as the ordinary ON CONFLICT upsert path."""
+        owner = {
+            "Job ID": "owner1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Fit Score": 40, "Priority": "P3 – Investigate",
+            "Fingerprint": "acme|engineer|remote", "Score Source": "parser",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        losing = {
+            "Job ID": "loser1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Fit Score": 95, "Priority": "P1 – Apply today",
+            "Recommendation": "★★★★★ Apply Now", "Fingerprint": "acme|engineer|remote", "Score Source": "manual",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [losing])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT fit_score, priority, recommendation, score_source FROM jobs WHERE job_id = 'owner1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row, (95, "P1 – Apply today", "★★★★★ Apply Now", "manual"))
+
+    def test_owner_upsert_after_merge_does_not_clobber_promoted_manual_score(self):
+        """2026-08-13 regression: _merge_duplicate_into_owner() promotes a
+        losing row's manual score onto the owner via a direct UPDATE, but if
+        the owner's OWN (still-parser) row also appears later in the same
+        jobs_list, the ordinary ON CONFLICT upsert used to overwrite
+        fit_score/priority/recommendation back to the parser values while
+        leaving score_source='manual' behind -- an internally inconsistent
+        row that claims to be manually scored but isn't."""
+        owner = {
+            "Job ID": "owner1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Fit Score": 40, "Priority": "P3 – Investigate",
+            "Fingerprint": "acme|engineer|remote", "Score Source": "parser",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        losing = {
+            "Job ID": "loser1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Fit Score": 95, "Priority": "P1 – Apply today",
+            "Recommendation": "★★★★★ Apply Now", "Fingerprint": "acme|engineer|remote", "Score Source": "manual",
+        }
+        # The loser (which merges into and is dropped by the owner) is listed
+        # BEFORE the owner's own re-submitted row, in a single call -- so the
+        # owner's ordinary upsert runs *after* the merge already promoted the
+        # manual score onto it.
+        owner_reupsert = dict(owner)
+        parse_jobs.save_to_sqlite(self.db_path, [losing, owner_reupsert])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT fit_score, priority, recommendation, score_source FROM jobs WHERE job_id = 'owner1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row, (95, "P1 – Apply today", "★★★★★ Apply Now", "manual"))
+
+    def test_owner_upsert_after_merge_does_not_clobber_promoted_manual_action_and_reason(self):
+        """2026-08-13 regression: the manual-score-survives-merge protection
+        (both _merge_duplicate_into_owner()'s UPDATE and the ON CONFLICT CASE
+        guards) originally only covered fit_score/priority/recommendation --
+        Action and Reason were left unguarded, so a manually-triaged row's
+        Action silently reverted to a parser value when the owner's own row
+        was upserted after the merge, while score_source stayed 'manual'."""
+        owner = {
+            "Job ID": "owner1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Action": "Ignore",
+            "Reason": "Low fit (parser)", "Fingerprint": "acme|engineer|remote", "Score Source": "parser",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [owner])
+
+        losing = {
+            "Job ID": "loser1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20", "Action": "Apply",
+            "Reason": "Hand-reviewed, strong fit", "Fingerprint": "acme|engineer|remote", "Score Source": "manual",
+        }
+        # Same ordering as the sibling score test: the loser (merges into and
+        # is dropped by the owner) is listed BEFORE the owner's own
+        # re-submitted row, so the owner's ordinary upsert runs *after* the
+        # merge already promoted the manual Action/Reason onto it.
+        owner_reupsert = dict(owner)
+        parse_jobs.save_to_sqlite(self.db_path, [losing, owner_reupsert])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            "SELECT action, reason, score_source FROM jobs WHERE job_id = 'owner1'"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row, ("Apply", "Hand-reviewed, strong fit", "manual"))
+
+    def test_pre_collapsed_losers_skips_deletion_when_owner_row_was_rejected(self):
+        """2026-08-13 regression: _delete_pre_collapsed_losers() used to
+        delete the loser and repoint application_events to owner_jid
+        unconditionally, even when _upsert_all_jobs() skipped writing the
+        owner's row this run (e.g. its company was rejected by
+        is_valid_company()). That destroyed the loser's still-valid data and
+        left application_events pointing at a job_id with no row at all. The
+        loser must be left alone when its owner never actually got written."""
+        loser = {
+            "Job ID": "loser1", "Company": "Acme Corp", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": "2026-07-20",
+            "Fingerprint": "legacy-fp-loser",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [loser])
+        self.assertEqual(self._job_ids(), {"loser1"})
+
+        # "owner1" is never actually written this run -- its company is a
+        # bare corporate-suffix fragment ("LLC" alone) that is_valid_company()
+        # rejects -- but pre_collapsed_losers still names it as loser1's
+        # survivor (as clean_existing_tracker()'s CSV-side merge would have
+        # picked it before either row reached save_to_sqlite()).
+        rejected_owner = {
+            "Job ID": "owner1", "Company": "LLC", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+            "Fingerprint": "legacy-fp-owner",
+        }
+        parse_jobs.save_to_sqlite(
+            self.db_path, [rejected_owner], pre_collapsed_losers=[("owner1", "loser1")]
+        )
+
+        # owner1 was never written -- loser1 must survive, not be destroyed.
+        self.assertEqual(self._job_ids(), {"loser1"})
+        conn = sqlite3.connect(self.db_path)
+        wf_row = conn.execute("SELECT job_id FROM job_workflow WHERE job_id = 'loser1'").fetchone()
+        conn.close()
+        self.assertIsNotNone(wf_row)
+
+    def test_relisting_same_fingerprint_different_date_is_not_treated_as_duplicate(self):
+        # A job that expired and was later reposted gets a new Job ID and a
+        # new Date Added but the same fingerprint -- this is legitimate
+        # history, not a duplicate, and must not be collapsed away.
+        expired = {
+            "Job ID": "expired_run1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "Expired", "Date Added": "2026-06-01",
+            "Fingerprint": "acme|engineer|remote",
+        }
+        reposted = {
+            "Job ID": "reposted_run2", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-15",
+            "Fingerprint": "acme|engineer|remote", "Previous Job ID": "expired_run1",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [expired])
+        parse_jobs.save_to_sqlite(self.db_path, [reposted])
+
+        self.assertEqual(self._job_ids(), {"expired_run1", "reposted_run2"})
+
+    def test_reupserting_the_same_job_id_is_not_treated_as_its_own_duplicate(self):
+        job = {
+            "Job ID": "job1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+            "Fingerprint": "acme|engineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+        job["Tracker Status"] = "Applied"
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT tracker_status FROM jobs WHERE job_id = 'job1'").fetchone()
+        conn.close()
+        self.assertEqual(self._job_ids(), {"job1"})
+        self.assertEqual(row[0], "Applied")
+
+    def test_manually_added_job_bypasses_the_company_validity_filter(self):
+        # The CLI "add manual opportunity" path marks its job dict with
+        # _status_source == "user" -- a human typed this company name
+        # directly, so is_valid_company()'s auto-parse-junk heuristics
+        # (e.g. rejecting names containing "contract") must not apply.
+        jobs_list = [{
+            "Job ID": "manual1", "Company": "Contract Engineering LLC", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+            "_status_source": "user",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), {"manual1"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

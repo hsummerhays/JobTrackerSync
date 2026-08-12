@@ -108,6 +108,7 @@ Each job record in the main `jobs` table carries these fields:
 | `Missing Skills` | Desired keywords not found |
 | `Date Added` | ISO date first seen |
 | `Notes` | Parser-generated analyst comments |
+| `Score Source` | Provenance of fit score (`parser` or `manual`) to preserve intentional manual score overrides |
 
 ### Persistent User Workflow Table (`job_workflow`)
 
@@ -126,6 +127,7 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | `follow_up_date` | TEXT | User-managed follow up date (preserved on import) |
 | `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
 | `status_source` | TEXT | Origin of the status ('user', 'system', 'migration') to prevent parser overrides of manual states |
+| `score_source` | TEXT | Provenance of the score ('parser', 'manual') to preserve manual score overrides across syncs/rescores |
 
 ### Table: `application_events`
 
@@ -203,6 +205,9 @@ These cases are covered incrementally with parser regression tests so provider-s
 - **Persistent User State separation**: Separating user-edited attributes (like workflow status, review status, actions, notes, and dates) into the `job_workflow` table isolates imported raw data from user modifications, operating like a clean production sync engine. Manual status updates are stamped with `status_source = 'user'` to protect them from being downgraded by the parser.
 - **Schema migration**: `clean_existing_tracker` auto-upgrades older CSV rows to the current schema on every run, and SQLite schema migrations are applied dynamically to add new user-state columns if they are missing.
 - **Single shared-helpers module**: `dedup_utils.py` holds both generic helpers (`normalize_string`, `path_to_file_uri`, `split_multivalue_field`) and dedup-specific ones (`canonical_key`, `merge_delimited_field`, status ranking) in one file rather than splitting into `utils.py` + `dedup.py`. At its current size (~140 lines, 3 consumers) a split would mostly add import indirection -- `dedup.py` would immediately import `normalize_string` from `utils.py` anyway -- without making anything easier to find. Revisit if the module keeps growing or a script needs the generic helpers without the dedup-specific logic.
+- **Roman Numeral Title Normalization**: `dedup_utils.normalize_title()` normalizes standalone Roman numeral level indicators (`I`, `II`, `III`, `IV`, `V`) to Arabic digits (`1`, `2`, `3`, `4`, `5`) in deduplication keys (`canonical_key()`, `canonical_job_key()`). This allows variant titles like `Senior Developer I` and `Senior Developer 1` to resolve to the same canonical key without clobbering the original displayed title.
+- **SQLite Write-Path Filtering**: `save_to_sqlite()` applies pre-write validity checks (`is_valid_company()`) and same-date fingerprint deduplication before writing to `jobs.db`. This prevents auto-parsed junk names or legacy-ID duplicates from accumulating in `jobs.db`. CLI manual additions (`_status_source == 'user'`) bypass validity checks to ensure human input is never rejected.
+- **Recovery Baseline Contract**: A point-in-time recovery baseline snapshot ([docs/stabilization_baseline.md](file:///c:/HughApps/JobTrackerSync/docs/stabilization_baseline.md)) is maintained locally alongside git tag `recovery-baseline-20260812` to ensure production tracker end-to-end data contracts (such as exact row counts, deduplication, and score preservation) remain intact during stabilization refactors.
 
 ---
 

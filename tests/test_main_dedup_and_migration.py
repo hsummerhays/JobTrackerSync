@@ -196,6 +196,68 @@ class TestReapplyAndDuplicateDetection(MainIntegrationTestBase):
         conn.close()
         self.assertEqual(old_db_row[0], "Expired")
 
+    def test_rescan_of_already_relisted_posting_does_not_create_second_duplicate(self):
+        """Regression: an Expired original row and an already-relisted New row
+        can legitimately coexist for the same canonical key (the Expired
+        original is kept as history when it first resurfaces). Rescanning the
+        *same* posting again previously iterated existing rows in CSV order
+        and could hit the Expired original first, taking the "Expired jobs
+        resurface immediately" branch and minting a *third*, exactly-duplicate
+        row every time -- this is the Utah Mammoth bug from reprocessing a
+        Glassdoor digest PDF a second time. An active (non-Expired) match must
+        always be preferred over an Expired one for the same canonical key."""
+        self._write_tracker([
+            {
+                "Job ID": "expired1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
+                "Location": "Salt Lake City, UT", "Tracker Status": "Expired", "Date Added": "2024-01-01",
+                "Last Seen": "2024-01-01",
+            },
+            {
+                "Job ID": "relisted1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
+                "Location": "Salt Lake City, UT", "Tracker Status": "New", "Date Added": "2024-01-05",
+                "Last Seen": "2024-01-05", "Notes": "Re-listed on 2024-01-05; originally seen 2024-01-01.",
+                "Previous Job ID": "expired1",
+            },
+        ])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-06")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir)
+
+        rows = self._read_tracker()
+        acme_rows = [r for r in rows if r["Company"] == "Acme Corp"]
+        self.assertEqual(len(acme_rows), 2)
+        ids = {r["Job ID"] for r in acme_rows}
+        self.assertEqual(ids, {"expired1", "relisted1"})
+        relisted_row = next(r for r in acme_rows if r["Job ID"] == "relisted1")
+        self.assertEqual(relisted_row["Last Seen"], "2024-01-06")
+
+    def test_company_suffix_variant_merges_into_existing_row_not_duplicated(self):
+        """Regression: an application confirmation PDF spelled out 'Wheeler
+        Machinery Company' while a same-day Glassdoor listing scrape
+        abbreviated it to 'Wheeler Machinery Co' -- these must be recognized
+        as the same employer and merged, without changing canonical_job_key()
+        itself (which would recompute -- and change -- every existing row's
+        stored Fingerprint on the next clean_existing_tracker() pass; see
+        dedup_utils.canonical_job_key's docstring)."""
+        self._write_tracker([{
+            "Job ID": "wheeler1", "Company": "Wheeler Machinery Company", "Position": "Senior Full Stack Software Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2024-01-01",
+            "Score Source": "manual", "Fit Score": "95",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-10")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir, pages_text=(
+            "Senior Full Stack Software Engineer\nWheeler Machinery Co\nSalt Lake City, UT\n",
+        ))
+
+        rows = self._read_tracker()
+        wheeler_rows = [r for r in rows if "Wheeler" in r["Company"]]
+        self.assertEqual(len(wheeler_rows), 1)
+        self.assertEqual(wheeler_rows[0]["Job ID"], "wheeler1")
+        self.assertEqual(wheeler_rows[0]["Tracker Status"], "Applied")
+
     def test_duplicate_within_90_days_is_merged_not_duplicated(self):
         self._write_tracker([{
             "Job ID": "existing1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
@@ -494,6 +556,73 @@ class TestStatusSurvivalAndExpiration(MainIntegrationTestBase):
         
         self.assertEqual(offer_row["Tracker Status"], "Offer")
         self.assertEqual(accepted_row["Tracker Status"], "Accepted")
+
+    def test_auto_expire_recomputes_priority_in_the_same_run(self):
+        """2026-08-13 regression: the auto-expire block flips a stale "New"
+        row's Tracker Status/Action/Disposition to Expired/Ignore/Closed, but
+        previously left Priority untouched -- a single ordinary run ended
+        with a contradictory row (Action=Ignore but Priority still "Apply
+        this week"), and that only self-corrected on the *next* run's
+        clean_existing_tracker() pass (which always recomputes Priority from
+        Action). This broke idempotency: two immediately-consecutive ordinary
+        runs produced different output on the first run's newly-expired rows.
+        A single run must reach a fixed point on its own."""
+        import datetime
+        AUTO_EXPIRE_DAYS = 7
+        old_date = (datetime.date.today() - datetime.timedelta(days=AUTO_EXPIRE_DAYS + 10)).isoformat()
+
+        self._write_tracker([{
+            "Job ID": "stale_new_1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": old_date, "Last Seen": old_date,
+            "Recommendation": "★★★★☆ Strong", "Action": "Apply", "Priority": "P2 – Apply this week",
+        }])
+
+        # main() only reaches the existing_list/auto-expire code past its
+        # "no PDFs found -> return early" guard, so an actual (fake) PDF must
+        # be present for this run to exercise that block at all -- otherwise
+        # only clean_existing_tracker()'s Priority recompute would run and the
+        # bug being tested for would be invisible.
+        pdf_dir = os.path.join(self.tmp_dir.name, "pdfs")
+        self._write_pdf(pdf_dir)
+        self._run_main(pdf_dir, pages_text=("",))
+
+        rows = self._read_tracker()
+        row = [r for r in rows if r["Company"] == "Acme"][0]
+        self.assertEqual(row["Tracker Status"], "Expired")
+        self.assertEqual(row["Action"], "Ignore")
+        self.assertEqual(row["Priority"], "P4 – Ignore")
+
+    def test_auto_expire_preserves_action_for_manually_scored_row(self):
+        """2026-08-13 regression: the Priority guard added alongside the fix
+        above (test_auto_expire_recomputes_priority_in_the_same_run) only
+        protected Priority from being overwritten on a manually-scored row --
+        Action was still unconditionally flipped to "Ignore", producing a row
+        that claims Score Source=manual with Priority still at its human-set
+        "Apply today" value but Action silently reset to "Ignore". A manual
+        triage decision must not be overridden by staleness alone."""
+        import datetime
+        AUTO_EXPIRE_DAYS = 7
+        old_date = (datetime.date.today() - datetime.timedelta(days=AUTO_EXPIRE_DAYS + 10)).isoformat()
+
+        self._write_tracker([{
+            "Job ID": "stale_manual_1", "Company": "Acme", "Position": "Engineer", "Location": "Remote",
+            "Tracker Status": "New", "Date Added": old_date, "Last Seen": old_date,
+            "Recommendation": "★★★★★ Apply Now", "Action": "Apply", "Priority": "P1 – Apply today",
+            "Score Source": "manual",
+        }])
+
+        pdf_dir = os.path.join(self.tmp_dir.name, "pdfs")
+        self._write_pdf(pdf_dir)
+        self._run_main(pdf_dir, pages_text=("",))
+
+        rows = self._read_tracker()
+        row = [r for r in rows if r["Company"] == "Acme"][0]
+        # The listing itself is still treated as stale/closed...
+        self.assertEqual(row["Tracker Status"], "Expired")
+        self.assertEqual(row["Disposition"], "Closed")
+        # ...but the human's explicit triage call survives untouched.
+        self.assertEqual(row["Action"], "Apply")
+        self.assertEqual(row["Priority"], "P1 – Apply today")
 
     def test_rediscovered_old_new_job_does_not_immediately_expire(self):
         import datetime
