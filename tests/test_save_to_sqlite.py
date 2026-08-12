@@ -295,5 +295,114 @@ class TestSaveToSqliteWorkflowProvenance(unittest.TestCase):
         self.assertEqual(row[0], "Applied")
 
 
+class TestSaveToSqliteValidityDedupFilter(unittest.TestCase):
+    """2026-08-12: jobs.db had no equivalent of the is_valid_company() gate
+    evaluate_job() applies, or the CSV-side fingerprint-dedup pass, so junk
+    company names and legacy-Job-ID duplicates of already-tracked jobs
+    accumulated there indefinitely even though the CSV correctly excluded
+    them (see docs/stabilization_baseline.md). These tests cover the write
+    path filter added to close that gap."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.old_cwd = os.getcwd()
+        os.chdir(self.tmp_dir.name)
+        self.db_path = "jobs.db"
+
+    def tearDown(self):
+        os.chdir(self.old_cwd)
+        self.tmp_dir.cleanup()
+
+    def _job_ids(self):
+        conn = sqlite3.connect(self.db_path)
+        ids = {r[0] for r in conn.execute("SELECT job_id FROM jobs").fetchall()}
+        conn.close()
+        return ids
+
+    def test_invalid_company_row_is_not_written(self):
+        jobs_list = [{
+            "Job ID": "junk1", "Company": "Actively recruiting", "Position": "Senior Engineer",
+            "Location": "Draper, UT", "Tracker Status": "Expired", "Date Added": "2026-07-20",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), set())
+
+    def test_valid_company_row_is_still_written(self):
+        jobs_list = [{
+            "Job ID": "good1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), {"good1"})
+
+    def test_legacy_id_duplicate_same_fingerprint_and_date_is_skipped(self):
+        # "current1" already occupies this (fingerprint, date_added) pair --
+        # a second row for the same job under a different (legacy) Job ID
+        # must not be written as a second row.
+        first = {
+            "Job ID": "current1", "Company": "Onebrief, Inc", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "Applied", "Date Added": "2026-07-20",
+            "Fingerprint": "onebriefinc|seniorengineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [first])
+
+        legacy_dupe = {
+            "Job ID": "legacy_old_hash", "Company": "Onebrief, Inc", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "Applied", "Date Added": "2026-07-20",
+            "Fingerprint": "onebriefinc|seniorengineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [legacy_dupe])
+
+        self.assertEqual(self._job_ids(), {"current1"})
+
+    def test_relisting_same_fingerprint_different_date_is_not_treated_as_duplicate(self):
+        # A job that expired and was later reposted gets a new Job ID and a
+        # new Date Added but the same fingerprint -- this is legitimate
+        # history, not a duplicate, and must not be collapsed away.
+        expired = {
+            "Job ID": "expired_run1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "Expired", "Date Added": "2026-06-01",
+            "Fingerprint": "acme|engineer|remote",
+        }
+        reposted = {
+            "Job ID": "reposted_run2", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-15",
+            "Fingerprint": "acme|engineer|remote", "Previous Job ID": "expired_run1",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [expired])
+        parse_jobs.save_to_sqlite(self.db_path, [reposted])
+
+        self.assertEqual(self._job_ids(), {"expired_run1", "reposted_run2"})
+
+    def test_reupserting_the_same_job_id_is_not_treated_as_its_own_duplicate(self):
+        job = {
+            "Job ID": "job1", "Company": "Acme", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+            "Fingerprint": "acme|engineer|remote",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+        job["Tracker Status"] = "Applied"
+        parse_jobs.save_to_sqlite(self.db_path, [job])
+
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute("SELECT tracker_status FROM jobs WHERE job_id = 'job1'").fetchone()
+        conn.close()
+        self.assertEqual(self._job_ids(), {"job1"})
+        self.assertEqual(row[0], "Applied")
+
+    def test_manually_added_job_bypasses_the_company_validity_filter(self):
+        # The CLI "add manual opportunity" path marks its job dict with
+        # _status_source == "user" -- a human typed this company name
+        # directly, so is_valid_company()'s auto-parse-junk heuristics
+        # (e.g. rejecting names containing "contract") must not apply.
+        jobs_list = [{
+            "Job ID": "manual1", "Company": "Contract Engineering LLC", "Position": "Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+            "_status_source": "user",
+        }]
+        parse_jobs.save_to_sqlite(self.db_path, jobs_list)
+        self.assertEqual(self._job_ids(), {"manual1"})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -135,6 +135,7 @@ JobTrackerSync/
 └── docs/
     ├── architecture.md        # Pipeline diagram, data model, design decisions
     ├── scoring.md             # Scoring algorithm reference
+    ├── stabilization_baseline.md # Recovery baseline documentation and snapshot guide
     └── screenshots/           # CLI and spreadsheet screenshots
 ```
 
@@ -281,7 +282,7 @@ This discovery reinforced an important architectural principle: job providers of
 The roadmap focuses on making parsed data more actionable and improving workflow visibility.
 
 ### 1. Polish and Reliability
-- [x] **More unit tests** around parsing and merge logic. *(398 tests across 18 modules as of v1.3.4)*
+- [x] **More unit tests** around parsing and merge logic. *(411 tests across 18 modules as of v1.3.5)*
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

@@ -96,10 +96,24 @@ def merge_delimited_field(base_value, other_value):
     return f"{FIELD_DELIMITER}".join(items)
 
 
+def normalize_title(title: str) -> str:
+    """Normalize job title for deduplication keys, mapping standalone Roman numeral
+    level indicators (I, II, III, IV, V) to Arabic digits (1, 2, 3, 4, 5)."""
+    if not title:
+        return ""
+    ROMAN_MAP = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5"}
+    return re.sub(
+        r'\b(i|ii|iii|iv|v)\b',
+        lambda m: ROMAN_MAP.get(m.group(1).lower(), m.group(1)),
+        str(title),
+        flags=re.IGNORECASE
+    )
+
+
 def canonical_key(company, position, date_added):
     """Group rows by company + position + date, not company + date alone --
     a company can legitimately post several different jobs on the same day."""
-    return f"{normalize_string(company)}|{normalize_string(position)}|{date_added}"
+    return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{date_added}"
 
 
 def normalize_location(loc: str) -> str:
@@ -171,7 +185,7 @@ def canonical_job_key(company, position, location):
     """Group parsed jobs by company + position + location (no date), used
     while scanning a single run to catch the same posting appearing on
     multiple pages/PDFs before it's ever written to the tracker."""
-    return f"{normalize_string(company)}|{normalize_string(position)}|{normalize_string(normalize_location(location))}"
+    return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{normalize_string(normalize_location(location))}"
 
 
 

@@ -59,8 +59,15 @@ class TestQueryJobs(unittest.TestCase):
 
     def test_no_results_exits_cleanly(self):
         with self.assertRaises(SystemExit) as cm:
-            self._run("Nonexistent")
+            self._run("NonExistentCorp")
         self.assertEqual(cm.exception.code, 0)
+
+    def test_query_matches_company_with_or_without_apostrophe(self):
+        """'Lowes' must match 'Lowe\'s' in query_jobs.py."""
+        self._insert_job("lowes1", "Lowe's", "Fulfillment Associate")
+        output = self._run("Lowes")
+        self.assertIn("Found 1 job(s) matching 'Lowes'", output)
+        self.assertIn("Lowe's — Fulfillment Associate", output)
 
     def test_no_results_message(self):
         buf = io.StringIO()

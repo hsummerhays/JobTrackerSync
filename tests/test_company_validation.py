@@ -257,6 +257,27 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Posted: 2 days ago"))
         self.assertFalse(is_valid_company("posted:Yesterday"))
 
+    def test_rejects_bare_corporate_suffix_fragment(self):
+        # A PDF/email layout wrap can leave only the trailing suffix line
+        # behind when the real company name (e.g. "TURING") is captured into
+        # an adjacent field instead -- these fragments must not pass as a
+        # real employer name on their own.
+        self.assertFalse(is_valid_company("ENTERPRISES, INC.."))
+        self.assertFalse(is_valid_company("Corp. LLC"))
+        self.assertFalse(is_valid_company("Holdings Group"))
+        # A real name combined with a suffix is still valid.
+        self.assertTrue(is_valid_company("Acme Corp."))
+        self.assertTrue(is_valid_company("Capstone Logistics LLC"))
+
+    def test_rejects_job_alert_subject_leakage(self):
+        self.assertFalse(is_valid_company("Your IntelliSearch Alert"))
+        self.assertFalse(is_valid_company("Your IntelliSearch Alert: Remote Senior Software Engineer at TURING"))
+        self.assertFalse(is_valid_company("Your Ladders Alert"))
+
+    def test_rejects_title_shaped_text_ending_in_at_company(self):
+        self.assertFalse(is_valid_company("Remote Senior Software Engineer at TURING"))
+        self.assertFalse(is_valid_company("Senior Backend Developer at Acme"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

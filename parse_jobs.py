@@ -266,6 +266,31 @@ def is_valid_company(company, provider=None):
     if comp_lower in whitelisted_companies:
         return True
 
+    # Reject bare corporate-suffix fragments with no distinguishing name
+    # (e.g. "ENTERPRISES, INC.." or "Corp. LLC" on their own). These occur
+    # when a PDF/email layout wraps the real company name across two lines
+    # and only the trailing suffix line gets captured as "company" -- the
+    # identifying word was left behind in an adjacent field. A real employer
+    # name is never composed entirely of these generic suffix words.
+    bare_suffix_words = {"enterprises", "inc", "incorporated", "corp", "corporation",
+                          "company", "group", "holdings", "ltd", "llp", "llc", "lp"}
+    suffix_tokens = [w.strip(".,") for w in comp_lower.split() if w.strip(".,")]
+    if suffix_tokens and all(w in bare_suffix_words for w in suffix_tokens):
+        return False
+
+    # Reject job-alert email subject-line boilerplate leaking into the
+    # company field (e.g. "Your IntelliSearch Alert: ...", "Your Ladders
+    # Alert: ...").
+    if re.search(r'\byour\s+\S+\s+alert\b', comp_lower):
+        return False
+
+    # Reject job-title-shaped text ("<Level> <Role> at <Company>") captured
+    # whole as the company field -- a real employer name essentially never
+    # ends in "at <word>" immediately preceded by a job-title keyword.
+    title_role_words = r'(engineer|developer|manager|analyst|specialist|director|architect|designer|consultant|coordinator|administrator|representative|associate|scientist|recruiter|technician|lead)'
+    if re.search(title_role_words + r'\b.*\bat\s+\S+\s*$', comp_lower):
+        return False
+
     # Reject if contains slash or backslash (typically indicates a tech stack heading)
     if "/" in comp or "\\" in comp:
         return False
@@ -446,7 +471,7 @@ def clean_existing_tracker(tracker_path):
         "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
         "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager",
-        "Fingerprint", "Previous Job ID"
+        "Fingerprint", "Previous Job ID", "Score Source"
     ]
 
     try:
@@ -504,6 +529,7 @@ def clean_existing_tracker(tracker_path):
                             "Hiring Manager": d.get("hiring_manager"),
                             "Fingerprint": d.get("fingerprint"),
                             "Previous Job ID": d.get("previous_job_id"),
+                            "Score Source": d.get("score_source") or "parser",
                         })
             except Exception:
                 pass
@@ -627,15 +653,45 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Date Added"] = row.get("Date Added", datetime.now().strftime("%Y-%m-%d"))
             migrated_row["Last Seen"] = row.get("Last Seen", migrated_row["Date Added"])
             
-            notes = row.get("Notes", "")
-            migrated_row["Notes"] = notes
-            
             # Job ID
             job_id = row.get("Job ID")
             if not job_id:
                 job_id = hashlib.md5(f"{company.strip().lower()}|{position.strip().lower()}|{location.strip().lower()}".encode('utf-8')).hexdigest()
             migrated_row["Job ID"] = job_id
-            
+
+            # Check if this row exists in jobs.db with stored scores/locations/notes/statuses from manual updates or prior rescores
+            db_stored = {}
+            if 'db_by_id' in locals() and job_id in db_by_id:
+                db_stored = db_by_id[job_id]
+
+            if db_stored:
+                status = db_stored.get("tracker_status") or status
+                review_status = db_stored.get("review_status") or review_status
+                action = db_stored.get("action") or action
+                migrated_row["Tracker Status"] = status
+                migrated_row["Review Status"] = review_status
+
+            notes = (db_stored.get("notes") if db_stored.get("notes") else None) or row.get("Notes", "")
+            migrated_row["Notes"] = notes
+
+            score_src = db_stored.get("score_source") or row.get("Score Source") or row.get("score_source") or "parser"
+
+            stored_fit = db_stored.get("fit_score")
+            stored_rec = db_stored.get("recommendation")
+            stored_loc = db_stored.get("location")
+
+            # Resolve the authoritative location *before* scoring -- Rule 6
+            # (Utah/Remote check) inside evaluate_job() must see the same
+            # location that ends up on the row. Applying stored_loc after
+            # scoring let a stale pre-sync location (missing a "Remote"
+            # marker) trip a false "Out of state" / Low confidence result
+            # that then survived alongside a fit_score/recommendation pulled
+            # back from a correct prior evaluation below -- an internally
+            # inconsistent row (high score, "Out of state" reason).
+            if stored_loc and (status != "New" or db_stored):
+                migrated_row["Location"] = stored_loc
+                location = stored_loc
+
             # Score this row through evaluate_job() -- the same rules engine
             # used for freshly-parsed postings -- instead of a second, drifted
             # copy of the scoring math. That duplicate never enforced Rule 6
@@ -662,32 +718,28 @@ def clean_existing_tracker(tracker_path):
                 rec, reason, matched_skills, missing_skills, job_type,
             ) = evaluate_job(eval_job)
 
-            # Check if this row exists in jobs.db with stored scores/locations from manual updates or prior rescores
-            db_stored = {}
-            if 'db_by_id' in locals() and job_id in db_by_id:
-                db_stored = db_by_id[job_id]
+            if score_src == "manual":
+                # Manual score override -- preserve fit_score, recommendation, priority, action, reason
+                fit_score = int(stored_fit if stored_fit is not None else (row.get("Fit Score") or fit_score))
+                rec = stored_rec or row.get("Recommendation") or rec
+                _temp_priority = db_stored.get("priority") or row.get("Priority") or _temp_priority
+                reason = db_stored.get("reason") or row.get("Reason") or reason
+                action = db_stored.get("action") or row.get("Action") or "Apply"
+                migrated_row["Score Source"] = "manual"
+            else:
+                migrated_row["Score Source"] = "parser"
+                if db_stored and stored_fit is not None:
+                    try:
+                        fit_score = int(stored_fit)
+                    except (ValueError, TypeError):
+                        pass
 
-            # Only preserve manual/DB overrides if the status is active/Applied or stored in jobs.db
-            stored_fit = db_stored.get("fit_score")
-            stored_rec = db_stored.get("recommendation")
-            stored_loc = db_stored.get("location")
-
-            if stored_loc and (status != "New" or db_stored):
-                migrated_row["Location"] = stored_loc
-                location = stored_loc
-
-            if db_stored and stored_fit is not None:
-                try:
-                    fit_score = int(stored_fit)
-                except (ValueError, TypeError):
-                    pass
-
-            if db_stored and stored_rec:
-                rec = stored_rec
-            elif status != "New":
-                existing_rec = row.get("Recommendation") or row.get("recommendation")
-                if existing_rec and existing_rec.startswith("★"):
-                    rec = existing_rec
+                if db_stored and stored_rec:
+                    rec = stored_rec
+                elif status != "New":
+                    existing_rec = row.get("Recommendation") or row.get("recommendation")
+                    if existing_rec and existing_rec.startswith("★"):
+                        rec = existing_rec
 
             migrated_row["Job Type"] = job_type
             migrated_row["Company Type"] = comp_type
@@ -724,40 +776,44 @@ def clean_existing_tracker(tracker_path):
                         pass
             migrated_row["Recommendation"] = rec
             
-            # Action calculation
-            if status != "New":
-                if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
-                    action = "Already Applied"
-                elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
-                    action = "Ignore"
-                else:
-                    action = "Ignore"
-            else:
-                if comp_type == "Recruiting Firm" and rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
-                    action = "Contact Recruiter"
-                elif rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
-                    action = "Apply"
-                elif rec == "★★★☆☆ Maybe":
-                    action = "Review"
-                else:
-                    action = "Ignore"
-                    
-            if status == "New":
+            # Action calculation -- manually-scored jobs keep their stored
+            # override instead of being re-derived from status/rec/comp_type.
+            if score_src == "manual":
                 act = action
             else:
-                act = row.get("Action", action)
-                if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired", "Offer", "Accepted"]:
-                    if "apply" in act.lower():
-                        act = "Apply"
-                    elif "recruiter" in act.lower():
-                        act = "Contact Recruiter"
-                    elif "review" in act.lower():
-                        act = "Review"
+                if status != "New":
+                    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
+                        action = "Already Applied"
+                    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+                        action = "Ignore"
                     else:
-                        act = "Ignore"
-                # Correct stale Contact Recruiter for non-recruiting-firm companies
-                if act == "Contact Recruiter" and comp_type != "Recruiting Firm":
-                    act = "Apply" if rec in ["★★★★★ Apply Now", "★★★★☆ Strong"] else "Review"
+                        action = "Ignore"
+                else:
+                    if comp_type == "Recruiting Firm" and rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                        action = "Contact Recruiter"
+                    elif rec in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
+                        action = "Apply"
+                    elif rec == "★★★☆☆ Maybe":
+                        action = "Review"
+                    else:
+                        action = "Ignore"
+
+                if status == "New":
+                    act = action
+                else:
+                    act = row.get("Action", action)
+                    if act not in ["Apply", "Contact Recruiter", "Review", "Ignore", "Already Applied", "Waiting", "Interview", "Rejected", "Cancelled", "Expired", "Offer", "Accepted"]:
+                        if "apply" in act.lower():
+                            act = "Apply"
+                        elif "recruiter" in act.lower():
+                            act = "Contact Recruiter"
+                        elif "review" in act.lower():
+                            act = "Review"
+                        else:
+                            act = "Ignore"
+                    # Correct stale Contact Recruiter for non-recruiting-firm companies
+                    if act == "Contact Recruiter" and comp_type != "Recruiting Firm":
+                        act = "Apply" if rec in ["★★★★★ Apply Now", "★★★★☆ Strong"] else "Review"
             migrated_row["Action"] = act
             
             # Age (days) -- always computed fresh from Date Added so it
@@ -769,8 +825,12 @@ def clean_existing_tracker(tracker_path):
                 age_days = 0
             migrated_row["Age (days)"] = age_days
 
-            # Priority calculation (always recalculated to standardize formatting)
-            migrated_row["Priority"] = compute_priority(rec, act, age_days)
+            # Priority calculation (always recalculated to standardize formatting,
+            # unless this is a manually-scored job with a stored override to preserve)
+            if score_src == "manual" and _temp_priority:
+                migrated_row["Priority"] = _temp_priority
+            else:
+                migrated_row["Priority"] = compute_priority(rec, act, age_days)
             
             # Existing Company (same employer already tracked)
             known_tracker_companies = {"lvt", "decerto", "explorer software group", "infinity software development", "clearwaters.it", "new walton services", "american auto auction group", "co-diagnostics", "sunwest bank", "weave", "medallion bank"}
@@ -971,7 +1031,8 @@ def save_to_sqlite(db_path, jobs_list):
                 hiring_manager TEXT,
                 fingerprint TEXT,
                 previous_job_id TEXT,
-                raw_context TEXT
+                raw_context TEXT,
+                score_source TEXT DEFAULT 'parser'
             )
         """)
 
@@ -1031,6 +1092,7 @@ def save_to_sqlite(db_path, jobs_list):
             ("fingerprint", "TEXT"),
             ("previous_job_id", "TEXT"),
             ("raw_context", "TEXT"),
+            ("score_source", "TEXT"),
         ])
         _ensure_columns(cursor, "job_workflow", [
             ("review_status", "TEXT"),
@@ -1042,6 +1104,7 @@ def save_to_sqlite(db_path, jobs_list):
             ("follow_up_date", "TEXT"),
             ("last_contact_date", "TEXT"),
             ("status_source", "TEXT"),
+            ("score_source", "TEXT"),
         ])
 
         # One-time backfill: pre-existing rows created before the fingerprint
@@ -1190,10 +1253,55 @@ def save_to_sqlite(db_path, jobs_list):
                             if lower_key in job:
                                 job[lower_key] = val
         
+        # Snapshot existing (fingerprint, date_added) -> job_id ownership so the
+        # upsert loop below can reject writes that would (re)introduce the two
+        # classes of row a 2026-08-12 cleanup removed from jobs.db: invalid/junk
+        # company names, and true same-day duplicates under a different Job ID
+        # (a distinct legacy hash for a job already tracked). This mirrors the
+        # is_valid_company() gate evaluate_job() already applies before a
+        # freshly-parsed job is recommended, and the same-Date-Added rule the
+        # CSV-side fingerprint dedup pass in clean_existing_tracker() already
+        # uses -- so a row with a *different* Date Added (a genuine relisting:
+        # expired, then reposted later under a new Job ID) is correctly left
+        # alone, not rejected as a duplicate. See docs/stabilization_baseline.md.
+        def _load_dedup_snapshot():
+            cursor.execute("SELECT job_id, fingerprint, date_added FROM jobs WHERE fingerprint IS NOT NULL AND fingerprint != ''")
+            return {(fp, date_added): owner_jid for owner_jid, fp, date_added in cursor.fetchall()}
+
+        fp_date_owner = _load_dedup_snapshot()
+        skip_stats = {"invalid_company": 0, "duplicate_fingerprint": 0}
+
         def _upsert_all_jobs():
             # Upsert jobs and job_workflow
             for job in jobs_list:
                 jid = job.get("Job ID", job.get("job_id"))
+
+                company = job.get("Company", job.get("company")) or ""
+                position = job.get("Position", job.get("position")) or ""
+                location = job.get("Location", job.get("location")) or ""
+                provider = job.get("Provider", job.get("provider"))
+                fingerprint = job.get("Fingerprint", job.get("fingerprint")) or canonical_job_key(company, position, location)
+                date_added = job.get("Date Added", job.get("date_added"))
+
+                # A human explicitly typing a company name (the CLI "add manual
+                # opportunity" path, marked by _status_source == "user") is
+                # trusted input, not parser output -- is_valid_company() was
+                # written to catch auto-parsed junk (UI fragments, job-board
+                # names, pay-range text) and can false-positive on a legitimate
+                # but unusual real company name, so it doesn't apply here.
+                is_user_entered = job.get("_status_source") == "user"
+
+                if not is_user_entered and not is_valid_company(company, provider):
+                    skip_stats["invalid_company"] += 1
+                    continue
+
+                dedup_key = (fingerprint, date_added)
+                owner_jid = fp_date_owner.get(dedup_key)
+                if not is_user_entered and owner_jid and owner_jid != jid:
+                    skip_stats["duplicate_fingerprint"] += 1
+                    continue
+                fp_date_owner[dedup_key] = jid
+
                 tracker_status = job.get("Tracker Status", job.get("tracker_status", job.get("Status", job.get("status"))))
                 review_status = job.get("Review Status", job.get("review_status"))
                 action = job.get("Action", job.get("action"))
@@ -1235,19 +1343,15 @@ def save_to_sqlite(db_path, jobs_list):
                             disposition = excluded.disposition
                     """, (jid, tracker_status, review_status, action, disposition, status_source))
 
-                company = job.get("Company", job.get("company")) or ""
-                position = job.get("Position", job.get("position")) or ""
-                location = job.get("Location", job.get("location")) or ""
-                fingerprint = job.get("Fingerprint", job.get("fingerprint")) or canonical_job_key(company, position, location)
-
+                score_src = job.get("Score Source") or job.get("score_source") or "parser"
                 cursor.execute("""
                     INSERT INTO jobs (
                         job_id, review_status, job_type, company, position, location, url, provider,
                         source_pdf, confidence, fit_score, priority, company_type,
                         recommendation, tracker_status, disposition, action, existing_company,
                         reason, matched_skills, missing_skills, date_added, last_seen, notes, recruiter, hiring_manager,
-                        fingerprint, previous_job_id, raw_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        fingerprint, previous_job_id, raw_context, score_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
@@ -1276,7 +1380,8 @@ def save_to_sqlite(db_path, jobs_list):
                         hiring_manager=excluded.hiring_manager,
                         fingerprint=excluded.fingerprint,
                         previous_job_id=COALESCE(excluded.previous_job_id, previous_job_id),
-                        raw_context=COALESCE(NULLIF(excluded.raw_context, ''), raw_context)
+                        raw_context=COALESCE(NULLIF(excluded.raw_context, ''), raw_context),
+                        score_source=CASE WHEN excluded.score_source = 'manual' THEN 'manual' ELSE COALESCE(jobs.score_source, excluded.score_source) END
                 """, (
                     jid,
                     job.get("Review Status", job.get("review_status")),
@@ -1307,11 +1412,17 @@ def save_to_sqlite(db_path, jobs_list):
                     fingerprint,
                     job.get("Previous Job ID", job.get("previous_job_id")),
                     job.get("Raw Context", job.get("raw_context")),
+                    score_src,
                 ))
 
         try:
             _upsert_all_jobs()
             conn.commit()
+            if skip_stats["invalid_company"] or skip_stats["duplicate_fingerprint"]:
+                console.print(
+                    f"[dim]jobs.db write filter: skipped {skip_stats['invalid_company']} invalid-company row(s), "
+                    f"{skip_stats['duplicate_fingerprint']} duplicate-fingerprint row(s)[/dim]"
+                )
             return True
         except sqlite3.OperationalError:
             # Schema drift (e.g. an older jobs.db missing a column the current
@@ -1360,8 +1471,21 @@ def save_to_sqlite(db_path, jobs_list):
                 ("status_source", "TEXT"),
             ])
             conn.commit()
+            # The failed first pass rolled back, so any dedup/skip state it
+            # accumulated no longer reflects what's actually committed --
+            # reload it from the DB before retrying, or the retry could skip
+            # rows as "duplicates" of writes that never landed.
+            fp_date_owner.clear()
+            fp_date_owner.update(_load_dedup_snapshot())
+            skip_stats["invalid_company"] = 0
+            skip_stats["duplicate_fingerprint"] = 0
             _upsert_all_jobs()
             conn.commit()
+            if skip_stats["invalid_company"] or skip_stats["duplicate_fingerprint"]:
+                console.print(
+                    f"[dim]jobs.db write filter: skipped {skip_stats['invalid_company']} invalid-company row(s), "
+                    f"{skip_stats['duplicate_fingerprint']} duplicate-fingerprint row(s)[/dim]"
+                )
             return True
     except Exception as e:
         if conn:
@@ -3679,6 +3803,8 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
         "Fingerprint": canonical_job_key(company, position, location),
         "Previous Job ID": "",
         "Source Index": "",
+        "Score Source": "manual",
+        "score_source": "manual",
         "_status_source": "user"
     }
     
@@ -3945,7 +4071,7 @@ def handle_dedup_physical():
 
 
 
-def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
+def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv", rescore_all=False, job_ids=None):
     console.print("[cyan]Rescoring active jobs...[/cyan]")
     resolved_db = os.path.abspath(db_path)
     resolved_csv = os.path.abspath(csv_path)
@@ -3957,28 +4083,31 @@ def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    _ensure_columns(cursor, "jobs", [("score_source", "TEXT")])
 
     placeholders = ",".join(["?"] * len(TERMINAL_STATUSES))
-    cursor.execute(f"SELECT * FROM jobs WHERE tracker_status NOT IN ({placeholders})", tuple(TERMINAL_STATUSES))
+    query = f"SELECT * FROM jobs WHERE tracker_status NOT IN ({placeholders})"
+    params = list(TERMINAL_STATUSES)
+    if job_ids:
+        id_placeholders = ",".join(["?"] * len(job_ids))
+        query += f" AND job_id IN ({id_placeholders})"
+        params.extend(job_ids)
+    cursor.execute(query, tuple(params))
     jobs = cursor.fetchall()
 
     legacy_rows_approximated = 0
     rows_changed = 0
-    # Field-level updates keyed by job_id, reused below to patch master_tracker.csv
-    # in place -- without this, the CSV keeps stale pre-rescore values and a later
-    # normal sync (which treats the CSV as the "existing" state) silently reverts
-    # jobs.db back to those stale values on its next upsert.
+    manual_skipped = 0
     updated_fields_by_id = {}
     for row in jobs:
         job_dict = dict(row)
+        score_src = job_dict.get('score_source') or "parser"
+        if not rescore_all and score_src == "manual":
+            manual_skipped += 1
+            continue
+
         job_dict['title'] = job_dict.get('position', '')
         if not job_dict.get('raw_context'):
-            # Rows saved before raw_context was persisted have no original
-            # posting text to re-evaluate against. Fall back to a synthesized
-            # approximation from previously extracted fields, but this loses
-            # signals that never made it into those fields (e.g. relocation
-            # restrictions, degree requirements) and can under- or over-score
-            # the job relative to its original evaluation.
             job_dict['raw_context'] = f"{job_dict.get('position', '')} {job_dict.get('company', '')} {job_dict.get('matched_skills', '')} {job_dict.get('missing_skills', '')} {job_dict.get('reason', '')} {job_dict.get('notes', '')}"
             legacy_rows_approximated += 1
 
@@ -3996,7 +4125,7 @@ def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
         cursor.execute("""
             UPDATE jobs SET
                 fit_score = ?, priority = ?, company_type = ?, recommendation = ?,
-                reason = ?, matched_skills = ?, missing_skills = ?
+                reason = ?, matched_skills = ?, missing_skills = ?, score_source = 'parser'
             WHERE job_id = ?
         """, (fit_score, priority, company_type, recommendation, reason, matched_skills, missing_skills, job_dict['job_id']))
 
@@ -4008,12 +4137,15 @@ def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
             "Reason": reason,
             "Matched Skills": matched_skills,
             "Missing Skills": missing_skills,
+            "Score Source": "parser",
         }
 
     conn.commit()
     conn.close()
 
-    console.print(f"[dim]Rows evaluated: {len(jobs)} | Rows changed: {rows_changed}[/dim]")
+    console.print(f"[dim]Rows evaluated: {len(jobs) - manual_skipped} | Rows changed: {rows_changed}[/dim]")
+    if manual_skipped:
+        console.print(f"[dim]Preserved {manual_skipped} manual score override(s). Pass --rescore-all to force rescoring manual overrides.[/dim]")
 
     csv_rows_updated = 0
     csv_rows_missing = 0
@@ -4051,6 +4183,29 @@ def handle_rescore(db_path="jobs.db", csv_path="master_tracker.csv"):
     if legacy_rows_approximated:
         console.print(f"[yellow]{legacy_rows_approximated} job(s) predate stored posting text and were rescored from an approximated context -- their restriction/degree-requirement signals may not be fully accurate.[/yellow]")
 
+def handle_clear_score_override(target=None, db_path="jobs.db", csv_path="master_tracker.csv"):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    job_ids = None
+    if target:
+        cursor.execute("SELECT job_id, company, position FROM jobs WHERE company LIKE ? OR position LIKE ? OR job_id = ?", (f"%{target}%", f"%{target}%", target))
+        matches = cursor.fetchall()
+        if not matches:
+            console.print(f"[red]No jobs matching '{target}' found.[/red]")
+            conn.close()
+            return
+        job_ids = [m[0] for m in matches]
+        for m in matches:
+            cursor.execute("UPDATE jobs SET score_source = 'parser' WHERE job_id = ?", (m[0],))
+        console.print(f"[green]Cleared manual score override for {len(matches)} job(s).[/green]")
+    else:
+        cursor.execute("UPDATE jobs SET score_source = 'parser'")
+        console.print("[green]Cleared manual score overrides for all jobs.[/green]")
+    conn.commit()
+    conn.close()
+    handle_rescore(db_path=db_path, csv_path=csv_path, rescore_all=True, job_ids=job_ids)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
@@ -4058,7 +4213,9 @@ def main():
     parser.add_argument("--today", action="store_true", help="Print today's action queue and exit")
     parser.add_argument("--analytics", action="store_true", help="Print analytics dashboard showing conversion rates and exit")
     parser.add_argument("--dedup-physical", action="store_true", help="Find and combine physical duplicate rows in the tracker")
-    parser.add_argument("--rescore", action="store_true", help="Recalculate skills and fit scores for all active jobs")
+    parser.add_argument("--rescore", action="store_true", help="Recalculate skills and fit scores for all active jobs (preserves manual score overrides)")
+    parser.add_argument("--rescore-all", action="store_true", help="Force rescoring of all active jobs, including manual score overrides")
+    parser.add_argument("--clear-score-override", nargs="?", const="", required=False, help="Clear manual score override for target company/job ID (or all jobs if empty)")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
@@ -4112,8 +4269,12 @@ def main():
         handle_dedup_physical()
         return
         
-    if args.rescore:
-        handle_rescore()
+    if args.clear_score_override is not None:
+        handle_clear_score_override(target=args.clear_score_override)
+        return
+
+    if args.rescore or args.rescore_all:
+        handle_rescore(rescore_all=args.rescore_all)
         return
     
     if args.dashboard:
@@ -4709,7 +4870,14 @@ def main():
         existing_list.append(row)
         
     combined_jobs = existing_list + all_recommendations
-    
+
+    # Newly-scored rows never set "Score Source" (evaluate_job() doesn't know
+    # about provenance), and legacy CSV rows can carry it blank -- normalize
+    # both to "parser" here so every exported row has consistent provenance.
+    for row in combined_jobs:
+        if not row.get("Score Source"):
+            row["Score Source"] = "parser"
+
     # Sort combined jobs: Fit Score desc, Recommendation desc, Company asc
     combined_jobs.sort(key=lambda x: (
         -int(x.get("Fit Score", 0) if x.get("Fit Score") else 0),
@@ -4723,7 +4891,7 @@ def main():
         "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
         "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager",
-        "Fingerprint", "Previous Job ID"
+        "Fingerprint", "Previous Job ID", "Score Source"
     ]
     
     # Compute Age (days) for every row before writing

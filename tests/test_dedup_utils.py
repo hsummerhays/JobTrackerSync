@@ -11,6 +11,7 @@ from dedup_utils import (
     locations_compatible,
     merge_delimited_field,
     normalize_location,
+    normalize_title,
     should_prefer_status,
     title_similarity,
 )
@@ -28,6 +29,20 @@ class TestCanonicalKey(unittest.TestCase):
         key1 = canonical_key("Epicor Inc.", "Staff Software Engineer", "2026-07-01")
         key2 = canonical_key("epicor inc", "Staff  Software-Engineer", "2026-07-01")
         self.assertEqual(key1, key2)
+
+    def test_roman_numeral_title_normalization_matches_arabic_numeral(self):
+        """'Senior Developer I' and 'Senior Developer 1' must produce identical keys."""
+        key_roman = canonical_job_key("Verisk", "Senior Developer I", "Lehi, UT")
+        key_arabic = canonical_job_key("Verisk", "Senior Developer 1", "Lehi, UT")
+        self.assertEqual(key_roman, key_arabic)
+
+        key_roman_ii = canonical_job_key("Verisk", "Software Engineer II", "Remote")
+        key_arabic_2 = canonical_job_key("Verisk", "Software Engineer 2", "Remote")
+        self.assertEqual(key_roman_ii, key_arabic_2)
+
+        self.assertEqual(normalize_title("Developer III"), "Developer 3")
+        self.assertEqual(normalize_title("Analyst IV"), "Analyst 4")
+        self.assertEqual(normalize_title("Engineer V"), "Engineer 5")
 
 
 class TestShouldPreferStatus(unittest.TestCase):
