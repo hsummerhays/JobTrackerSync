@@ -995,6 +995,20 @@ def save_to_sqlite(db_path, jobs_list):
             )
         """)
 
+        # Create application_events table to log application confirmations
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS application_events (
+                event_id TEXT PRIMARY KEY,
+                company TEXT,
+                position TEXT,
+                date_applied TEXT,
+                source_pdf TEXT,
+                raw_text TEXT,
+                job_id TEXT,
+                created_at TEXT
+            )
+        """)
+
         # Create processed_files table for incremental sync
         initialize_processed_files_table(conn)
 
@@ -1357,6 +1371,318 @@ def save_to_sqlite(db_path, jobs_list):
     finally:
         if conn:
             conn.close()
+
+
+def extract_application_confirmation_info(pdf_file, full_text=""):
+    """
+    Extracts company name and position title from application confirmation PDF filenames or body text.
+    """
+    filename = os.path.basename(pdf_file)
+    clean_fn = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE).strip()
+
+    company = None
+    position = None
+
+    # 1. Filename pattern matches for Company
+    m = re.search(r"your application (?:was )?sent to\s+(.*?)(?:_1|\s+\d+|_|\.pdf|$)", clean_fn, re.IGNORECASE)
+    if m:
+        company = m.group(1).strip(" _-")
+
+    if not company:
+        m = re.search(r"application received\s*(?:-|–|:|at)\s*(.*?)(?:_1|\s+\d+|_|\.pdf|$)", clean_fn, re.IGNORECASE)
+        if m:
+            company = m.group(1).strip(" _-")
+
+    if not company:
+        m = re.search(r"thank you for applying to\s+(.*?)(?:_1|\s+\d+|_|\.pdf|$)", clean_fn, re.IGNORECASE)
+        if m:
+            company = m.group(1).strip(" _-")
+
+    if company:
+        company = re.sub(r"^(?:Gmail\s*-\s*|Hugh,\s*)+", "", company, flags=re.IGNORECASE).strip(" _-")
+
+    # 2. Body text extraction for Company and Position
+    if full_text:
+        pos_m = re.search(r"(?:position|role|job title|applied for|application for)\s*:\s*([A-Za-z0-9\s\.\-\/\(\)]+)", full_text, re.IGNORECASE)
+        if not pos_m:
+            pos_m = re.search(r"(?:apply|applying|applied|application)(?:\s+for|\s+to)?(?:\s+the)?\s+([A-Za-z0-9\s\.\-\/\(\)]+?)\s+(?:position|role|opportunity|at|with)", full_text, re.IGNORECASE)
+        if pos_m:
+            extracted_pos = pos_m.group(1).split("\n")[0].strip(" _-.")
+            if len(extracted_pos) < 60 and not re.search(r"http|www|gmail", extracted_pos, re.IGNORECASE):
+                position = extracted_pos
+
+        if not company:
+            m_text = re.search(r"(?:application (?:was )?sent to|thank you for applying to|application received (?:at|from|by|for))\s+([A-Z0-9][A-Za-z0-9\s,\.\-&]+)", full_text, re.IGNORECASE)
+            if m_text:
+                extracted_comp = m_text.group(1).split("\n")[0].strip(" _-.")
+                if len(extracted_comp) < 50:
+                    company = extracted_comp
+
+    if not company:
+        company = clean_fn.replace("Gmail - ", "").replace("Hugh, ", "").strip(" _-")
+
+    company = re.sub(r"_\d+$", "", company).strip(" _-")
+    return company, position
+
+
+def process_application_event(db_conn, pdf_path, pdf_file, date_added, full_text=""):
+    """
+    Ingests an application confirmation PDF into application_events table and matches or reconstructs an Applied job.
+    Requires company AND title agreement (date is used only as a last-resort tiebreaker among tied titles) before
+    touching an existing job; anything that can't be confidently disambiguated is left unlinked (job_id NULL) for
+    manual review rather than guessed. Preserves any workflow state beyond New/Applied untouched.
+    """
+    should_close_db = False
+    if db_conn is None:
+        db_conn = sqlite3.connect("jobs.db")
+        should_close_db = True
+
+    cursor = db_conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS application_events (
+            event_id TEXT PRIMARY KEY,
+            company TEXT,
+            position TEXT,
+            date_applied TEXT,
+            source_pdf TEXT,
+            raw_text TEXT,
+            job_id TEXT,
+            created_at TEXT
+        )
+    """)
+
+    company, extracted_position = extract_application_confirmation_info(pdf_file, full_text)
+    event_id = hashlib.md5(f"{pdf_path}|{company}|{date_added}".encode()).hexdigest()[:16]
+
+    norm_company = normalize_string(company)
+    norm_position = normalize_string(extracted_position) if extracted_position else ""
+
+    matched_job_id = None
+    ambiguous = False
+
+    cursor.execute("SELECT job_id, company, position, tracker_status, action, disposition, source_pdf, notes, date_added FROM jobs")
+    existing_jobs = cursor.fetchall()
+
+    def _company_row_matches(row_company):
+        norm_row = normalize_string(row_company or "")
+        if not norm_company or not norm_row:
+            return False
+        if norm_row == norm_company:
+            return True
+        # Require a few real characters before trusting substring containment --
+        # short/garbage company extractions (e.g. "co", "inc") would otherwise
+        # false-positive against unrelated employers.
+        return len(norm_company) >= 4 and norm_company in norm_row
+
+    company_matches = [row for row in existing_jobs if _company_row_matches(row[1])]
+
+    def _date_gap_days(candidate_date):
+        if not date_added or not candidate_date:
+            return None
+        try:
+            return abs((datetime.fromisoformat(str(date_added)) - datetime.fromisoformat(str(candidate_date))).days)
+        except (ValueError, TypeError):
+            return None
+
+    if len(company_matches) == 1:
+        cand_id, cand_comp, cand_pos, cand_status, cand_action, cand_disp, cand_pdf, cand_notes, cand_date = company_matches[0]
+        if not norm_position:
+            # Only candidate at this company and the confirmation gave us no
+            # title to check -- company agreement alone is unambiguous here.
+            matched_job_id = cand_id
+        elif title_similarity(cand_pos or "", extracted_position or "") >= 0.5 or norm_position in normalize_string(cand_pos or ""):
+            matched_job_id = cand_id
+        else:
+            # A title was extracted and it doesn't match the one candidate on
+            # file -- don't force it, this may be a second role not yet tracked.
+            ambiguous = True
+    elif len(company_matches) > 1:
+        if norm_position:
+            scored = []
+            for cand in company_matches:
+                cand_pos = cand[2]
+                if cand_pos:
+                    sim = title_similarity(cand_pos, extracted_position)
+                    if sim >= 0.6:
+                        scored.append((sim, cand))
+
+            if scored:
+                top_sim = max(s for s, _ in scored)
+                top_candidates = [c for s, c in scored if s == top_sim]
+                if len(top_candidates) == 1:
+                    matched_job_id = top_candidates[0][0]
+                else:
+                    # Multiple candidates tied on title similarity -- fall back
+                    # to whichever has the closest date_added, only if that's
+                    # unambiguous too. Otherwise this must go to manual review
+                    # rather than silently picking whichever came first.
+                    gaps = [(cand, _date_gap_days(cand[8])) for cand in top_candidates]
+                    known_gaps = sorted((g for g in gaps if g[1] is not None), key=lambda g: g[1])
+                    if known_gaps and (len(known_gaps) == 1 or known_gaps[0][1] < known_gaps[1][1]):
+                        matched_job_id = known_gaps[0][0][0]
+                    else:
+                        ambiguous = True
+            else:
+                ambiguous = True
+        else:
+            # Multiple roles at this company and no title extracted from the
+            # confirmation -- can't tell which one it confirms, so don't guess.
+            ambiguous = True
+
+    if ambiguous:
+        console.print(f"[yellow]Application confirmation for '{company}' could not be confidently matched to a single tracked role ({len(company_matches)} candidates) -- left unlinked for manual review.[/yellow]")
+
+    if matched_job_id:
+        cursor.execute("SELECT tracker_status, action, disposition, source_pdf, notes FROM jobs WHERE job_id = ?", (matched_job_id,))
+        t_status, act, disp, s_pdf, notes = cursor.fetchone()
+        s_pdf = s_pdf or ""
+        notes = notes or ""
+
+        pdf_uri = pathlib.Path(pdf_path).as_uri() if os.path.exists(pdf_path) else pdf_path
+        new_s_pdf = s_pdf
+        if pdf_uri not in s_pdf and pdf_path not in s_pdf:
+            new_s_pdf = f"{s_pdf} | {pdf_uri}" if s_pdf else pdf_uri
+
+        conf_note = f"Employer confirmation received on {date_added} via {os.path.basename(pdf_file)}."
+        new_notes = notes
+        if conf_note not in notes:
+            new_notes = f"{notes} | {conf_note}".strip(" |") if notes else conf_note
+
+        # Only bump statuses that a human hasn't yet moved forward -- anything
+        # further along (interviewing, offer, waiting, rejected, closed, ...)
+        # must never be clobbered by a stray confirmation email arriving late
+        # or out of order. Whitelisting the safe states (rather than
+        # blacklisting the unsafe ones) means a status this pipeline doesn't
+        # know about is protected by default instead of silently overwritten.
+        SAFE_TO_ADVANCE_STATUSES = UNREVIEWED_STATUSES | {"Applied", ""}
+        current_status = (t_status or "").strip()
+
+        if current_status not in SAFE_TO_ADVANCE_STATUSES:
+            new_status = t_status
+            new_action = act
+            new_disposition = disp
+        else:
+            new_status = "Applied"
+            new_action = "Already Applied"
+            new_disposition = "Waiting"
+
+        cursor.execute("""
+            UPDATE jobs
+            SET tracker_status = ?, action = ?, disposition = ?, source_pdf = ?, notes = ?
+            WHERE job_id = ?
+        """, (new_status, new_action, new_disposition, new_s_pdf, new_notes, matched_job_id))
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO job_workflow (job_id, tracker_status, action, disposition, updated_at, updated_by, notes)
+            VALUES (?, ?, ?, ?, ?, 'application_event_pipeline', ?)
+        """, (matched_job_id, new_status, new_action, new_disposition, datetime.now(timezone.utc).isoformat(), new_notes))
+
+    elif not ambiguous:
+        # True standalone (e.g. Yapi, 1872 Consulting): no job at all exists
+        # for this company, so this is a real gap in the tracker, not an
+        # ambiguity. Create an evidence-neutral placeholder row -- every
+        # field we don't have real evidence for stays at its neutral default
+        # rather than being guessed.
+        matched_job_id = hashlib.md5(f"app_event_{norm_company}_{date_added}".encode()).hexdigest()[:12]
+        pos_title = extracted_position or "Application Confirmation (Title Unspecified)"
+        inferred_job_type = classify_job_type(pos_title, full_text or "")
+        fingerprint = canonical_job_key(company, pos_title, "Unknown")
+        pdf_uri = pathlib.Path(pdf_path).as_uri() if os.path.exists(pdf_path) else pdf_path
+        conf_note = f"Application confirmation received via PDF: {os.path.basename(pdf_file)}. Listing details unspecified in source email."
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO jobs (
+                job_id, review_status, job_type, company, position, location, url, provider,
+                source_pdf, confidence, fit_score, priority, company_type, recommendation,
+                tracker_status, disposition, action, date_added, last_seen, notes, fingerprint, reason
+            ) VALUES (?, 'Applied', ?, ?, ?, 'Unknown', '', 'Email Confirmation',
+                      ?, '🔴 Low', 0, 'P1 – Apply today', 'Unknown', '★★★☆☆ Maybe',
+                      'Applied', 'Waiting', 'Already Applied', ?, ?, ?, ?, 'Reconstructed from application confirmation PDF')
+        """, (matched_job_id, inferred_job_type, company, pos_title, pdf_uri, date_added, date_added, conf_note, fingerprint))
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO job_workflow (job_id, tracker_status, action, disposition, updated_at, updated_by, notes)
+            VALUES (?, 'Applied', 'Already Applied', 'Waiting', ?, 'application_event_pipeline', ?)
+        """, (matched_job_id, datetime.now(timezone.utc).isoformat(), conf_note))
+
+    else:
+        # Ambiguous: candidates exist at this company but none could be
+        # confidently disambiguated. Don't touch any existing job and don't
+        # fabricate a duplicate placeholder -- log the event unlinked
+        # (job_id NULL) so it surfaces for manual review instead.
+        matched_job_id = None
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO application_events (
+            event_id, company, position, date_applied, source_pdf, raw_text, job_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        event_id, company, extracted_position or "", date_added, pdf_path, full_text[:1000] if full_text else "",
+        matched_job_id, datetime.now(timezone.utc).isoformat()
+    ))
+
+    db_conn.commit()
+
+    if should_close_db:
+        db_conn.close()
+
+    return matched_job_id, company
+
+
+_APPLICATION_EVENT_TRACKER_COLUMNS = [
+    "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL",
+    "Provider", "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type",
+    "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
+    "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes",
+    "Recruiter", "Hiring Manager", "Fingerprint", "Previous Job ID",
+]
+
+
+def merge_application_events_into_tracker(db_conn, existing_jobs, job_ids):
+    """Reload rows that process_application_event() wrote directly to jobs.db
+    into the in-memory tracker (existing_jobs) so combined_jobs reflects those
+    writes instead of the CSV snapshot loaded at the start of the run -- which
+    would otherwise overwrite the fresh Source PDF/Notes/status right back.
+    Rows with no prior tracker entry (standalone reconstructions) are added
+    so they reach the CSV immediately instead of waiting for a later rebuild.
+    """
+    if not job_ids:
+        return
+
+    cursor = db_conn.cursor()
+    existing_keys_by_id = {}
+    for key in existing_jobs:
+        existing_keys_by_id.setdefault(key[0], []).append(key)
+
+    for job_id in job_ids:
+        cursor.execute("""
+            SELECT job_id, review_status, job_type, company, position, location, url, provider,
+                   source_pdf, confidence, fit_score, priority, company_type, recommendation,
+                   tracker_status, disposition, action, existing_company, reason, matched_skills,
+                   missing_skills, date_added, last_seen, notes, recruiter, hiring_manager,
+                   fingerprint, previous_job_id
+            FROM jobs WHERE job_id = ?
+        """, (job_id,))
+        db_row = cursor.fetchone()
+        if not db_row:
+            continue
+        db_dict = dict(zip(_APPLICATION_EVENT_TRACKER_COLUMNS, db_row))
+
+        keys = existing_keys_by_id.get(job_id)
+        if keys:
+            for key in keys:
+                row = existing_jobs[key]
+                row["Source PDF"] = db_dict["Source PDF"]
+                row["Notes"] = db_dict["Notes"]
+                row["Tracker Status"] = db_dict["Tracker Status"]
+                row["Action"] = db_dict["Action"]
+                row["Disposition"] = db_dict["Disposition"]
+        else:
+            new_key = (job_id, db_dict.get("Date Added", ""))
+            existing_jobs[new_key] = db_dict
+            existing_keys_by_id.setdefault(job_id, []).append(new_key)
+
 
 def load_tracker(tracker_path):
     """Load existing jobs from tracker to prevent duplicates."""
@@ -3809,7 +4135,14 @@ def main():
     # whose jobs never made it to disk would be marked "success" and get
     # silently skipped (and its jobs permanently lost) on the next run.
     pending_success_records = []
-    
+
+    # job_ids that process_application_event() wrote directly to jobs.db
+    # during the scan (matched updates and standalone reconstructions alike).
+    # existing_jobs was loaded from the CSV before the scan started, so these
+    # rows must be reloaded from SQLite before combined_jobs is built below,
+    # or the stale in-memory copy would overwrite them right back.
+    application_event_job_ids = set()
+
     try:
         for root, dirs, files in os.walk(pdf_dir):
             dirs.sort()
@@ -3840,12 +4173,6 @@ def main():
                 pdf_path = os.path.join(root, pdf_file)
                 pdf_uri = pathlib.Path(pdf_path).as_uri()
 
-                # Ignore application confirmation emails that were saved as PDFs
-                if "application was sent" in pdf_file.lower() or "application received" in pdf_file.lower():
-                    run_stats["pdfs_skipped"] += 1
-                    console.print(f"[dim]Skipping application confirmation: {pdf_file}[/dim]")
-                    continue
-
                 # --- Incremental sync: skip if content+parser-version unchanged ---
                 pdf_hash = hash_pdf_file(pdf_path)
                 if pdf_hash and check_pdf_processed(_db_conn, pdf_hash, PARSER_VERSION):
@@ -3867,6 +4194,26 @@ def main():
                     if not full_text.strip():
                         console.print(f"[yellow]No selectable text in {pdf_file}. Falling back to OCR...[/yellow]")
                         full_text = perform_ocr(pdf_path)
+
+                    # Process application confirmation emails via dedicated ApplicationEvent ingestion pipeline
+                    is_app_conf_fn = any(sig in pdf_file.lower() for sig in ["application was sent", "application received", "thank you for applying", "your application to"])
+                    is_app_conf_text = any(sig in full_text.lower() for sig in ["your application was sent", "thank you for applying to", "application received", "we received your application"])
+                    if is_app_conf_fn or is_app_conf_text:
+                        job_id, comp_name = process_application_event(_db_conn, pdf_path, pdf_file, date_added, full_text)
+                        # Defer marking this PDF as successfully processed until the
+                        # final jobs.db/CSV save succeeds -- same reasoning as the
+                        # regular-job pending_success_records below: a PDF whose
+                        # write never reaches disk must stay eligible for retry.
+                        if pdf_hash:
+                            pending_success_records.append(
+                                (pdf_hash, os.path.abspath(pdf_path), pdf_stat.st_size if 'pdf_stat' in locals() else 0, pdf_stat.st_mtime if 'pdf_stat' in locals() else 0)
+                            )
+                        if job_id:
+                            application_event_job_ids.add(job_id)
+                            console.print(f"[green]Ingested application confirmation event: {pdf_file} (Company: {comp_name})[/green]")
+                        else:
+                            console.print(f"[yellow]Ingested application confirmation event: {pdf_file} (Company: {comp_name}) -- unlinked, needs manual review[/yellow]")
+                        continue
 
                     provider = detect_provider(full_text, pdf_file)
 
@@ -4137,6 +4484,11 @@ def main():
         console.print(f"[yellow]No PDF files found in {pdf_dir}[/yellow]")
         _db_conn.close()
         return
+
+    # Pull in this run's application-event writes (matched-row updates and
+    # standalone reconstructions) before existing_jobs is used to build
+    # combined_jobs -- see merge_application_events_into_tracker().
+    merge_application_events_into_tracker(_db_conn, existing_jobs, application_event_job_ids)
 
     # Extract existing companies in the tracker to determine duplicate status
     existing_companies = {row.get("Company", "").strip().lower() for row in existing_jobs.values() if row.get("Company")}

@@ -127,6 +127,21 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
 | `status_source` | TEXT | Origin of the status ('user', 'system', 'migration') to prevent parser overrides of manual states |
 
+### Table: `application_events`
+
+Stores employer application confirmation events parsed directly from confirmation email PDFs.
+
+| Column | Type | Description |
+|---|---|---|
+| `event_id` | TEXT PRIMARY KEY | Unique hash ID of the application event |
+| `company` | TEXT | Employer company name extracted from confirmation PDF |
+| `position` | TEXT | Position/title extracted or defaulted |
+| `date_applied` | TEXT | Application confirmation date |
+| `source_pdf` | TEXT | Path or URI of the confirmation PDF |
+| `raw_text` | TEXT | Snippet/raw text of confirmation |
+| `job_id` | TEXT | Foreign key linking to the matched job record in `jobs` |
+| `created_at` | TEXT | ISO timestamp when event was ingested |
+
 ---
 
 ## Workflow Synchronization

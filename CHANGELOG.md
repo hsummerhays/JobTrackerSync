@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.5 — 2026-08-12
+
+### ApplicationEvent Pipeline Safety Hardening
+- **Whitelist-based status protection**: `process_application_event` previously protected a hand-rolled interview/terminal status list that didn't match the tracker's real vocabulary (it listed "Recruiter Contact" when the tracker uses "Recruiter Submitted", and omitted "Waiting"/"Accepted" entirely) — a stray confirmation email could silently reset those roles back to `Applied`. Replaced with a whitelist: only `New`/`Applied`/empty statuses are advanced; every other status (including any added in the future) is protected by default.
+- **Ambiguous matches are left unlinked, not guessed**: When a company has multiple tracked roles and the confirmation email's title can't confidently disambiguate between them (including exact ties in title similarity), the event is now logged to `application_events` with `job_id = NULL` for manual review instead of matching whichever candidate happened to be scanned first, and instead of fabricating a duplicate placeholder job for a company that's already tracked. Standalone reconstruction is now reserved for companies with zero existing tracker rows.
+- **Evidence-based `job_type`**: Standalone reconstruction (e.g. Yapi, 1872 Consulting) no longer hardcodes `job_type = 'Software Engineer'` regardless of the confirmed role; it now runs the extracted title through `classify_job_type` so Operations-flavored roles score correctly downstream.
+- **Tighter company matching**: Substring-containment company matching now requires at least 4 normalized characters, reducing false-positive matches from short or garbled company-name extractions.
+
+## v1.3.4 — 2026-08-12
+
+### ApplicationEvent Ingestion Pipeline
+- **Dedicated Application Confirmation Pipeline**: Replaced hard skipping of application confirmation PDFs with an ingestion pipeline (`process_application_event`). Application confirmation emails (e.g. `Your application was sent to...`, `Application received...`) are recorded into a dedicated `application_events` SQLite table.
+- **Automatic Matching & Reconstructibility**: Application confirmation events automatically match and update existing tracker jobs to `Applied` / `Already Applied`. Standalone confirmations (e.g., Yapi, 1872 Consulting) whose original job alert PDF was never saved are automatically reconstructed as `Applied` job records in `jobs.db` and `master_tracker.csv` during full directory rebuilds.
+
 ## v1.3.3 — 2026-08-12
 
 ### Source of Truth & Synchronization

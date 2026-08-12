@@ -246,6 +246,7 @@ This project includes built-in AI agent skills (located in `.agents/skills/`) to
 - **`find_pdf`**: Locates and links PDF source files by filename or substring.
 - **`manage_config`**: Safely reads and updates `config.json` (skills, aliases, tech keywords).
 - **`deduplicate_jobs`**: Identifies and safely collapses physical duplicate rows.
+- **`update_docs`**: Reviews and updates all project documentation (.md files, agent skills, AGENTS.md).
 
 Workspace rules are defined in `.agents/AGENTS.md` and cover deduplication safety, mandatory dual-update (CSV + DB), temp file hygiene, and the test-before-commit policy. To persist new rules, use the `/learn` command.
 
@@ -280,7 +281,7 @@ This discovery reinforced an important architectural principle: job providers of
 The roadmap focuses on making parsed data more actionable and improving workflow visibility.
 
 ### 1. Polish and Reliability
-- [x] **More unit tests** around parsing and merge logic. *(374 tests across 17 modules as of v1.3.2)*
+- [x] **More unit tests** around parsing and merge logic. *(387 tests across 18 modules as of v1.3.4)*
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
