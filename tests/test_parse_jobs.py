@@ -287,6 +287,76 @@ class TestEvaluateJob(unittest.TestCase):
         _, _, _, _, _, company_type, *_ = evaluate_job(job)
         self.assertEqual(company_type, "Defense")
 
+    def test_defense_company_no_clearance_stated_gets_mild_penalty(self):
+        # Commercial/non-cleared L3Harris-style posting: only the -20 flat
+        # penalty applies. Control uses a "Consulting"-classified company so
+        # both sides get the same (zero) company_type score bonus, isolating
+        # the clearance penalty as the only difference.
+        no_clearance_job = _make_job(
+            title="Senior Software Engineer",
+            company="L3Harris",
+            location="Remote",
+            context="l3harris senior software engineer remote .net c# backend commercial products",
+        )
+        control_job = _make_job(
+            title="Senior Software Engineer",
+            company="Acme Consulting Solutions",
+            location="Remote",
+            context="acme consulting solutions senior software engineer remote .net c# backend commercial products",
+        )
+        _, _, _, defense_score, _, company_type, defense_rec, reason, *_ = evaluate_job(no_clearance_job)
+        _, _, _, control_score, _, control_type, *_ = evaluate_job(control_job)
+        self.assertEqual(company_type, "Defense")
+        self.assertEqual(control_type, "Consulting")
+        self.assertEqual(control_score - defense_score, 20)
+        self.assertIn("Defense company, no clearance stated", reason)
+
+    def test_defense_clearance_required_capped_at_low(self):
+        job = _make_job(
+            title="Senior Software Engineer",
+            company="L3Harris",
+            location="Salt Lake City, UT",
+            context="l3harris senior software engineer must be eligible to obtain a security clearance .net c#",
+        )
+        _, _, _, fit_score, priority, company_type, rec, reason, *_ = evaluate_job(job)
+        self.assertEqual(company_type, "Defense")
+        self.assertEqual(rec, "★★☆☆☆ Low")
+        self.assertEqual(priority, "P4 – Ignore")
+        self.assertIn("Clearance required/eligibility", reason)
+
+    def test_defense_active_clearance_capped_at_skip(self):
+        job = _make_job(
+            title="Senior Software Engineer",
+            company="L3Harris",
+            location="Salt Lake City, UT",
+            context="l3harris senior software engineer active dod secret clearance required .net c#",
+        )
+        _, _, _, fit_score, priority, company_type, rec, reason, *_ = evaluate_job(job)
+        self.assertEqual(company_type, "Defense")
+        self.assertEqual(rec, "★☆☆☆☆ Skip")
+        self.assertEqual(priority, "P4 – Ignore")
+        self.assertIn("Active clearance required", reason)
+
+    def test_defense_ts_sci_treated_as_active_clearance(self):
+        job = _make_job(
+            title="Senior Software Engineer",
+            company="L3Harris",
+            location="Salt Lake City, UT",
+            context="l3harris senior software engineer ts/sci required .net c#",
+        )
+        _, _, _, _, _, _, rec, *_ = evaluate_job(job)
+        self.assertEqual(rec, "★☆☆☆☆ Skip")
+
+    def test_defense_explicit_no_clearance_not_penalized_beyond_base(self):
+        job = _make_job(
+            title="Senior Software Engineer",
+            company="L3Harris",
+            location="Remote",
+            context="l3harris senior software engineer no clearance required commercial .net c#",
+        )
+        _, _, _, _, _, _, _, reason, *_ = evaluate_job(job)
+        self.assertIn("Defense company, no clearance stated", reason)
+
     def test_healthcare_company_type(self):
         job = _make_job(
             company="Summit Medical",

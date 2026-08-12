@@ -2589,6 +2589,38 @@ def evaluate_job(job):
     elif any(faang.lower() in company.lower() for faang in FAANG_COMPANIES):
         company_type = "Enterprise"
 
+    # Clearance tiers (no-clearance preference): a Defense-classified company
+    # can still post a commercial, non-cleared role, so company_type alone
+    # only earns the mild penalty. An explicit clearance condition in the
+    # listing text conflicts directly with the preference and also caps the
+    # recommendation so it can't reach P1/P2 on the Utah/location bonus alone.
+    clearance_penalty = 0
+    clearance_cap = None
+    clearance_reason = None
+    if company_type == "Defense":
+        clearance_text = f"{title} {context}".lower()
+        clearance_negated = bool(re.search(
+            r'no\s+(?:security\s+)?clearance|clearance\s+(?:is\s+)?not\s+required|does\s+not\s+require.{0,20}clearance',
+            clearance_text
+        ))
+        has_active_clearance = bool(re.search(
+            r'\bactive\b.{0,60}\bclearance\b|\bcurrent\b.{0,60}\bclearance\b|\bts[\s/-]?sci\b',
+            clearance_text
+        ))
+        has_clearance_mention = "clearance" in clearance_text and not clearance_negated
+
+        if has_active_clearance:
+            clearance_penalty = 40
+            clearance_cap = "★☆☆☆☆ Skip"
+            clearance_reason = "Active clearance required (-40 pts)"
+        elif has_clearance_mention:
+            clearance_penalty = 30
+            clearance_cap = "★★☆☆☆ Low"
+            clearance_reason = "Clearance required/eligibility (-30 pts)"
+        else:
+            clearance_penalty = 20
+            clearance_reason = "Defense company, no clearance stated (-20 pts)"
+
     # Normalized Fit Score calculation
     score_remote_utah = 20 if (is_utah or is_remote) else 0
 
@@ -2629,7 +2661,10 @@ def evaluate_job(job):
     fit_score = min(100, max(0, fit_score))
     if has_restriction:
         fit_score = max(0, fit_score - 30)
-    
+
+    if clearance_penalty:
+        fit_score = max(0, fit_score - clearance_penalty)
+
     # Operations type penalty: deduct 15 pts when primary focus is Software Engineering
     # This prevents Operations Manager roles from ranking alongside senior engineering roles
     if job_type == "Operations":
@@ -2683,7 +2718,14 @@ def evaluate_job(job):
     # Cap incomplete listings at P3 (Maybe)
     if is_incomplete_listing and recommendation in ["★★★★★ Apply Now", "★★★★☆ Strong"]:
         recommendation = "★★★☆☆ Maybe"
-            
+
+    # Cap clearance-conditioned listings so they can't reach P1/P2 on the
+    # location/Utah bonus alone (see clearance tiers above).
+    if clearance_cap:
+        _tier_order = ["★☆☆☆☆ Skip", "★★☆☆☆ Low", "★★★☆☆ Maybe", "★★★★☆ Strong", "★★★★★ Apply Now"]
+        if _tier_order.index(recommendation) > _tier_order.index(clearance_cap):
+            recommendation = clearance_cap
+
     # Reason calculation
     reasons = []
     if job_type == "Operations":
@@ -2695,6 +2737,9 @@ def evaluate_job(job):
         
     if has_restriction:
         reasons.append("Onsite/Local Restriction")
+
+    if clearance_reason:
+        reasons.append(clearance_reason)
 
         
     matched_skills_list = []

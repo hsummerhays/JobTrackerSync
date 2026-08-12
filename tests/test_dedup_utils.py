@@ -6,9 +6,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dedup_utils import (
     canonical_key,
+    canonical_job_key,
     is_clean_location,
     locations_compatible,
     merge_delimited_field,
+    normalize_location,
     should_prefer_status,
     title_similarity,
 )
@@ -93,6 +95,36 @@ class TestIsCleanLocation(unittest.TestCase):
 
     def test_plain_location_is_clean(self):
         self.assertTrue(is_clean_location("United States (Remote)"))
+
+
+class TestNormalizeLocation(unittest.TestCase):
+    def test_strips_day_and_hour_alert_age_fragments(self):
+        self.assertEqual(normalize_location("Salt Lake City, UT 1d"), "Salt Lake City, UT")
+        self.assertEqual(normalize_location("Salt Lake City, UT 7h"), "Salt Lake City, UT")
+        self.assertEqual(normalize_location("Salt Lake City, UT 11h"), "Salt Lake City, UT")
+
+    def test_strips_just_posted_fragment(self):
+        self.assertEqual(normalize_location("Salt Lake City, UT Just posted"), "Salt Lake City, UT")
+
+    def test_strips_trailing_zip_code(self):
+        self.assertEqual(normalize_location("Midvale, UT 84047"), "Midvale, UT")
+
+    def test_plain_location_without_zip_is_unaffected(self):
+        self.assertEqual(normalize_location("Midvale, UT"), "Midvale, UT")
+
+    def test_l3harris_alert_age_variants_collapse_to_same_key(self):
+        """The specific bug reported in the export: same posting, three
+        alert-age-tagged copies of the location, all treated as distinct."""
+        key1 = canonical_job_key("L3Harris", "Sr Associate, Software Engineer", "Salt Lake City, UT 1d")
+        key2 = canonical_job_key("L3Harris", "Sr Associate, Software Engineer", "Salt Lake City, UT 7h")
+        key3 = canonical_job_key("L3Harris", "Sr Associate, Software Engineer", "Salt Lake City, UT")
+        self.assertEqual(key1, key2)
+        self.assertEqual(key2, key3)
+
+    def test_zions_zip_variant_collapses_to_same_key(self):
+        key1 = canonical_job_key("Zions Bancorporation", "Full Stack Developer (Technology Enablement)", "Midvale, UT")
+        key2 = canonical_job_key("Zions Bancorporation", "Full Stack Developer (Technology Enablement)", "Midvale, UT 84047")
+        self.assertEqual(key1, key2)
 
 
 class TestTitleSimilarity(unittest.TestCase):

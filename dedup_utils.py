@@ -144,6 +144,18 @@ def normalize_location(loc: str) -> str:
     if jobs_in:
         return f"{jobs_in.group(1).strip()}, UT"
 
+    # Strip LinkedIn/Indeed alert-age fragments accidentally concatenated
+    # onto the location during scraping (e.g. "Salt Lake City, UT 1d",
+    # "... 7h", "... Just posted").
+    loc = re.sub(
+        r'\s+(?:\d+\s*(?:d|h|w|mo|y)|Just posted)$', '', loc, flags=re.IGNORECASE
+    ).strip()
+
+    # Strip a trailing US ZIP code so "Midvale, UT" and "Midvale, UT 84047"
+    # normalize to the same value instead of being treated as different
+    # locations.
+    loc = re.sub(r'\s+\d{5}(?:-\d{4})?$', '', loc).strip()
+
     # Bare state code → Unknown
     if re.match(r'^[A-Z]{2}$', loc):
         return "Unknown"
