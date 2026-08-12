@@ -66,8 +66,8 @@ Priority is derived from **Recommendation first**, then Action. Recommendation a
 |----------|-----------|
 | **P4 – Ignore** | Recommendation = ★☆☆☆☆ Skip OR ★★☆☆☆ Low (regardless of Action) |
 | **P3 – Investigate** | Recommendation = ★★★☆☆ Maybe (regardless of Action) |
-| **P1 – Apply today** | Action = Apply AND Recommendation = ★★★★★ Apply Now |
-| **P2 – Apply this week** | Action = Apply OR Contact Recruiter (and Recommendation ≥ ★★★★☆) |
+| **P1 – Apply today** | Action = (Apply OR Already Applied) AND Recommendation = ★★★★★ Apply Now |
+| **P2 – Apply this week** | Action = (Apply OR Already Applied OR Contact Recruiter) AND Recommendation ≥ ★★★★☆ |
 | **P3 – Investigate** | Action = Review |
 | **P4 – Ignore** | All other cases |
 

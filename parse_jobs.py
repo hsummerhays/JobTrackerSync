@@ -348,9 +348,9 @@ def compute_priority(recommendation, action, age_days=0):
     elif recommendation == "★★★☆☆ Maybe":
         return "P3 – Investigate"
 
-    if action == "Apply" and recommendation == "★★★★★ Apply Now":
+    if action in ["Apply", "Already Applied"] and recommendation == "★★★★★ Apply Now":
         priority = "P1 – Apply today"
-    elif action in ["Apply", "Contact Recruiter"]:
+    elif action in ["Apply", "Already Applied", "Contact Recruiter"]:
         priority = "P2 – Apply this week"
     elif action == "Review":
         priority = "P3 – Investigate"
@@ -462,12 +462,14 @@ def clean_existing_tracker(tracker_path):
             migrated_schema = True
 
         # Load any missing rows from jobs.db so valid DB records missing from CSV are restored
+        db_by_id = {}
         if os.path.exists("jobs.db"):
             try:
                 conn = sqlite3.connect("jobs.db")
                 conn.row_factory = sqlite3.Row
                 db_rows = conn.execute("SELECT * FROM jobs").fetchall()
                 conn.close()
+                db_by_id = {dict(r).get("job_id"): dict(r) for r in db_rows if dict(r).get("job_id")}
                 csv_ids = {r.get("Job ID") for r in rows if r.get("Job ID")}
                 for db_r in db_rows:
                     d = dict(db_r)
@@ -660,11 +662,38 @@ def clean_existing_tracker(tracker_path):
                 rec, reason, matched_skills, missing_skills, job_type,
             ) = evaluate_job(eval_job)
 
+            # Check if this row exists in jobs.db with stored scores/locations from manual updates or prior rescores
+            db_stored = {}
+            if 'db_by_id' in locals() and job_id in db_by_id:
+                db_stored = db_by_id[job_id]
+
+            # Only preserve manual/DB overrides if the status is active/Applied or stored in jobs.db
+            stored_fit = db_stored.get("fit_score")
+            stored_rec = db_stored.get("recommendation")
+            stored_loc = db_stored.get("location")
+
+            if stored_loc and (status != "New" or db_stored):
+                migrated_row["Location"] = stored_loc
+                location = stored_loc
+
+            if db_stored and stored_fit is not None:
+                try:
+                    fit_score = int(stored_fit)
+                except (ValueError, TypeError):
+                    pass
+
+            if db_stored and stored_rec:
+                rec = stored_rec
+            elif status != "New":
+                existing_rec = row.get("Recommendation") or row.get("recommendation")
+                if existing_rec and existing_rec.startswith("★"):
+                    rec = existing_rec
+
             migrated_row["Job Type"] = job_type
             migrated_row["Company Type"] = comp_type
             migrated_row["Fit Score"] = int(fit_score)
             migrated_row["Confidence"] = confidence
-            migrated_row["Reason"] = reason
+            migrated_row["Reason"] = reason if fit_score == int(fit_score) else (db_stored.get("reason") or row.get("Reason", reason))
             migrated_row["Matched Skills"] = matched_skills
             migrated_row["Missing Skills"] = missing_skills
 

@@ -46,10 +46,11 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
         ├─ 7. Merge & Sort
         │       └─ New + existing rows sorted by Fit Score desc
         │
-        ├─ 8. Workflow Restore & SQLite Sync (save_to_sqlite -> jobs.db)
-        │       └─ Restores persisted workflow state from job_workflow
+        ├─ 8. Primary DB Storage & Workflow Save (save_to_sqlite -> jobs.db)
+        │       └─ Authoritative sqlite database storing raw context, scores, and workflow history
         │
-        └─ 9. CSV Write           (master_tracker.csv)
+        └─ 9. CSV Export Write     (master_tracker.csv)
+                └─ Exported view generated directly from jobs.db
 ```
 
 ---

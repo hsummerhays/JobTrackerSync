@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.3 — 2026-08-12
+
+### Source of Truth & Synchronization
+- **SQLite DB as Primary Source of Truth**: Established `jobs.db` as the sole authoritative source of truth. All job additions, status updates, and note modifications write directly to `jobs.db`. `master_tracker.csv` is maintained as a generated export view built out of `jobs.db`.
+- **Score & Metadata Preservation**: `clean_existing_tracker()` now checks stored fields in `jobs.db` (`fit_score`, `recommendation`, `location`, `reason`), preserving explicit manual updates and rescores across CSV export regenerations.
+
+### Priority Calculations
+- **Applied Status Priority Preservation**: `compute_priority` updated to include `Already Applied` alongside `Apply`, preserving `P1 – Apply today` and `P2 – Apply this week` priority classifications for jobs that have been applied to.
+
 ## v1.3.2 — 2026-08-09
 
 ### Scoring & Priority Fixes
