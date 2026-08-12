@@ -108,6 +108,7 @@ Each job record in the main `jobs` table carries these fields:
 | `Missing Skills` | Desired keywords not found |
 | `Date Added` | ISO date first seen |
 | `Notes` | Parser-generated analyst comments |
+| `Score Source` | Provenance of fit score (`parser` or `manual`) to preserve intentional manual score overrides |
 
 ### Persistent User Workflow Table (`job_workflow`)
 
@@ -126,6 +127,7 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | `follow_up_date` | TEXT | User-managed follow up date (preserved on import) |
 | `last_contact_date` | TEXT | User-managed last contact date (preserved on import) |
 | `status_source` | TEXT | Origin of the status ('user', 'system', 'migration') to prevent parser overrides of manual states |
+| `score_source` | TEXT | Provenance of the score ('parser', 'manual') to preserve manual score overrides across syncs/rescores |
 
 ### Table: `application_events`
 

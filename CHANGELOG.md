@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## v1.3.5 — 2026-08-12
 
+### Score Provenance & Manual Override Preservation
+- **Score Provenance Architecture (`Score Source`)**: Added `score_source` column (`manual` | `parser`) to `jobs` and `job_workflow` tables in SQLite, as well as `Score Source` header in `master_tracker.csv`.
+- **Manual Score Override Preservation**: Manual scores set via CLI (`--add --fit-score`, `--update --fit-score`) or database overrides are preserved across `clean_existing_tracker()` sync passes and default `python parse_jobs.py --rescore` passes.
+- **`--rescore-all` & `--clear-score-override` CLI flags**: Added `--rescore-all` to force rescoring of all active jobs (including manual score overrides) and `--clear-score-override` to clear manual score overrides for target jobs or all jobs.
+- **Restored Manual Baseline Scores**: Restored Wheeler Machinery Company (95 / P1 / Apply Now), Mercato Partners (92 / P1 / Apply Now), and Lowe's (70 / P2 / Strong) with `score_source = manual`.
+
 ### ApplicationEvent Pipeline Safety Hardening
 - **Whitelist-based status protection**: `process_application_event` previously protected a hand-rolled interview/terminal status list that didn't match the tracker's real vocabulary (it listed "Recruiter Contact" when the tracker uses "Recruiter Submitted", and omitted "Waiting"/"Accepted" entirely) — a stray confirmation email could silently reset those roles back to `Applied`. Replaced with a whitelist: only `New`/`Applied`/empty statuses are advanced; every other status (including any added in the future) is protected by default.
 - **Ambiguous matches are left unlinked, not guessed**: When a company has multiple tracked roles and the confirmation email's title can't confidently disambiguate between them (including exact ties in title similarity), the event is now logged to `application_events` with `job_id = NULL` for manual review instead of matching whichever candidate happened to be scanned first, and instead of fabricating a duplicate placeholder job for a company that's already tracked. Standalone reconstruction is now reserved for companies with zero existing tracker rows.

@@ -54,8 +54,14 @@ python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name>
 python parse_jobs.py --update "<company_name_or_job_id>" --notes "<note_to_append>"
 ```
 
-### 6. Interactive Update (no company specified)
-Launches an interactive menu:
+### 7. Rescoring Jobs and Preserving Manual Scores
 ```bash
-python parse_jobs.py --update
+# Recalculate scores for all active parser-scored jobs (preserves manual score overrides)
+python parse_jobs.py --rescore
+
+# Force rescoring of ALL active jobs, including manual score overrides
+python parse_jobs.py --rescore-all
+
+# Clear manual score override for a specific company or all jobs
+python parse_jobs.py --clear-score-override "<company_name_or_job_id>"
 ```
