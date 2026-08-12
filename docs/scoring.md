@@ -119,6 +119,23 @@ Keep Reason concise (one line). Notes can be multi-sentence.
 
 ---
 
+## Score Provenance Architecture (`Score Source`)
+
+To prevent automated sync passes (`clean_existing_tracker`) or bulk re-scoring (`python parse_jobs.py --rescore`) from overwriting intentional manual score edits, every job tracks its score provenance via the `score_source` field (CSV column: `Score Source`):
+
+| `score_source` | Origin | Behavior on Sync / `--rescore` |
+|----------------|--------|---------------------------------|
+| `parser` (default) | Automatically calculated by `evaluate_job()` | Updated on every config change, PDF sync, or `--rescore` pass. |
+| `manual` | Set explicitly via CLI (`--add --fit-score`, `--update --fit-score`) or manual database override | **Preserved** across sync passes and default `--rescore`. Scores, priorities, recommendations, actions, and reasons are kept intact. |
+
+### Provenance CLI Commands
+
+- **Preserve Manual Scores (Default)**: `python parse_jobs.py --rescore` recalculates parser-generated scores while preserving manual overrides (`score_source = 'manual'`).
+- **Force Rescore All**: `python parse_jobs.py --rescore-all` or `python parse_jobs.py --rescore --rescore-all` forces re-evaluation of all jobs including manual overrides, resetting their `score_source` to `parser`.
+- **Clear Score Override**: `python parse_jobs.py --clear-score-override "<Company Name>"` clears the manual score override for a specific company (or all jobs if no company is specified) and re-evaluates.
+
+---
+
 ## Known Limitations / Future Improvements
 
 - **Scoring Inflation**: A role can receive a high Fit Score merely for containing keywords like "remote," "Utah," or ".NET," even when the position title is entirely irrelevant (e.g., Senior Data Scientist, Drupal Lead, Warehouse Specialist). Future iterations should treat these scores as retrieval hints rather than absolute fit judgments, or add severe penalties for irrelevant primary titles.

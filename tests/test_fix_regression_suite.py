@@ -1,4 +1,5 @@
 import csv
+import os
 import pytest
 import sqlite3
 from parse_jobs import (
@@ -9,6 +10,8 @@ from parse_jobs import (
     parse_job_cards_from_text,
     normalize_ocr_spacing,
     handle_rescore,
+    handle_clear_score_override,
+    clean_existing_tracker,
 )
 
 
@@ -131,17 +134,57 @@ def test_apply_now_requires_a_technical_signal():
 
 
 def test_porch_software_metadata_parses_correctly():
-    """Email metadata 'Years Exp Required' must not become the company name."""
+    """Glassdoor 'Jobs you might like' card wraps the title across two lines,
+    with the trailing fragment ('Required') landing alone on its own line.
+    This is the real layout-mode PDF extraction from a "Wheeler Machinery
+    Co: Apply Now" Glassdoor digest (2026-08-12) -- a synthetic fixture that
+    put 'Years Exp Required' on one line and reordered Company/Title/Location
+    passed even though it didn't reproduce the real bug, where the wrap
+    fragment 'Required' alone became the company name instead of Porch
+    Software."""
     text = (
-        "Porch Software\n"
-        "Years Exp Required\n"
-        "Mid/Senior Full Stack Developer (C#/Vuejs) - Minimum 5\n"
-        "Salt Lake City, UT 84020 (Remote)"
+        "                                  Wheeler Machinery Co      2.5 ★\n"
+        "                           Senior Full Stack Software Engineer\n"
+        "                           Salt Lake City    , UT\n"
+        "                           $112K - $159K (Glassdoor est.)\n"
+        "\n"
+        "                                Easy Apply\n"
+        "\n"
+        "\n"
+        "                        Jobs you might like\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "                                  PorchSoftware     2.6 ★\n"
+        "                           Mid/Senior Full Stack Developer (C#/Vuejs) - Minimum 5 Years Exp\n"
+        "                           Required\n"
+        "                           Draper, UT\n"
+        "                           $110K - $130K (Employer est.)\n"
+        "\n"
+        "                                Easy Apply\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "\n"
+        "                                  3form   3.6 ★\n"
     )
     jobs = parse_job_cards_from_text(text)
-    assert len(jobs) == 1
-    assert jobs[0]["company"] == "Porch Software"
-    assert "Mid/Senior Full Stack Developer" in jobs[0]["title"]
+    porch_jobs = [j for j in jobs if "Porch" in j["company"]]
+    assert len(porch_jobs) == 1
+    porch = porch_jobs[0]
+    # The source layout renders the company name with no literal space
+    # character between the two words ("PorchSoftware") -- normalize_ocr_spacing
+    # corrects this specific known case back to "Porch Software".
+    assert porch["company"] == "Porch Software"
+    assert porch["title"] == "Mid/Senior Full Stack Developer (C#/Vuejs) - Minimum 5 Years Exp Required"
+    assert porch["location"] == "Draper, UT"
+
+    wheeler_jobs = [j for j in jobs if "Wheeler" in j["company"]]
+    assert len(wheeler_jobs) == 1
+    assert wheeler_jobs[0]["company"] == "Wheeler Machinery Co"
+    assert wheeler_jobs[0]["location"] == "Salt Lake City, UT"
 
 
 def test_rescore_idempotency_and_preservation(tmp_path):
@@ -301,3 +344,147 @@ def test_rescore_propagates_to_csv(tmp_path):
     assert csv_row["Recommendation"] == db_row["recommendation"]
     assert csv_row["Reason"] == db_row["reason"]
     assert "Utah" not in csv_row["Reason"]
+
+
+def test_manual_score_preservation_across_sync_and_rescore(tmp_path):
+    """Verify manual score overrides (score_source = 'manual') are preserved by
+    clean_existing_tracker and default handle_rescore, but can be reset via rescore_all."""
+    db_path = tmp_path / "test_jobs.db"
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        """CREATE TABLE jobs (
+        job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT,
+        position TEXT, location TEXT, url TEXT, provider TEXT, source_pdf TEXT,
+        confidence TEXT, fit_score INTEGER, priority TEXT, company_type TEXT,
+        recommendation TEXT, tracker_status TEXT, disposition TEXT, action TEXT,
+        existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT,
+        date_added TEXT, notes TEXT, recruiter TEXT, hiring_manager TEXT,
+        last_seen TEXT, fingerprint TEXT, previous_job_id TEXT, raw_context TEXT, score_source TEXT
+    )"""
+    )
+    c.execute(
+        """
+        INSERT INTO jobs (
+            job_id, company, position, location, raw_context, provider, source_pdf,
+            confidence, job_type, company_type, review_status, disposition, notes,
+            existing_company, date_added, url,
+            tracker_status, fit_score, priority, recommendation, action, reason, score_source
+        ) VALUES (
+            'manual1', 'Wheeler Machinery Company', 'Senior Full Stack Software Engineer', 'Salt Lake City, UT',
+            'wheeler machinery company senior full stack software engineer', 'Manual', 'Manual',
+            '', 'Software Engineer', 'Small / Medium', 'Applied', 'Waiting', '',
+            'No', '2026-08-01', '',
+            'Applied', 95, 'P1 – Apply today', '★★★★★ Apply Now', 'Already Applied', 'Manual score override', 'manual'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    original_connect = sqlite3.connect
+    def mock_connect(*args, **kwargs):
+        return original_connect(db_path)
+
+    csv_path = tmp_path / "test_tracker.csv"
+    csv_headers = [
+        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
+        "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
+        "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes",
+        "Recruiter", "Hiring Manager", "Fingerprint", "Previous Job ID", "Score Source",
+    ]
+    with open(csv_path, mode='w', newline='', encoding='utf-8') as f:
+        csv.DictWriter(f, fieldnames=csv_headers).writeheader()
+
+    # clean_existing_tracker checks for a relative "jobs.db" to restore rows
+    # missing from the CSV -- give it one in an isolated cwd, distinct from
+    # any real jobs.db, since sqlite3.connect is mocked to redirect to db_path
+    # regardless of the filename requested.
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    (tmp_path / "jobs.db").touch()
+
+    sqlite3.connect = mock_connect
+    try:
+        # 1. clean_existing_tracker must preserve score_source = manual, the 95
+        # fit score, and the manually-set priority/action (not re-derive them)
+        clean_existing_tracker(str(csv_path))
+        conn = original_connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.cursor().execute("SELECT * FROM jobs WHERE job_id = 'manual1'").fetchone())
+        conn.close()
+        assert row["fit_score"] == 95
+        assert row["score_source"] == "manual"
+        assert row["priority"] == "P1 – Apply today"
+        assert row["action"] == "Already Applied"
+
+        # Score Source column must round-trip into the CSV, not be silently dropped
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            csv_row = next(csv.DictReader(f))
+        assert csv_row["Score Source"] == "manual"
+
+        # 2. handle_rescore(rescore_all=False) must preserve the manual score
+        handle_rescore(csv_path=str(csv_path), rescore_all=False)
+        conn = original_connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.cursor().execute("SELECT * FROM jobs WHERE job_id = 'manual1'").fetchone())
+        conn.close()
+        assert row["fit_score"] == 95
+        assert row["score_source"] == "manual"
+
+        # 3. handle_rescore(rescore_all=True) forces rescoring and resets score_source to parser
+        handle_rescore(csv_path=str(csv_path), rescore_all=True)
+        conn = original_connect(db_path)
+        conn.row_factory = sqlite3.Row
+        row = dict(conn.cursor().execute("SELECT * FROM jobs WHERE job_id = 'manual1'").fetchone())
+        conn.close()
+        assert row["score_source"] == "parser"
+    finally:
+        sqlite3.connect = original_connect
+        os.chdir(original_cwd)
+
+
+def test_clear_score_override_scopes_to_target(tmp_path):
+    """--clear-score-override <target> must only reset the matched job(s) --
+    it must not clear or rescore every other manually-scored job in the DB."""
+    db_path = tmp_path / "jobs.db"
+    csv_path = tmp_path / "master_tracker.csv"
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        """CREATE TABLE jobs (
+        job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT,
+        position TEXT, location TEXT, url TEXT, provider TEXT, source_pdf TEXT,
+        confidence TEXT, fit_score INTEGER, priority TEXT, company_type TEXT,
+        recommendation TEXT, tracker_status TEXT, disposition TEXT, action TEXT,
+        existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT,
+        date_added TEXT, notes TEXT, recruiter TEXT, hiring_manager TEXT,
+        last_seen TEXT, fingerprint TEXT, previous_job_id TEXT, raw_context TEXT, score_source TEXT
+    )"""
+    )
+    for job_id, company in [("jobA", "CompanyA"), ("jobB", "CompanyB")]:
+        c.execute(
+            """
+            INSERT INTO jobs (
+                job_id, company, position, location, raw_context,
+                tracker_status, fit_score, recommendation, action, reason, score_source
+            ) VALUES (?, ?, 'Engineer', 'Salt Lake City, UT', 'engineer',
+                      'Applied', 90, '★★★★★ Apply Now', 'Already Applied', 'manual override', 'manual')
+            """,
+            (job_id, company),
+        )
+    conn.commit()
+    conn.close()
+
+    handle_clear_score_override(target="CompanyA", db_path=str(db_path), csv_path=str(csv_path))
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = {r["job_id"]: dict(r) for r in conn.execute("SELECT * FROM jobs").fetchall()}
+    conn.close()
+
+    assert rows["jobA"]["score_source"] == "parser"
+    assert rows["jobB"]["score_source"] == "manual"
+    assert rows["jobB"]["fit_score"] == 90
+

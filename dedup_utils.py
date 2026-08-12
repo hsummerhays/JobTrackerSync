@@ -44,6 +44,30 @@ def normalize_string(s):
     return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
 
+# Trailing corporate-entity suffixes that don't identify *which* company a
+# name refers to -- "Wheeler Machinery Company" and "Wheeler Machinery Co"
+# are the same employer, but one source (an application confirmation PDF)
+# spells the suffix out while another (a listing scrape) abbreviates it.
+# Stripped (not just normalized) so both forms canonicalize identically.
+_COMPANY_SUFFIX_RE = re.compile(
+    r'\s*[,]?\s*\b(company|co|corporation|corp|incorporated|inc|limited|ltd|llc|llp|lp|group|holdings)\.?\s*$',
+    re.IGNORECASE
+)
+
+
+def normalize_company_for_matching(company):
+    """Strip trailing corporate-suffix words for identity matching, so
+    'Wheeler Machinery Company' and 'Wheeler Machinery Co' resolve to the
+    same canonical company. Repeats to handle chained suffixes (e.g. 'Foo
+    Group Inc')."""
+    s = str(company or "").strip()
+    prev = None
+    while prev != s:
+        prev = s
+        s = _COMPANY_SUFFIX_RE.sub('', s).strip()
+    return s
+
+
 def get_status_rank(status):
     return STATUS_RANKS.get(status, 0)
 
@@ -96,10 +120,24 @@ def merge_delimited_field(base_value, other_value):
     return f"{FIELD_DELIMITER}".join(items)
 
 
+def normalize_title(title: str) -> str:
+    """Normalize job title for deduplication keys, mapping standalone Roman numeral
+    level indicators (I, II, III, IV, V) to Arabic digits (1, 2, 3, 4, 5)."""
+    if not title:
+        return ""
+    ROMAN_MAP = {"i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5"}
+    return re.sub(
+        r'\b(i|ii|iii|iv|v)\b',
+        lambda m: ROMAN_MAP.get(m.group(1).lower(), m.group(1)),
+        str(title),
+        flags=re.IGNORECASE
+    )
+
+
 def canonical_key(company, position, date_added):
     """Group rows by company + position + date, not company + date alone --
     a company can legitimately post several different jobs on the same day."""
-    return f"{normalize_string(company)}|{normalize_string(position)}|{date_added}"
+    return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{date_added}"
 
 
 def normalize_location(loc: str) -> str:
@@ -170,8 +208,19 @@ def normalize_location(loc: str) -> str:
 def canonical_job_key(company, position, location):
     """Group parsed jobs by company + position + location (no date), used
     while scanning a single run to catch the same posting appearing on
-    multiple pages/PDFs before it's ever written to the tracker."""
-    return f"{normalize_string(company)}|{normalize_string(position)}|{normalize_string(normalize_location(location))}"
+    multiple pages/PDFs before it's ever written to the tracker. This is
+    also what gets stored as a row's Fingerprint and recomputed from
+    current fields on every clean_existing_tracker() pass -- so it must
+    stay a strict, literal identity key. It deliberately does NOT apply
+    normalize_company_for_matching()'s corporate-suffix stripping: doing
+    so once changed 484 stored fingerprints in one pass and collapsed
+    several *unrelated* pre-existing rows (e.g. two independently-tracked
+    "Podium" rows, "Cox Automotive" vs "Cox Automotive Inc.") into
+    fingerprint collisions that the write-path's duplicate-fingerprint
+    guard then silently dropped -- including a human-Rejected row. Suffix-
+    aware equivalence belongs only in the local merge-decision comparison
+    (see parse_jobs.py's ingestion loop), never in the stored identity key."""
+    return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{normalize_string(normalize_location(location))}"
 
 
 
