@@ -22,6 +22,7 @@ from dedup_utils import (
     normalize_string,
     normalize_location,
     normalize_company_for_matching,
+    normalize_title,
     locations_compatible,
     title_similarity,
     TERMINAL_STATUSES,
@@ -41,6 +42,7 @@ console = Console()
 
 # Rules and configuration constants
 CONFIG_PATH = "config.json"
+REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
 
 # Rule 8 Skip list (compiled regex patterns)
 SKIP_KEYWORDS = [
@@ -290,6 +292,30 @@ def is_valid_company(company, provider=None):
     # ends in "at <word>" immediately preceded by a job-title keyword.
     title_role_words = r'(engineer|developer|manager|analyst|specialist|director|architect|designer|consultant|coordinator|administrator|representative|associate|scientist|recruiter|technician|lead)'
     if re.search(title_role_words + r'\b.*\bat\s+\S+\s*$', comp_lower):
+        return False
+
+    # Reject if company name is composed entirely of job-title keywords
+    # (e.g. "Senior Software Engineer" captured as company when company/title reversed).
+    JOB_TITLE_ROLE_WORDS = {
+        "senior", "junior", "lead", "principal", "staff", "architect", "software",
+        "engineer", "developer", "manager", "analyst", "specialist", "director",
+        "designer", "consultant", "coordinator", "administrator", "representative",
+        "associate", "scientist", "recruiter", "technician", "backend", "frontend",
+        "fullstack", "full-stack", "full", "stack", "devops", "sde", "swe", "qa",
+        "engineering"
+    }
+    comp_toks = [w.strip(".,-()") for w in comp_lower.split() if w.strip(".,-()")]
+    if comp_toks and all(w in JOB_TITLE_ROLE_WORDS for w in comp_toks):
+        return False
+
+    # Reject benefit descriptions, employment terms, UI navigation, and generic AI/MRI acronyms
+    junk_patterns = [
+        r'\bvacation\b', r'\bpaid time off\b', r'\bpto\b', r'\bpositive culture\b',
+        r'\bculture & values\b', r'\bonly on w2\b', r'\bw2\b', r'\b1099\b', r'\bc2c\b',
+        r'\bcorp to corp\b', r'\bmore jobs\b', r'\bmore remote jobs\b', r'➞',
+        r'\bgenai\b', r'\bgenerative ai\b', r'^\s*mri\s*$'
+    ]
+    if any(re.search(pat, comp_lower) for pat in junk_patterns):
         return False
 
     # Reject if contains slash or backslash (typically indicates a tech stack heading)
@@ -2272,6 +2298,13 @@ def normalize_ocr_spacing(text):
     text = re.sub(r'(?i)\bseen\s+firs\s+t\b', 'seen first', text)
     text = re.sub(r'(?i)\bpac\s+k\s+yak\b', 'pack yak', text)
     text = re.sub(r'(?i)\binsurance\s+of\s+fice\b', 'Insurance Office', text)
+    text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
+    text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
+    # State abbreviation split into two single letters by the same kerning
+    # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
+    # to right after a comma (where a state code appears) rather than any two
+    # adjacent single capital letters, so it can't misfire on unrelated text.
+    text = re.sub(r',(\s*)([A-Z])\s+([A-Z])\b', r',\1\2\3', text)
     # Opposite artifact: some source layouts (e.g. Glassdoor's "Jobs you might
     # like" card) render a company's two-word name with no literal space
     # character between them at all (the visual gap is CSS-only), so text
@@ -4774,7 +4807,8 @@ def main():
                                         # instead of silently collapsing the rows.
                                         if (
                                             not possible_duplicate_note
-                                            and normalize_string(ej_company) == normalize_string(job['company'])
+                                            and normalize_string(normalize_company_for_matching(ej_company))
+                                                == normalize_string(normalize_company_for_matching(job['company']))
                                             and locations_compatible(ej_location, job['location'])
                                             and title_similarity(ej_title, job['title']) >= 0.7
                                         ):
@@ -4806,17 +4840,19 @@ def main():
                                             # of creating a duplicate row. This used to
                                             # delete the existing row's workflow entirely,
                                             # which lost real application history.
-                                            reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                            if reapply_note not in ej.get("Notes", ""):
-                                                ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
+                                            if true_last_date > true_first_date:
+                                                reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                                if reapply_note not in ej.get("Notes", ""):
+                                                    ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
                                             existing_match = ej
                                             is_duplicate = True
                                         else:
                                             # Reapply window lapsed -- treat as a genuinely
                                             # new opportunity, linked back to the prior
                                             # application via Previous Job ID.
-                                            reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                            if true_last_date > true_first_date:
+                                                reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                                job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                             job["previous_job_id"] = ej_job_id
                                         break
 
@@ -4826,8 +4862,9 @@ def main():
                                     # expired posting via Previous Job ID -- the old row is kept
                                     # as history instead of being deleted.
                                     if ej_status == "Expired":
-                                        reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                        job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                        if true_last_date > true_first_date:
+                                            reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                            job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
                                         job["previous_job_id"] = ej_job_id
                                         break
 
@@ -4835,19 +4872,18 @@ def main():
                                         existing_match = ej
                                         is_duplicate = True
                                         # Record a chronologically correct relisting note on the
-                                        # existing row. This runs for any status that falls through
-                                        # to the 90-day window (e.g. Rejected, Cancelled, Ghosted,
-                                        # New) so the note is present regardless of ingestion order.
-                                        relisting_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                        if relisting_note not in ej.get("Notes", ""):
-                                            # Remove any stale/backward relisting note first.
-                                            import re as _re
-                                            existing_notes = _re.sub(
-                                                r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
-                                                '',
-                                                ej.get("Notes", "")
-                                            ).strip().strip(';').strip()
-                                            ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
+                                        # existing row only if seen on different dates.
+                                        if true_last_date > true_first_date:
+                                            relisting_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                            if relisting_note not in ej.get("Notes", ""):
+                                                # Remove any stale/backward relisting note first.
+                                                import re as _re
+                                                existing_notes = _re.sub(
+                                                    r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
+                                                    '',
+                                                    ej.get("Notes", "")
+                                                ).strip().strip(';').strip()
+                                                ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
                                         break
 
                                 except (ValueError, TypeError):

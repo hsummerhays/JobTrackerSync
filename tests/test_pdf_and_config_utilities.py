@@ -193,6 +193,30 @@ class TestNormalizeOcrSpacingAndCleanLocation(unittest.TestCase):
     def test_normalize_ocr_spacing_fixes_split_words(self):
         self.assertIn("first", normalize_ocr_spacing("firs t"))
 
+    def test_normalize_ocr_spacing_fixes_west_valley_split(self):
+        """2026-08-13 production regression: a real LinkedIn digest rendered
+        Wheeler Machinery Co.'s location as 'WestV alley City    , UT
+        (On-site)' -- the stray space lands mid-word between two multi-letter
+        fragments ('WestV' / 'alley'), which the existing single-stray-letter
+        heuristics don't catch, so the corrupted location never matched the
+        already-tracked 'Salt Lake City, UT' Wheeler row's canonical key and
+        the posting was silently re-added as an unrecognized duplicate."""
+        self.assertIn("West Valley", normalize_ocr_spacing("WestV alley City    , UT (On-site)"))
+
+    def test_normalize_ocr_spacing_fixes_technologies_split(self):
+        self.assertIn("Technologies", normalize_ocr_spacing("Red Hawk Technolog ies LLC"))
+
+    def test_normalize_ocr_spacing_fixes_split_state_abbreviation(self):
+        """2026-08-13 production regression: 'Seattle, W A Remote' and
+        'Bellevue, W A' -- a state abbreviation split into two single letters
+        by the same kerning artifact. Neither existing general heuristic
+        catches this (both require one side to be a 2+ letter word, but here
+        both fragments are single letters)."""
+        self.assertIn(", WA", normalize_ocr_spacing("Seattle, W A Remote"))
+        self.assertIn(", WA", normalize_ocr_spacing("Bellevue, W A – Remote"))
+        # Unaffected: a state code that was never split shouldn't be touched.
+        self.assertIn(", TX", normalize_ocr_spacing("Houston, TX"))
+
     def test_clean_location_strips_trailing_ui_labels(self):
         self.assertEqual(_clean_location("Remote View Details"), "Remote")
 

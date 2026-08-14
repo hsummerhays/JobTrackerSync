@@ -258,6 +258,37 @@ class TestReapplyAndDuplicateDetection(MainIntegrationTestBase):
         self.assertEqual(wheeler_rows[0]["Job ID"], "wheeler1")
         self.assertEqual(wheeler_rows[0]["Tracker Status"], "Applied")
 
+    def test_possible_duplicate_flag_uses_suffix_relaxed_company_match(self):
+        """2026-08-13 production regression: the strict auto-merge match
+        above already treats 'Wheeler Machinery Company' and 'Wheeler
+        Machinery Co' as the same employer (normalize_company_for_matching),
+        but the softer "flag for manual review" fallback compared companies
+        with the exact (non-suffix-relaxed) normalize_string() instead --
+        stricter than the tier above it, so a suffix-variant company with a
+        merely-similar (not exact) title never got flagged as a possible
+        duplicate at all; it silently became an unrelated-looking new row."""
+        self._write_tracker([{
+            "Job ID": "wheeler1", "Company": "Wheeler Machinery Company", "Position": "Senior Full Stack Software Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2024-01-01",
+            "Score Source": "manual", "Fit Score": "95",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-10")
+        self._write_pdf(pdf_dir)
+
+        # Same employer (suffix variant) and same location, but a merely
+        # *similar* title ("Full Stack..." vs "Senior Full Stack...") --
+        # not an exact/canonical match, so this must not auto-merge, but it
+        # must be flagged for human review instead of silently ignored.
+        self._run_main(pdf_dir, pages_text=(
+            "Full Stack Software Engineer\nWheeler Machinery Co\nSalt Lake City, UT\n",
+        ))
+
+        rows = self._read_tracker()
+        wheeler_rows = [r for r in rows if "Wheeler" in r["Company"]]
+        self.assertEqual(len(wheeler_rows), 2)
+        new_row = [r for r in wheeler_rows if r["Job ID"] != "wheeler1"][0]
+        self.assertIn("Possible duplicate of existing job wheeler1", new_row["Notes"])
+
     def test_duplicate_within_90_days_is_merged_not_duplicated(self):
         self._write_tracker([{
             "Job ID": "existing1", "Company": "Acme Corp", "Position": "Senior Software Engineer",

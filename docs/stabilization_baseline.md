@@ -69,6 +69,45 @@ shared by the CSV path too, not a gap introduced by this fix; those 14
 needed the same manual judgment call during the original prune and would
 slip past the CSV-side filter identically if ever encountered there.
 
+## Known parser-quality issues (flagged 2026-08-13, not yet fixed)
+
+A production run on 2026-08-13 surfaced several rows where the parser
+extracted the wrong field into the wrong column. Diagnosing *why* requires
+the original source PDF text (not available in this environment), so these
+are documented here rather than guessed at blindly — fixing the underlying
+`parse_job_cards_from_text()` layout logic without the source risks
+introducing new mis-parses elsewhere. Two related bugs *were* fixed this
+same session (see `normalize_ocr_spacing()`'s `WestV alley`/`Technolog
+ies`/split-state-abbreviation corrections, and the `possible_duplicate_note`
+company-suffix-matching fix) — the items below are the ones that still need
+source-PDF-in-hand investigation:
+
+- **Company/Position reversed — ZipRecruiter "X is looking for candidates
+  like you!" digest format.** Job IDs `62e6e5b6ecc7`, `1f417c9bc270`,
+  `bc73b0bc8c9e4caf9f0af19eb6e3b8be`, `9302f8c16c0b49f687c49dde40e5de2d`: all
+  four have `Company = "Software Developer II"` and `Position = "Casne
+  Engineering, Inc. – Bellevue, W A –"` (or a near variant) — title and
+  company are swapped, and the location fragment is glued onto the end of
+  the position field. This has reproduced identically across at least 4
+  separate PDFs from 2026-06-14 through 2026-08-13, so it's a stable
+  provider-layout bug, not a one-off OCR glitch — worth fixing once a
+  sample PDF from this provider/format is available.
+- **Non-company metadata captured as Company** — Job ID `8e14f158e5d944b9a3a432d535ae8784`:
+  `Company = "Inventory & Food Cost Platform(Only on W2)"` (an
+  employment-type disclaimer, not an employer name), from an "IntelliSearch
+  Alert" digest PDF.
+- **Ambiguous/truncated company names** — Job IDs `3065db7477f44571bdee5c932432a2a1`
+  (`Company = "MRI"`, from a "MRI is looking for candidates like you!"
+  ZipRecruiter digest) and `031f8ca9455348faba639e93c8d0434c` (`Company =
+  "GenAI"`, from the same IntelliSearch Alert PDF as the metadata-as-company
+  row above). Unclear whether these are genuinely truncated real company
+  names or the provider's own placeholder text; needs the source PDF to
+  confirm.
+
+These rows are otherwise valid, trackable jobs (not deleted or hidden) —
+they just have swapped/wrong Company or Position text and should be reviewed
+manually until the underlying parser layout gap is fixed.
+
 ## Restoring from this baseline
 
 ```

@@ -274,9 +274,18 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Your IntelliSearch Alert: Remote Senior Software Engineer at TURING"))
         self.assertFalse(is_valid_company("Your Ladders Alert"))
 
-    def test_rejects_title_shaped_text_ending_in_at_company(self):
-        self.assertFalse(is_valid_company("Remote Senior Software Engineer at TURING"))
-        self.assertFalse(is_valid_company("Senior Backend Developer at Acme"))
+    def test_rejects_pure_job_title(self):
+        self.assertFalse(is_valid_company("Senior Software Engineer"))
+        self.assertFalse(is_valid_company("Full Stack Developer"))
+        self.assertFalse(is_valid_company("Lead Backend Engineer"))
+
+    def test_rejects_junk_benefit_and_ui_terms(self):
+        self.assertFalse(is_valid_company("Vacation & Paid Time Off"))
+        self.assertFalse(is_valid_company("Inventory & Food Cost Platform(Only on W2)"))
+        self.assertFalse(is_valid_company("Full-Time • Positive Culture & Values"))
+        self.assertFalse(is_valid_company("More jobs ➞ More remote jobs"))
+        self.assertFalse(is_valid_company("GenAI"))
+        self.assertFalse(is_valid_company("MRI"))
 
 
 if __name__ == "__main__":
