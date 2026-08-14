@@ -206,6 +206,9 @@ class TestNormalizeOcrSpacingAndCleanLocation(unittest.TestCase):
     def test_normalize_ocr_spacing_fixes_technologies_split(self):
         self.assertIn("Technologies", normalize_ocr_spacing("Red Hawk Technolog ies LLC"))
 
+    def test_normalize_ocr_spacing_fixes_corporation_split(self):
+        self.assertIn("Corporation", normalize_ocr_spacing("Smartlocating Corp oration"))
+
     def test_normalize_ocr_spacing_fixes_split_state_abbreviation(self):
         """2026-08-13 production regression: 'Seattle, W A Remote' and
         'Bellevue, W A' -- a state abbreviation split into two single letters

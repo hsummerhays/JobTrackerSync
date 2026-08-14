@@ -480,7 +480,15 @@ def write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='raise
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction=extrasaction)
             writer.writeheader()
             writer.writerows(rows)
-        os.replace(tmp_path, tracker_path)
+        # Windows-safe atomic replace with bounded retry for transient file locks
+        for attempt in range(5):
+            try:
+                os.replace(tmp_path, tracker_path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     except BaseException:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -2346,6 +2354,7 @@ def normalize_ocr_spacing(text):
     # avoids re-splitting this logic across two places in the function.
     text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
     text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
+    text = re.sub(r'(?i)\bcorp\s+oration\b', 'Corporation', text)
     # State abbreviation split into two single letters by the same kerning
     # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
     # to right after a comma (where a state code appears) rather than any two
@@ -3739,11 +3748,18 @@ def handle_status_update(query, status, notes=None):
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     # Update SQLite database
-    cursor.execute("""
-        UPDATE jobs 
-        SET tracker_status = ?, review_status = ?, action = ?, disposition = ? 
-        WHERE job_id = ?
-    """, (status, review_status, action, disposition, job_id))
+    if notes is not None:
+        cursor.execute("""
+            UPDATE jobs 
+            SET tracker_status = ?, review_status = ?, action = ?, disposition = ?, notes = ? 
+            WHERE job_id = ?
+        """, (status, review_status, action, disposition, notes, job_id))
+    else:
+        cursor.execute("""
+            UPDATE jobs 
+            SET tracker_status = ?, review_status = ?, action = ?, disposition = ? 
+            WHERE job_id = ?
+        """, (status, review_status, action, disposition, job_id))
     
     cursor.execute("SELECT 1 FROM job_workflow WHERE job_id = ?", (job_id,))
     if cursor.fetchone():

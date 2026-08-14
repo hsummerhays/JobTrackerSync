@@ -247,6 +247,39 @@ class TestHandleStatusUpdate(HandlerTestBase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["Tracker Status"], "Applied")
 
+    def test_handle_status_update_note_preservation_and_synchronization(self):
+        """Contract: run handle_status_update() with an existing note and notes=None,
+        verify the note is unchanged; then run it with a new note and verify both
+        jobs.notes and job_workflow.notes contain the new value."""
+        conn = self._init_db()
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, date_added, notes) VALUES ('id1', 'Acme Corp', 'Engineer', '2026-01-01', 'Initial Note')"
+        )
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, notes) VALUES ('id1', 'New', 'Initial Note')"
+        )
+        conn.commit()
+        conn.close()
+        self._init_tracker(rows=[{"Job ID": "id1", "Company": "Acme Corp", "Position": "Engineer", "Tracker Status": "New", "Notes": "Initial Note"}])
+
+        # 1. Update status with notes=None -> Note must remain unchanged in both jobs and job_workflow
+        self.assertTrue(handle_status_update("id1", "Applied", notes=None))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT tracker_status, notes FROM jobs WHERE job_id='id1'").fetchone()
+        wf_row = conn.execute("SELECT tracker_status, notes FROM job_workflow WHERE job_id='id1'").fetchone()
+        conn.close()
+        self.assertEqual(job_row, ("Applied", "Initial Note"))
+        self.assertEqual(wf_row, ("Applied", "Initial Note"))
+
+        # 2. Update status with a new note -> Both jobs.notes and job_workflow.notes must contain the new value
+        self.assertTrue(handle_status_update("id1", "Rejected", notes="Updated rejection note"))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT tracker_status, notes FROM jobs WHERE job_id='id1'").fetchone()
+        wf_row = conn.execute("SELECT tracker_status, notes FROM job_workflow WHERE job_id='id1'").fetchone()
+        conn.close()
+        self.assertEqual(job_row, ("Rejected", "Updated rejection note"))
+        self.assertEqual(wf_row, ("Rejected", "Updated rejection note"))
+
 
 class TestHandleInteractiveUpdate(HandlerTestBase):
 

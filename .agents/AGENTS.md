@@ -40,6 +40,7 @@
 
 - **Git Rules:**
   - Always run tests before a commit.
+  - If there are both staged and unstaged changes, explicitly warn the user before committing to avoid accidental partial commits or unnecessary merges.
 
 - **Scoring & Priority Rules:**
   - Priority is always governed by Recommendation first, then Action. `Action = Apply` cannot elevate a Skip or Low job into P1/P2. The order is: Skip/Low → P4, Maybe → P3, Strong/Apply Now + Apply → P1/P2.

@@ -10,6 +10,7 @@ Use this skill when the user asks to "wrap up for today", "commit and squash", o
 1. **Always run tests first** (`pytest`) before committing. Do not proceed if tests fail.
 2. **Always pull** before committing/pushing if there is a remote.
 3. **Always ask the user for approval** on the commit message before committing.
+4. **Warn on mixed staged and unstaged changes**: If there are both staged and unstaged changes, explicitly warn the user before committing to prevent partial commits or unnecessary merge conflicts.
 
 ## Useful Commands
 

@@ -24,7 +24,7 @@ Each run prints a sync report followed by a live pipeline health summary and app
 
 ```text
 =========================================
-          JOB TRACKER SYNC REPORT        
+          JOB TRACKER SYNC REPORT
 =========================================
 Jobs tracked:        199
 New this run:        18
@@ -44,7 +44,7 @@ Top Missing Skills:
 =========================================
 
 =========================================
-            PIPELINE HEALTH              
+            PIPELINE HEALTH
 =========================================
 Tracked:               199
 Active:                181
@@ -57,7 +57,7 @@ Interview Rate:       14.3% (1 of 7 active applications)
 =========================================
 
 =========================================
-          APPLICATION PIPELINE           
+          APPLICATION PIPELINE
 =========================================
 Active Pipeline
   Phone Screen:         0
@@ -238,6 +238,7 @@ python -m pytest tests/ -v
 **11. AI Agent Integration**
 
 This project includes built-in AI agent skills (located in `.agents/skills/`) to automate common workflows using AI assistants:
+
 - **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
 - **`sync_jobs`**: Automates the parsing pipeline (opens a folder picker or accepts `--pdf-dir`).
 - **`daily_dashboard`**: Displays formatted analytics and action queues.
@@ -282,13 +283,15 @@ This discovery reinforced an important architectural principle: job providers of
 The roadmap focuses on making parsed data more actionable and improving workflow visibility.
 
 ### 1. Polish and Reliability
-- [x] **More unit tests** around parsing and merge logic. *(437 tests across 25 modules as of v1.3.6)*
+
+- [x] **More unit tests** around parsing and merge logic. _(439 tests across 25 modules as of v1.3.6)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
 - [ ] **Pipeline Parallelism**: Refactor parser into a pipeline separating file discovery, PDF extraction (bounded worker pools to prevent Windows hangs), normalization, single-stage deduplication, and database writing.
 
 ### 2. Analytics Dashboard
+
 - [ ] **Best sources by conversion**: Compare response, interview, and offer rates by source job board (Indeed, LinkedIn, Glassdoor, etc.).
 - [ ] **Applications by week**: Weekly volume metrics to monitor application consistency.
 - [ ] **Average time from discovery to application**: Measure response latency from finding a job to applying.
@@ -296,17 +299,19 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 - [ ] **Pipeline Funnel**: CRM-style conversion stages (Tracked → Applied → Recruiter Screen → Technical → Final → Offer → Accepted) and Eligible Application Rate metrics.
 
 ### 3. Workflow Enhancements
+
 - [ ] **Repost Detection**: Detect reposts of previously closed/rejected positions.
 - [ ] **Reopened Hiring Highlights**: Flag companies that have reopened hiring after a previous rejection.
 - [ ] **Company Status Separation**: Surface "companies hiring again" separately from "new companies."
 - [ ] **Aging & Follow-up Alerts**: Flag stale opportunities (e.g., New > 30 days, Applied > 14 days, Interview > 7 days) to prompt follow-ups.
 
 ### 4. Nice-to-Have
+
 - [ ] **Small Local Web UI**: A lightweight local web interface (e.g., Flask/FastAPI backend with a clean HTML/JS dashboard) instead of opening CSVs directly.
 - [ ] **Search and Filtering**: Live search, status filters, and fit score thresholds.
 - [ ] **Charts Over Time**: Visualizations of application volume and funnel conversion rates.
 - [ ] **AI Tailoring & Analysis**: AI resume tailoring suggestions based on skill gap analysis and automated degree requirement detection.
 
 ### 5. Scoring Enhancements
-- [ ] **Title Exclusions / Penalty**: Observe recommendations over time, and consider adding a penalty (e.g. `score_role -= 10`) for roles with frequently mismatched titles (like `qa`, `test`, `salesforce`, `servicenow`, `wordpress`, `php`, `ios`, `android`) if false positives become an issue.
 
+- [ ] **Title Exclusions / Penalty**: Observe recommendations over time, and consider adding a penalty (e.g. `score_role -= 10`) for roles with frequently mismatched titles (like `qa`, `test`, `salesforce`, `servicenow`, `wordpress`, `php`, `ios`, `android`) if false positives become an issue.

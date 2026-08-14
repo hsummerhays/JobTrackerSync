@@ -125,7 +125,7 @@ an end-to-end contract of what must never change in the real tracker.
 
 ## What's frozen
 
-- **Code**: git tag `recovery-baseline-20260812`, commit `465a3e88b5bb`.
+- **Code**: git tag `v1.3.2-recovery-baseline-20260812`, commit `465a3e88b5bb`.
 - **Data**: point-in-time copies of the live tracker, stored locally
   (untracked — same PII/size reasons `jobs.db` and `master_tracker.csv`
   are already gitignored):
@@ -210,5 +210,5 @@ Code (2026-08-12, still the last tagged baseline — the 2026-08-13/14 code
 changes are not yet tagged, pending separate review):
 
 ```
-git checkout recovery-baseline-20260812 -- parse_jobs.py
+git checkout v1.3.2-recovery-baseline-20260812 -- parse_jobs.py
 ```
