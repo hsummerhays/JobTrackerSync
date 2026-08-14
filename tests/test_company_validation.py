@@ -285,7 +285,35 @@ class TestIsValidCompany(unittest.TestCase):
         self.assertFalse(is_valid_company("Full-Time • Positive Culture & Values"))
         self.assertFalse(is_valid_company("More jobs ➞ More remote jobs"))
         self.assertFalse(is_valid_company("GenAI"))
-        self.assertFalse(is_valid_company("MRI"))
+
+    def test_bare_mri_is_a_legitimate_company_name(self):
+        """2026-08-13: a ZipRecruiter posting ('Compass21 Application
+        Developer / MRI / Houston, TX - Remote') showed this is a real,
+        unambiguously-bounded employer name, not junk -- confirmed against
+        the raw extracted PDF text, not guessed. The exact-match '^mri$'
+        rejection this test used to assert was a false positive with no
+        counter-evidence of a junk 'MRI' company ever appearing in this
+        dataset."""
+        self.assertTrue(is_valid_company("MRI"))
+
+    def test_bare_fullstack_is_a_legitimate_company_name(self):
+        """2026-08-13: confirmed against raw source text ('Principal Agentic
+        Engineer - Remote - USA / FullStack . Salt Lake City, UT (Remote)',
+        the same Title/Company/Location digest layout as its correctly-parsed
+        neighbors in the same card) that 'FullStack' is a real company name
+        here, not a mis-swapped skill keyword -- the JOB_TITLE_ROLE_WORDS
+        rejection ('fullstack' is in that set as a skill term) was a false
+        positive on this specific single-word company name."""
+        self.assertTrue(is_valid_company("FullStack"))
+
+    def test_lowercase_domain_style_company_name_is_legitimate(self):
+        """2026-08-13: confirmed against raw source text ('Senior Software
+        Engineering Consultant / talentarchitect.com / Remote') that
+        'talentarchitect.com' is the real company name in a Title/Company/
+        Location swap, not junk -- the generic starts-with-lowercase-letter
+        rejection would otherwise reject this deliberately-lowercase,
+        domain-styled real company name."""
+        self.assertTrue(is_valid_company("talentarchitect.com"))
 
 
 if __name__ == "__main__":

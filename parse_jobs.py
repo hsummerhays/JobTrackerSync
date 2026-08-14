@@ -264,8 +264,19 @@ def is_valid_company(company, provider=None):
     # Reject job board / provider names that should never appear as employer names.
     if comp_lower in AGGREGATOR_PROVIDER_NAMES:
         return False
-    # Whitelist specific known multi-entity/numbered valid companies before generic rejections
-    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics"}
+    # Whitelist specific known multi-entity/numbered valid companies before generic rejections.
+    # "fullstack" is here because it's a real company name (confirmed 2026-08-13
+    # against raw source text: "Principal Agentic Engineer - Remote - USA /
+    # FullStack . Salt Lake City, UT (Remote)", the same "Title / Company .
+    # Location" digest layout as its correctly-parsed neighbors in the same
+    # card) that the generic "composed entirely of job-title/skill keywords"
+    # rejection below would otherwise false-positive on, since "full stack" is
+    # also a common role/skill term. "talentarchitect.com" is here because
+    # it's a real, deliberately-lowercase company/domain name (confirmed
+    # 2026-08-13 against raw source text: "Senior Software Engineering
+    # Consultant / talentarchitect.com / Remote") that the generic
+    # starts-with-lowercase-letter rejection below would otherwise reject.
+    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics", "fullstack", "talentarchitect.com"}
     if comp_lower in whitelisted_companies:
         return True
 
@@ -308,12 +319,12 @@ def is_valid_company(company, provider=None):
     if comp_toks and all(w in JOB_TITLE_ROLE_WORDS for w in comp_toks):
         return False
 
-    # Reject benefit descriptions, employment terms, UI navigation, and generic AI/MRI acronyms
+    # Reject benefit descriptions, employment terms, UI navigation, and generic AI acronyms
     junk_patterns = [
         r'\bvacation\b', r'\bpaid time off\b', r'\bpto\b', r'\bpositive culture\b',
         r'\bculture & values\b', r'\bonly on w2\b', r'\bw2\b', r'\b1099\b', r'\bc2c\b',
         r'\bcorp to corp\b', r'\bmore jobs\b', r'\bmore remote jobs\b', r'➞',
-        r'\bgenai\b', r'\bgenerative ai\b', r'^\s*mri\s*$'
+        r'\bgenai\b', r'\bgenerative ai\b'
     ]
     if any(re.search(pat, comp_lower) for pat in junk_patterns):
         return False
@@ -993,10 +1004,20 @@ def clean_existing_tracker(tracker_path):
                     _canon_added = date.fromisoformat(canonical.get("Date Added", ""))
                     _last_seen = date.fromisoformat(canonical.get("Last Seen", ""))
                     bad_note_pat = re.compile(
-                        r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*'
+                        # Non-greedy `.*?` (not `[^;.]*`) so this can cross the
+                        # semicolon in the current "Re-listed on X; originally
+                        # seen Y." format -- the old pattern could only ever
+                        # match note variants with no punctuation between
+                        # "Re-listed" and "originally seen" (e.g. "Re-listed
+                        # after expiring (originally seen Y)"), so a note
+                        # already in the current format was never actually
+                        # stripped here and relisting tags only ever
+                        # accumulated instead of being replaced.
+                        r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*'
                     )
                     # Remove all existing relisting notes; we'll add a correct one if dates differ.
-                    canon_notes = bad_note_pat.sub('', canon_notes).strip().strip(';').strip()
+                    canon_notes = bad_note_pat.sub('', canon_notes)
+                    canon_notes = re.sub(r'(?:\s*;\s*)+', '; ', canon_notes).strip().strip(';').strip()
                     if _last_seen > _canon_added:
                         relisting_note = (
                             f"Re-listed on {_last_seen.isoformat()}; originally seen {_canon_added.isoformat()}."
@@ -2298,13 +2319,6 @@ def normalize_ocr_spacing(text):
     text = re.sub(r'(?i)\bseen\s+firs\s+t\b', 'seen first', text)
     text = re.sub(r'(?i)\bpac\s+k\s+yak\b', 'pack yak', text)
     text = re.sub(r'(?i)\binsurance\s+of\s+fice\b', 'Insurance Office', text)
-    text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
-    text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
-    # State abbreviation split into two single letters by the same kerning
-    # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
-    # to right after a comma (where a state code appears) rather than any two
-    # adjacent single capital letters, so it can't misfire on unrelated text.
-    text = re.sub(r',(\s*)([A-Z])\s+([A-Z])\b', r',\1\2\3', text)
     # Opposite artifact: some source layouts (e.g. Glassdoor's "Jobs you might
     # like" card) render a company's two-word name with no literal space
     # character between them at all (the visual gap is CSS-only), so text
@@ -2320,6 +2334,23 @@ def normalize_ocr_spacing(text):
     text = re.sub(r'\b([a-zA-Z]{2,})\s+([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\b(?![#+])', r'\1\2', text)
     # 2. Start of word separated by space: "p hoto" -> "photo" (consonant followed by length >=2)
     text = re.sub(r'\b([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\s+([a-zA-Z]{2,})\b', r'\1\2', text)
+    # These two run *after* the general heuristics above, not before: the raw
+    # extraction actually splits "West Valley" into four fragments ("W", "est",
+    # "V", "alley"), which rules 1-2 partially reassemble into "WestV alley"
+    # (joining "W"+"est"+"V" but leaving "alley" separate, since both halves
+    # are now 5-letter words and neither general rule matches word+word). A
+    # targeted fix placed *before* the general rules never sees that
+    # intermediate form and silently no-ops. Same reasoning doesn't apply to
+    # "Technolog ies" (neither fragment is a single letter, so the general
+    # rules never touch it either way) but keeping both fixes together here
+    # avoids re-splitting this logic across two places in the function.
+    text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
+    text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
+    # State abbreviation split into two single letters by the same kerning
+    # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
+    # to right after a comma (where a state code appears) rather than any two
+    # adjacent single capital letters, so it can't misfire on unrelated text.
+    text = re.sub(r',(\s*)([A-Z])\s+([A-Z])\b', r',\1\2\3', text)
     # 3. Same kerning artifact hitting digit runs, most visibly a ZIP code
     # split apart ("Draper, UT 8 4 0 2 0" instead of "84020"). Scoped to 5-9
     # single digits (ZIP or ZIP+4) so it doesn't swallow legitimate spaced
@@ -4839,11 +4870,24 @@ def main():
                                             # the existing Applied/Interview record instead
                                             # of creating a duplicate row. This used to
                                             # delete the existing row's workflow entirely,
-                                            # which lost real application history.
+                                            # which lost real application history. Always
+                                            # strip any stale/backward/same-day relisting note
+                                            # first (same reasoning as the general age_days<=90
+                                            # branch below) so a same-day rediscovery doesn't
+                                            # leave a previous run's stale note sitting there
+                                            # forever.
+                                            import re as _re
+                                            existing_notes = _re.sub(
+                                                r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
+                                                '',
+                                                ej.get("Notes", "")
+                                            )
+                                            existing_notes = _re.sub(r'(?:\s*;\s*)+', '; ', existing_notes).strip().strip(';').strip()
                                             if true_last_date > true_first_date:
                                                 reapply_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                                if reapply_note not in ej.get("Notes", ""):
-                                                    ej["Notes"] = (ej.get("Notes", "") + "; " + reapply_note).lstrip("; ")
+                                                ej["Notes"] = (existing_notes + "; " + reapply_note).lstrip("; ")
+                                            else:
+                                                ej["Notes"] = existing_notes
                                             existing_match = ej
                                             is_duplicate = True
                                         else:
@@ -4871,19 +4915,27 @@ def main():
                                     if age_days <= 90:
                                         existing_match = ej
                                         is_duplicate = True
-                                        # Record a chronologically correct relisting note on the
-                                        # existing row only if seen on different dates.
+                                        # Always strip any stale/backward/same-day relisting note
+                                        # first, regardless of whether *this* rediscovery has a
+                                        # real date gap -- otherwise a same-day rediscovery (no
+                                        # gap, so no new note added) leaves a previous run's
+                                        # already-stale note sitting there forever, since the old
+                                        # code only ever stripped inside the "different dates"
+                                        # branch. Record a chronologically correct new note only
+                                        # if seen on different dates -- a same-day rediscovery has
+                                        # no real gap to report.
+                                        import re as _re
+                                        existing_notes = _re.sub(
+                                            r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
+                                            '',
+                                            ej.get("Notes", "")
+                                        )
+                                        existing_notes = _re.sub(r'(?:\s*;\s*)+', '; ', existing_notes).strip().strip(';').strip()
                                         if true_last_date > true_first_date:
                                             relisting_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
-                                            if relisting_note not in ej.get("Notes", ""):
-                                                # Remove any stale/backward relisting note first.
-                                                import re as _re
-                                                existing_notes = _re.sub(
-                                                    r'Re-listed[^;.]*originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
-                                                    '',
-                                                    ej.get("Notes", "")
-                                                ).strip().strip(';').strip()
-                                                ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
+                                            ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
+                                        else:
+                                            ej["Notes"] = existing_notes
                                         break
 
                                 except (ValueError, TypeError):

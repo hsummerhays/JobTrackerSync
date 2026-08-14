@@ -148,6 +148,49 @@ class TestReapplyAndDuplicateDetection(MainIntegrationTestBase):
         self.assertEqual(row["Tracker Status"], "Applied")
         self.assertIn("Re-listed on 2024-01-20", row["Notes"])
 
+    def test_same_day_rediscovery_does_not_add_noise_relisting_note(self):
+        """2026-08-13 regression: rediscovering a posting on the *same* day
+        it was first added produced a meaningless 'Re-listed on X; originally
+        seen X.' note (no actual gap to report) -- the guard against this was
+        already in place for *adding* the note, but a previously-existing
+        stale/same-day note was never cleaned up either, since the cleanup
+        was nested inside the same "different dates" branch."""
+        self._write_tracker([{
+            "Job ID": "existing1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2024-01-01",
+            "Last Seen": "2024-01-01",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-01")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir)
+
+        rows = self._read_tracker()
+        row = next(r for r in rows if r["Company"] == "Acme Corp")
+        self.assertNotIn("Re-listed on 2024-01-01; originally seen 2024-01-01", row["Notes"])
+
+    def test_stale_same_day_relisting_note_is_cleaned_up_on_next_gapped_rediscovery(self):
+        """A same-day noise note left over from a previous run must be
+        stripped (not accumulated alongside) when a later rediscovery with a
+        real date gap adds its own correct note."""
+        self._write_tracker([{
+            "Job ID": "existing1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2024-01-01",
+            "Last Seen": "2024-01-01",
+            "Notes": "Re-listed on 2024-01-01; originally seen 2024-01-01.",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-20")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir)
+
+        rows = self._read_tracker()
+        row = next(r for r in rows if r["Company"] == "Acme Corp")
+        self.assertNotIn("2024-01-01; originally seen 2024-01-01", row["Notes"])
+        self.assertIn("Re-listed on 2024-01-20; originally seen 2024-01-01.", row["Notes"])
+        # Exactly one relisting tag -- the stale one was replaced, not kept alongside.
+        self.assertEqual(row["Notes"].count("Re-listed on"), 1)
+
     def test_reapply_after_60_days_not_cancelled(self):
         self._write_tracker([{
             "Job ID": "existing1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
