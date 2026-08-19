@@ -49,9 +49,16 @@ Valid statuses: `Applied`, `Phone Screen`, `Technical Interview`, `Recruiter Sub
 python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name>
 ```
 
-### 5. Appending a Note
+### 5. Appending or Setting Notes
 ```bash
-python parse_jobs.py --update "<company_name_or_job_id>" --notes "<note_to_append>"
+# Append note to existing notes (preserves prior notes and current status)
+python parse_jobs.py --update "<company_name_or_job_id>" --append-notes "<note_to_append>"
+
+# Or set/replace notes:
+python parse_jobs.py --update "<company_name_or_job_id>" --notes "<new_notes>"
+
+# Update status and append notes at the same time:
+python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name> --append-notes "<note_to_append>"
 ```
 
 ### 7. Rescoring Jobs and Preserving Manual Scores

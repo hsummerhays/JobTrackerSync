@@ -3672,18 +3672,21 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status, notes=None):
-    # Validates status
-    valid_statuses = VALID_STATUSES
-    if status not in valid_statuses:
-        console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
-        return False
-        
+def handle_status_update(query, status=None, notes=None, append_notes=False):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
     if not os.path.exists(db_path):
         console.print("[red]jobs.db not found. Cannot perform database update.[/red]")
+        return False
+        
+    valid_statuses = VALID_STATUSES
+    if status is not None and status not in valid_statuses:
+        console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
+        return False
+        
+    if status is None and notes is None:
+        console.print("[red]Either status or notes must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
@@ -3694,7 +3697,7 @@ def handle_status_update(query, status, notes=None):
 
     # Query database for matches
     cursor.execute("""
-        SELECT job_id, company, position, location, tracker_status
+        SELECT job_id, company, position, location, tracker_status, notes
         FROM jobs
         WHERE job_id = ? OR company LIKE ? OR position LIKE ?
     """, (query, f"%{query}%", f"%{query}%"))
@@ -3714,19 +3717,21 @@ def handle_status_update(query, status, notes=None):
         return False
         
     # Single match found
-    job_id, company, position, location, current_status = matches[0]
+    job_id, company, position, location, current_status, existing_notes = matches[0]
+    
+    effective_status = status if status is not None else (current_status or "New")
     
     # Determine derived fields
     review_status = "Imported"
-    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+    if effective_status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
         review_status = "Applied"
-    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         review_status = "Closed"
         
     action = "Apply"
-    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
+    if effective_status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
         action = "Already Applied"
-    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
         
     disposition_map = {
@@ -3736,6 +3741,7 @@ def handle_status_update(query, status, notes=None):
         "Technical Interview": "Active",
         "Recruiter Submitted": "Active",
         "Waiting": "Active",
+        "Interviewing": "Active",
         "Rejected": "Closed",
         "Cancelled": "Closed",
         "Ghosted": "Closed",
@@ -3743,23 +3749,31 @@ def handle_status_update(query, status, notes=None):
         "Offer": "Active",
         "Accepted": "Closed"
     }
-    disposition = disposition_map.get(status, "Apply")
+    disposition = disposition_map.get(effective_status, "Apply")
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    final_notes = None
+    if notes is not None:
+        if append_notes:
+            curr = (existing_notes or "").strip()
+            final_notes = (curr + "\n\n" + notes.strip()) if curr else notes.strip()
+        else:
+            final_notes = notes
     
     # Update SQLite database
-    if notes is not None:
+    if final_notes is not None:
         cursor.execute("""
             UPDATE jobs 
             SET tracker_status = ?, review_status = ?, action = ?, disposition = ?, notes = ? 
             WHERE job_id = ?
-        """, (status, review_status, action, disposition, notes, job_id))
+        """, (effective_status, review_status, action, disposition, final_notes, job_id))
     else:
         cursor.execute("""
             UPDATE jobs 
             SET tracker_status = ?, review_status = ?, action = ?, disposition = ? 
             WHERE job_id = ?
-        """, (status, review_status, action, disposition, job_id))
+        """, (effective_status, review_status, action, disposition, job_id))
     
     cursor.execute("SELECT 1 FROM job_workflow WHERE job_id = ?", (job_id,))
     if cursor.fetchone():
@@ -3768,12 +3782,12 @@ def handle_status_update(query, status, notes=None):
             SET tracker_status = ?, review_status = ?, action = ?, disposition = ?,
                 notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system', status_source = 'user'
             WHERE job_id = ?
-        """, (status, review_status, action, disposition, notes, now_str, job_id))
+        """, (effective_status, review_status, action, disposition, final_notes, now_str, job_id))
     else:
         cursor.execute("""
             INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by, status_source)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'system', 'user')
-        """, (job_id, status, review_status, action, disposition, notes, now_str))
+        """, (job_id, effective_status, review_status, action, disposition, final_notes, now_str))
         
     # Retrieve updated row for CSV synchronization
     cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
@@ -3837,12 +3851,12 @@ def handle_status_update(query, status, notes=None):
             fieldnames = reader.fieldnames
             for row in reader:
                 if row["Job ID"] == job_id:
-                    row["Tracker Status"] = status
+                    row["Tracker Status"] = effective_status
                     row["Review Status"] = review_status
                     row["Action"] = action
                     row["Disposition"] = disposition
-                    if notes:
-                        row["Notes"] = notes
+                    if final_notes is not None:
+                        row["Notes"] = final_notes
                     updated = True
                 rows.append(row)
                 
@@ -3862,12 +3876,12 @@ def handle_status_update(query, status, notes=None):
     console.print(f"  [bold]Company:[/bold]       {company}")
     console.print(f"  [bold]Position:[/bold]      {position}")
     console.print("")
-    console.print(f"  [bold]Tracker Status:[/bold] [cyan]{status}[/cyan]")
+    console.print(f"  [bold]Tracker Status:[/bold] [cyan]{effective_status}[/cyan]")
     console.print(f"  [bold]Review Status:[/bold]  {review_status}")
     console.print(f"  [bold]Action:[/bold]         {action}")
     console.print(f"  [bold]Disposition:[/bold]    {disposition}")
-    if notes:
-        console.print(f"  [bold]Notes/Disp:[/bold]     {notes}")
+    if final_notes:
+        console.print(f"  [bold]Notes/Disp:[/bold]     {final_notes}")
     console.print("")
     return True
 
@@ -4528,7 +4542,9 @@ def main():
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
-    parser.add_argument("--notes", required=False, help="Optional note to append to the job workflow record")
+    parser.add_argument("--notes", required=False, help="Note to set on the job record")
+    parser.add_argument("--append-notes", required=False, help="Note to append to existing job notes")
+    parser.add_argument("--append", action="store_true", help="Append note to existing notes instead of replacing")
     parser.add_argument("--company", required=False, help="Company name for manual job addition")
     parser.add_argument("--position", required=False, help="Position title for manual job addition")
     parser.add_argument("--location", required=False, help="Location for manual job addition")
@@ -4542,6 +4558,7 @@ def main():
     args = parser.parse_args()
     
     if args.add:
+        note_val = args.append_notes if args.append_notes is not None else args.notes
         handle_manual_add(
             company=args.company,
             position=args.position,
@@ -4554,7 +4571,7 @@ def main():
             fit_score=args.fit_score,
             recommendation=args.recommendation,
             status=args.status,
-            notes=args.notes
+            notes=note_val
         )
         return
         
@@ -4563,14 +4580,20 @@ def main():
         return
         
     if args.update is not None:
-        if args.update == "" and not args.status:
+        has_notes = (args.notes is not None) or (args.append_notes is not None)
+        if args.update == "" and not args.status and not has_notes:
             handle_interactive_update()
             return
-        elif args.update != "" and not args.status:
+        elif args.update != "" and not args.status and not has_notes:
             console.print("[red]Error: --status is required when specifying a company/job ID to update[/red]")
             return
         else:
-            handle_status_update(args.update, args.status, args.notes)
+            note_val = args.append_notes if args.append_notes is not None else args.notes
+            is_append = (args.append_notes is not None) or args.append
+            if is_append:
+                handle_status_update(args.update, args.status, note_val, append_notes=True)
+            else:
+                handle_status_update(args.update, args.status, note_val)
             return
             
     if args.dedup_physical:

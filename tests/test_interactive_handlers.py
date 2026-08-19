@@ -280,6 +280,49 @@ class TestHandleStatusUpdate(HandlerTestBase):
         self.assertEqual(job_row, ("Rejected", "Updated rejection note"))
         self.assertEqual(wf_row, ("Rejected", "Updated rejection note"))
 
+    def test_handle_status_update_note_only_preserves_status(self):
+        """Updating notes with status=None should preserve the existing status."""
+        conn = self._init_db()
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, date_added, tracker_status, notes) VALUES ('id1', 'Acme Corp', 'Engineer', '2026-01-01', 'Phone Screen', 'Initial Note')"
+        )
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, notes) VALUES ('id1', 'Phone Screen', 'Initial Note')"
+        )
+        conn.commit()
+        conn.close()
+        self._init_tracker(rows=[{"Job ID": "id1", "Company": "Acme Corp", "Position": "Engineer", "Tracker Status": "Phone Screen", "Notes": "Initial Note"}])
+
+        self.assertTrue(handle_status_update("id1", status=None, notes="New standalone note"))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT tracker_status, notes FROM jobs WHERE job_id='id1'").fetchone()
+        wf_row = conn.execute("SELECT tracker_status, notes FROM job_workflow WHERE job_id='id1'").fetchone()
+        conn.close()
+        self.assertEqual(job_row, ("Phone Screen", "New standalone note"))
+        self.assertEqual(wf_row, ("Phone Screen", "New standalone note"))
+
+    def test_handle_status_update_append_notes(self):
+        """Appending notes with append_notes=True should join existing and new notes with a double newline."""
+        conn = self._init_db()
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, date_added, tracker_status, notes) VALUES ('id1', 'Acme Corp', 'Engineer', '2026-01-01', 'Interviewing', 'First interview note')"
+        )
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, notes) VALUES ('id1', 'Interviewing', 'First interview note')"
+        )
+        conn.commit()
+        conn.close()
+        self._init_tracker(rows=[{"Job ID": "id1", "Company": "Acme Corp", "Position": "Engineer", "Tracker Status": "Interviewing", "Notes": "First interview note"}])
+
+        self.assertTrue(handle_status_update("id1", status=None, notes="Second interview note", append_notes=True))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT tracker_status, notes FROM jobs WHERE job_id='id1'").fetchone()
+        wf_row = conn.execute("SELECT tracker_status, notes FROM job_workflow WHERE job_id='id1'").fetchone()
+        conn.close()
+        expected = "First interview note\n\nSecond interview note"
+        self.assertEqual(job_row, ("Interviewing", expected))
+        self.assertEqual(wf_row, ("Interviewing", expected))
+
 
 class TestHandleInteractiveUpdate(HandlerTestBase):
 

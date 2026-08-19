@@ -67,6 +67,21 @@ class TestMainDispatch(unittest.TestCase):
             self._run(["parse_jobs.py", "--update", "Acme", "--status", "Applied", "--notes", "test note"])
         mock_status.assert_called_once_with("Acme", "Applied", "test note")
 
+    def test_update_with_notes_only_dispatches_handle_status_update(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update", "Acme", "--notes", "standalone note"])
+        mock_status.assert_called_once_with("Acme", None, "standalone note")
+
+    def test_update_with_append_notes_dispatches_with_append_true(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update", "Acme", "--append-notes", "appended note"])
+        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True)
+
+    def test_update_with_notes_and_append_flag_dispatches_with_append_true(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update", "Acme", "--notes", "appended note", "--append"])
+        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True)
+
     def test_dashboard_dispatches_to_print_dashboard(self):
         with patch("parse_jobs._print_dashboard") as mock_dash:
             self._run(["parse_jobs.py", "--dashboard"])
