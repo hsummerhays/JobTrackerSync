@@ -284,7 +284,7 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 
 ### 1. Polish and Reliability
 
-- [x] **More unit tests** around parsing and merge logic. _(439 tests across 25 modules as of v1.3.6)_
+- [x] **More unit tests** around parsing and merge logic. _(445 tests across 25 modules as of v1.3.7)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

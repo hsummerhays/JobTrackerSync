@@ -144,6 +144,23 @@ Stores employer application confirmation events parsed directly from confirmatio
 | `job_id` | TEXT | Foreign key linking to the matched job record in `jobs` |
 | `created_at` | TEXT | ISO timestamp when event was ingested |
 
+### Table: `duplicates`
+
+Maintains a queryable index of all duplicate job occurrences discovered across PDFs and the tracker.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PRIMARY KEY | Autoincrementing record identifier |
+| `job_id` | TEXT | Identifier of the specific duplicate job record |
+| `date` | TEXT | Date the posting was added / discovered |
+| `company` | TEXT | Employer company name |
+| `position` | TEXT | Position / job title |
+| `location` | TEXT | Raw location string |
+| `workplace_type` | TEXT | Workplace arrangement: `Onsite`, `Hybrid`, `Remote`, or `Unknown` |
+| `source_pdf` | TEXT | Source PDF file path / reference |
+| `duplicate_group_id` | TEXT | Normalized composite group key for grouping duplicates together |
+| `occurrence_count` | INTEGER | Total count of occurrences within this duplicate group |
+
 ---
 
 ## Workflow Synchronization

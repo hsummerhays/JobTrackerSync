@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.7 — 2026-08-23
+
+### Duplicates Indexing & Workplace Classification
+- **`duplicates` Table in SQLite**: Added automated creation and maintenance of the `duplicates` table in `jobs.db`. Stores `date`, `company`, `position`, `location`, `workplace_type`, `source_pdf`, `duplicate_group_id`, and `occurrence_count`.
+- **Workplace Classification Helper (`classify_workplace`)**: Added `classify_workplace()` to `dedup_utils.py` to classify jobs into `Hybrid`, `Remote`, `Onsite`, or `Unknown` based on location, title, and context.
+- **Automated Duplicates Sync on DB Write**: `save_to_sqlite()` in `parse_jobs.py` now automatically synchronizes the `duplicates` table after upserting jobs, ensuring duplicate occurrences remain indexed and up-to-date.
+
 ## v1.3.6 — 2026-08-13
 
 ### Deduplication, Ingestion Bounds & Noise Reduction

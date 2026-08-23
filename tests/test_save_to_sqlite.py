@@ -638,6 +638,32 @@ class TestSaveToSqliteValidityDedupFilter(unittest.TestCase):
         parse_jobs.save_to_sqlite(self.db_path, jobs_list)
         self.assertEqual(self._job_ids(), {"manual1"})
 
+    def test_duplicates_table_syncs_duplicate_jobs_and_classifies_workplace(self):
+        job1 = {
+            "Job ID": "dup1", "Company": "Acme Corp", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-20",
+        }
+        job2 = {
+            "Job ID": "dup2", "Company": "Acme Corp", "Position": "Senior Engineer",
+            "Location": "Remote", "Tracker Status": "New", "Date Added": "2026-07-25",
+        }
+        job_unique = {
+            "Job ID": "uniq1", "Company": "Beta Inc", "Position": "Backend Engineer",
+            "Location": "Salt Lake City, UT (Hybrid)", "Tracker Status": "New", "Date Added": "2026-07-20",
+        }
+        parse_jobs.save_to_sqlite(self.db_path, [job1, job2, job_unique])
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT date, company, position, location, workplace_type, occurrence_count FROM duplicates ORDER BY date")
+        dup_rows = cursor.fetchall()
+        conn.close()
+
+        self.assertEqual(len(dup_rows), 2)
+        self.assertEqual(dup_rows[0], ("2026-07-20", "Acme Corp", "Senior Engineer", "Remote", "Remote", 2))
+        self.assertEqual(dup_rows[1], ("2026-07-25", "Acme Corp", "Senior Engineer", "Remote", "Remote", 2))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+

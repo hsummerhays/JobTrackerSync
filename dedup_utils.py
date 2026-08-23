@@ -268,3 +268,18 @@ def title_similarity(a, b):
     if not words_a or not words_b:
         return 0.0
     return len(words_a & words_b) / len(words_a | words_b)
+
+
+def classify_workplace(location="", position="", raw_context=""):
+    """Classify workplace arrangement as 'Hybrid', 'Remote', 'Onsite', or 'Unknown'
+    based on location string, title/position, and raw text context."""
+    text = f"{location or ''} {position or ''} {raw_context or ''}".lower()
+    if "hybrid" in text:
+        return "Hybrid"
+    elif "remote" in text or "work from home" in text or "telecommute" in text:
+        return "Remote"
+    elif location and str(location).strip() and str(location).strip().lower() not in ("n/a", "unknown", "none"):
+        return "Onsite"
+    else:
+        return "Unknown"
+

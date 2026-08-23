@@ -25,6 +25,7 @@ from dedup_utils import (
     normalize_title,
     locations_compatible,
     title_similarity,
+    classify_workplace,
     TERMINAL_STATUSES,
     UNREVIEWED_STATUSES,
 )
@@ -81,7 +82,8 @@ TITLE_KEYWORDS = [
     "engineer", "developer", "programmer", "architect", "analyst", "lead",
     "specialist", "manager", "support", "trainer", "coordinator", "mgr",
     "associate", "worker", "selector", "janitor", "tasker", "operator",
-    "technician", "clerk", "driver", "consultant"
+    "technician", "clerk", "driver", "consultant", "representative", "rep",
+    "executive", "officer", "administrator", "advisor", "recruiter", "scientist"
 ]
 
 UI_LABEL_PATTERN = r'(?i)(View Details?|Learn More|Apply Now|Easy Apply|Save Job|Show More|See More|Read More|Click Here)'
@@ -174,6 +176,62 @@ def initialize_processed_files_table(conn):
         )
     """)
     conn.commit()
+
+
+def initialize_duplicates_table(conn):
+    """Create the duplicates table if it does not yet exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS duplicates (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id             TEXT,
+            date               TEXT,
+            company            TEXT,
+            position           TEXT,
+            location           TEXT,
+            workplace_type     TEXT,
+            source_pdf         TEXT,
+            duplicate_group_id TEXT,
+            occurrence_count   INTEGER
+        )
+    """)
+    conn.commit()
+
+
+def sync_duplicates_table(conn):
+    """Populate or refresh the duplicates table with all duplicate job rows
+    detected in the jobs table, classifying each workplace type."""
+    initialize_duplicates_table(conn)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT job_id, date_added, company, position, location, raw_context, source_pdf,
+               LOWER(TRIM(company)) || '||' || LOWER(TRIM(position)) || '||' || LOWER(TRIM(location)) as group_key
+        FROM jobs
+        WHERE (LOWER(TRIM(company)), LOWER(TRIM(position)), LOWER(TRIM(location))) IN (
+            SELECT LOWER(TRIM(company)), LOWER(TRIM(position)), LOWER(TRIM(location))
+            FROM jobs
+            WHERE company IS NOT NULL AND position IS NOT NULL
+            GROUP BY LOWER(TRIM(company)), LOWER(TRIM(position)), LOWER(TRIM(location))
+            HAVING COUNT(*) > 1
+        )
+        ORDER BY company, position, date_added
+    """)
+    rows = cursor.fetchall()
+    
+    # Compute counts per group
+    group_counts = {}
+    for r in rows:
+        grp = r[7]
+        group_counts[grp] = group_counts.get(grp, 0) + 1
+
+    cursor.execute("DELETE FROM duplicates")
+    for job_id, dt, comp, pos, loc, raw, src, grp_key in rows:
+        wp = classify_workplace(loc, pos, raw)
+        cursor.execute("""
+            INSERT INTO duplicates (job_id, date, company, position, location, workplace_type, source_pdf, duplicate_group_id, occurrence_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (job_id, dt, comp, pos, loc, wp, src, grp_key, group_counts.get(grp_key, 1)))
+    conn.commit()
+
 
 
 def check_pdf_processed(conn, file_hash, parser_version):
@@ -1170,8 +1228,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
             )
         """)
 
-        # Create processed_files table for incremental sync
+        # Create processed_files and duplicates tables
         initialize_processed_files_table(conn)
+        initialize_duplicates_table(conn)
 
         # Migrate data from old job_status table if it exists
         try:
@@ -1658,6 +1717,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
         try:
             _upsert_all_jobs()
             _delete_pre_collapsed_losers()
+            sync_duplicates_table(conn)
             conn.commit()
             if skip_stats["invalid_company"] or skip_stats["duplicate_fingerprint"]:
                 console.print(
@@ -1722,6 +1782,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
             skip_stats["duplicate_fingerprint"] = 0
             _upsert_all_jobs()
             _delete_pre_collapsed_losers()
+            sync_duplicates_table(conn)
             conn.commit()
             if skip_stats["invalid_company"] or skip_stats["duplicate_fingerprint"]:
                 console.print(
@@ -2237,6 +2298,10 @@ def detect_provider(text, filename=""):
         return "Glassdoor"
     elif "ziprecruiter" in full_text:
         return "ZipRecruiter"
+    elif "robert half" in full_text or "roberthalf.com" in full_text:
+        return "Robert Half"
+    elif "lensa" in full_text or "lensa.com" in full_text:
+        return "Lensa"
     return "Unknown/Other"
 
 def extract_pdf_text(pdf_path):
@@ -2270,6 +2335,9 @@ def perform_ocr(pdf_path):
 
 def _looks_like_title(line):
     line_lower = line.strip().lower()
+    # Skip email headers, email addresses, or timestamps
+    if "@" in line_lower or "<" in line_lower or "http" in line_lower:
+        return False
     # Skip email subject-like lines, search alerts, or meta-text
     if line_lower.endswith(" jobs") or line_lower.endswith(" job"):
         return False
@@ -2277,7 +2345,15 @@ def _looks_like_title(line):
         return False
     if "jobs at" in line_lower or "jobs in" in line_lower:
         return False
-    return any(kw in line_lower for kw in TITLE_KEYWORDS)
+    if "your career advisor" in line_lower or "career advisor" in line_lower:
+        return False
+    if "this email contains" in line_lower or "secure links" in line_lower:
+        return False
+    if "these jobs match" in line_lower or "these job ads" in line_lower:
+        return False
+    if "new job in" in line_lower or "new senior" in line_lower or "job in lehi" in line_lower:
+        return False
+    return any(re.search(rf'\b{re.escape(kw)}\b', line_lower) for kw in TITLE_KEYWORDS)
 
 def _skill_boundary_pattern(skill):
     """Build a word-boundary regex for `skill`, requiring a non-alnum
@@ -2355,6 +2431,8 @@ def normalize_ocr_spacing(text):
     text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
     text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
     text = re.sub(r'(?i)\bcorp\s+oration\b', 'Corporation', text)
+    text = re.sub(r'(?i)\bsurg\s+e\b', 'Surge', text)
+    text = re.sub(r'(?i)\bdrap\s+er\b', 'Draper', text)
     # State abbreviation split into two single letters by the same kerning
     # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
     # to right after a comma (where a state code appears) rather than any two
@@ -2440,6 +2518,32 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                         "raw_context": line
                     })
         return jobs
+
+    if provider == "Robert Half":
+        jobs = []
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        for i, line in enumerate(lines):
+            if "@" in line or "http" in line or "robert half" in line.lower():
+                continue
+            if any(skip in line.lower() for skip in ["jobs picked for", "these roles were", "trouble viewing", "search open roles", "search available jobs", "take a look", "we are looking for", "solutions that support", "shape technical direction"]):
+                continue
+            if _looks_like_title(line):
+                loc = "Draper, UT"
+                for j in range(i + 1, min(i + 4, len(lines))):
+                    if any(st in lines[j] for st in ["UT", "Remote", "CA", "Salt Lake City", "Draper"]):
+                        loc = _clean_location(lines[j])
+                        break
+                jobs.append({
+                    "title": re.sub(r'\s+', ' ', line).strip(),
+                    "company": "Robert Half",
+                    "location": loc,
+                    "provider": "Robert Half",
+                    "source_pdf": source_pdf,
+                    "url": "https://www.roberthalf.com",
+                    "raw_context": "\n".join(lines[max(0, i-1):min(len(lines), i+4)])
+                })
+        if jobs:
+            return jobs
 
     if provider == "Ladders":
         jobs = []
@@ -2600,7 +2704,7 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                     
             i += 1
             
-        # If no jobs found with layout parser, fallback to single-line format
+        # Format D: Fallback to single-line 3-part format: Title / Location / Salary
         if not jobs:
             for line in lines:
                 match = re.search(r'^(.+?)\s*/\s*(.+?)\s*/\s*(\$\d+K.*)$', line)
@@ -2623,6 +2727,55 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                         "url": "https://www.theladders.com",
                         "raw_context": f"{line} | Estimated Salary: {salary_raw}"
                     })
+
+        # Format E: Virtual / Travel / $... multiline format (e.g. "Staff Research Scientist ... \n Virtual / Travel / $200K - $250K*")
+        if not jobs:
+            for i, line in enumerate(lines):
+                match_vt = re.search(r'^(.+?)\s*/\s*(\$\d+K.*)$', line)
+                if match_vt:
+                    location_raw = match_vt.group(1).strip()
+                    salary_raw = match_vt.group(2).strip()
+                    # Look backward for title
+                    j = i - 1
+                    title_parts = []
+                    while j >= 0:
+                        prev_line = lines[j]
+                        if "virtual /" in prev_line.lower() or "similar title" in prev_line.lower() or "remote" == prev_line.lower() or "hot" in prev_line.lower():
+                            break
+                        if "http" in prev_line or "gmail -" in prev_line.lower() or "1 message" in prev_line:
+                            j -= 1
+                            continue
+                        title_parts.insert(0, prev_line)
+                        j -= 1
+                    title = " ".join(title_parts).strip()
+                    if title:
+                        jobs.append({
+                            "title": re.sub(r'\s+', ' ', title),
+                            "company": "Ladders-DailyDigest",
+                            "location": "Remote" if "virtual" in location_raw.lower() or "travel" in location_raw.lower() else _clean_location(location_raw),
+                            "provider": "Ladders",
+                            "source_pdf": source_pdf,
+                            "url": "https://www.theladders.com",
+                            "raw_context": f"{title} | {line}"
+                        })
+
+        # Format F: Hot Companies hiring digest (e.g. "Hot Companies / Hiring in your area ... Northrop Grumman / 8 jobs open")
+        if not jobs and ("hot companies" in text.lower() or "hot remote companies" in text.lower()):
+            for i, line in enumerate(lines):
+                m_open = re.search(r'^(\d+)\s+jobs?\s+open', line, re.IGNORECASE)
+                if m_open and i > 0:
+                    cand_comp = lines[i-1].strip()
+                    if is_valid_company(cand_comp, "Ladders"):
+                        jobs.append({
+                            "title": f"Multiple Openings ({m_open.group(1)} jobs open)",
+                            "company": clean_company_name(cand_comp),
+                            "location": "Remote" if "remote" in text.lower() else "Salt Lake City, UT",
+                            "provider": "Ladders",
+                            "source_pdf": source_pdf,
+                            "url": "https://www.theladders.com",
+                            "raw_context": f"{cand_comp} | {line}"
+                        })
+
         return jobs
 
     lines = [line.strip() for line in text.split('\n') if line.strip()]
@@ -2669,8 +2822,22 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                 next_is_title = _looks_like_title(next_line)
                 next_has_salary = bool(re.search(r'\$\d+K', next_line)) or "/ virtual" in next_line.lower() or "/ travel" in next_line.lower()
                 
+                is_next_company_location = False
+                if "·" in next_line and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower()):
+                    is_next_company_location = True
+
+                # Check if next line is a short title continuation (e.g. "Remote", "100% Remote", "Full-Stack")
+                # and line+2 is a valid company name
+                is_title_continuation_line = False
+                if i + 2 < len(filtered_lines) and not next_is_title and not next_has_salary and not is_next_company_location:
+                    next_toks = next_line.lower().split()
+                    if len(next_toks) <= 4 and any(w in next_line.lower() for w in ["remote", "hybrid", "full-stack", "full stack", "backend", "frontend", "lead", "engineer", "developer", "%"]):
+                        line_after_next = filtered_lines[i+2]
+                        if is_valid_company(line_after_next, provider):
+                            is_title_continuation_line = True
+
                 # Check if the next line looks like a location instead of a company
-                is_next_location = not next_is_title and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line)))
+                is_next_location = not is_title_continuation_line and not next_is_title and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower() or bool(re.search(r'\b(UT|CA|VA|TX|NY|FL|CO|WA|IL|MA|GA|MI|OH|PA|NJ|Utah|California|Virginia|Coast)\b', next_line)))
                 
                 # Check if the line after next (i+2) contains '·' and matches location/remote,
                 # which indicates that next_line (i+1) is actually a continuation of the title,
@@ -2680,10 +2847,6 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                     line_after_next = filtered_lines[i+2]
                     if "·" in line_after_next and (bool(state_city_pattern.search(line_after_next)) or "remote" in line_after_next.lower()):
                         is_line_after_next_company_location = True
-                
-                is_next_company_location = False
-                if "·" in next_line and (bool(state_city_pattern.search(next_line)) or "remote" in next_line.lower()):
-                    is_next_company_location = True
 
                 # Detect a title that wraps onto a short trailing continuation
                 # fragment (e.g. Glassdoor "...Minimum 5 Years Exp" / "Required"),
@@ -2702,7 +2865,11 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
                     and (bool(state_city_pattern.search(filtered_lines[i+2])) or "remote" in filtered_lines[i+2].lower())
                 )
 
-                if is_title_wrap_continuation:
+                if is_title_continuation_line:
+                    title = f"{title} {next_line}"
+                    company = filtered_lines[i+2]
+                    next_idx = i + 3
+                elif is_title_wrap_continuation:
                     title = f"{title} {next_line}"
                     location = _clean_location(filtered_lines[i+2])
                     found_location = True

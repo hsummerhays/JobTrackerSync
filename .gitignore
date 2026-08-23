@@ -157,6 +157,7 @@ cython_debug/
 
 # Local database, configuration, and tracking files
 jobs.db*
+!jobs.db.example
 config.json
 !config.json.example
 master_tracker*.csv
