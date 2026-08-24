@@ -123,6 +123,7 @@ JobTrackerSync/
 ├── parse_jobs.py              # Main CLI entry point and full pipeline
 ├── find_pdf.py                # Database and CSV search utility for PDFs and jobs
 ├── query_jobs.py              # Permanent SQLite lookup utility for jobs
+├── generate_vcf.py            # Generates standard vCard (.vcf) files for Google Contacts
 ├── dedup_utils.py             # Shared status-ranking, merge, and file-URI helpers
 ├── run_sql.py                 # Ad-hoc read-only SQL helper (used by db_query skill)
 ├── create_calendar_event.py   # Generates pre-filled Google Calendar event links
@@ -131,6 +132,7 @@ JobTrackerSync/
 ├── master_tracker.csv         # Master tracking spreadsheet (git-ignored)
 ├── master_tracker.csv.example # Schema reference
 ├── jobs.db                    # SQLite mirror (git-ignored)
+├── jobs.db.example            # SQLite database template
 ├── scratch/                   # Temporary one-off scripts (not committed)
 └── docs/
     ├── architecture.md        # Pipeline diagram, data model, design decisions
@@ -239,6 +241,8 @@ python -m pytest tests/ -v
 
 This project includes built-in AI agent skills (located in `.agents/skills/`) to automate common workflows using AI assistants:
 
+- **`add_contact`**: Generates a standard vCard (`.vcf`) file and direct link to import contacts into Google Contacts.
+- **`add_job_note`**: Adds or appends interview notes, recruiter details, or progress notes to an existing job in the tracker.
 - **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
 - **`sync_jobs`**: Automates the parsing pipeline (opens a folder picker or accepts `--pdf-dir`).
 - **`daily_dashboard`**: Displays formatted analytics and action queues.

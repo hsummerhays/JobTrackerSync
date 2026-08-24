@@ -62,6 +62,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 | `parse_jobs.py` | Main CLI entry point and all pipeline logic |
 | `find_pdf.py` | Database and CSV search utility for PDFs and jobs |
 | `query_jobs.py` | Permanent SQLite lookup utility for jobs |
+| `generate_vcf.py` | Generates standard vCard (.vcf) files for Google Contacts |
 | `dedup_utils.py` | Shared status-ranking, merge, and file-URI helpers used by the above |
 | `run_sql.py` | Ad-hoc read-only SQL query helper (used by the `db_query` agent skill) |
 | `create_calendar_event.py` | Generates pre-filled Google Calendar event links for interviews |
@@ -70,6 +71,7 @@ PDF Alerts (Gmail / Glassdoor / LinkedIn)
 | `master_tracker.csv` | Primary working spreadsheet (git-ignored) |
 | `master_tracker.csv.example` | Schema reference committed to git |
 | `jobs.db` | SQLite mirror containing `jobs` and `job_workflow` tables (git-ignored) |
+| `jobs.db.example` | Template SQLite database schema committed to git |
 | `docs/scoring.md` | Scoring algorithm documentation |
 | `docs/screenshots/` | CLI and CSV screenshots for README |
 
