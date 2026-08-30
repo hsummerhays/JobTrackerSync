@@ -28,6 +28,7 @@ from dedup_utils import (
     classify_workplace,
     TERMINAL_STATUSES,
     UNREVIEWED_STATUSES,
+    DEFAULT_DISPOSITION_MAP,
 )
 from rich.console import Console
 from rich.table import Table
@@ -334,7 +335,7 @@ def is_valid_company(company, provider=None):
     # 2026-08-13 against raw source text: "Senior Software Engineering
     # Consultant / talentarchitect.com / Remote") that the generic
     # starts-with-lowercase-letter rejection below would otherwise reject.
-    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics", "fullstack", "talentarchitect.com"}
+    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics", "fullstack", "talentarchitect.com", "cvs/aetna", "real / the real brokerage inc."}
     if comp_lower in whitelisted_companies:
         return True
 
@@ -738,21 +739,7 @@ def clean_existing_tracker(tracker_path):
                     review_status = "Imported"
             migrated_row["Review Status"] = review_status
             
-            disposition_map = {
-                "New": "Apply",
-                "Applied": "Waiting",
-                "Phone Screen": "Active",
-                "Technical Interview": "Active",
-                "Recruiter Submitted": "Active",
-                "Waiting": "Active",
-                "Rejected": "Closed",
-                "Cancelled": "Closed",
-                "Ghosted": "Closed",
-                "Expired": "Closed",
-                "Offer": "Active",
-                "Accepted": "Closed"
-            }
-            disposition = row.get("Disposition", disposition_map.get(status, "Apply"))
+            disposition = row.get("Disposition", DEFAULT_DISPOSITION_MAP.get(status, "Apply"))
             migrated_row["Disposition"] = disposition
             migrated_row["Date Added"] = row.get("Date Added", datetime.now().strftime("%Y-%m-%d"))
             migrated_row["Last Seen"] = row.get("Last Seen", migrated_row["Date Added"])
@@ -948,8 +935,8 @@ def clean_existing_tracker(tracker_path):
                 migrated_row["Existing Company"] = current_val if current_val in ["Yes", "No"] else "No"
             
             # Preserve Recruiter & Hiring Manager
-            migrated_row["Recruiter"] = row.get("Recruiter", "")
-            migrated_row["Hiring Manager"] = row.get("Hiring Manager", "")
+            migrated_row["Recruiter"] = (db_stored.get("recruiter") if db_stored else None) or row.get("Recruiter", "")
+            migrated_row["Hiring Manager"] = (db_stored.get("hiring_manager") if db_stored else None) or row.get("Hiring Manager", "")
 
             source_index = row.get("Source Index", "")
             if not source_index and notes:
@@ -3901,22 +3888,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False):
     elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
         
-    disposition_map = {
-        "New": "Apply",
-        "Applied": "Waiting",
-        "Phone Screen": "Active",
-        "Technical Interview": "Active",
-        "Recruiter Submitted": "Active",
-        "Waiting": "Active",
-        "Interviewing": "Active",
-        "Rejected": "Closed",
-        "Cancelled": "Closed",
-        "Ghosted": "Closed",
-        "Expired": "Closed",
-        "Offer": "Active",
-        "Accepted": "Closed"
-    }
-    disposition = disposition_map.get(effective_status, "Apply")
+    disposition = DEFAULT_DISPOSITION_MAP.get(effective_status, "Apply")
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -4203,21 +4175,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
         
-    disposition_map = {
-        "New": "Apply",
-        "Applied": "Waiting",
-        "Phone Screen": "Active",
-        "Technical Interview": "Active",
-        "Recruiter Submitted": "Active",
-        "Waiting": "Active",
-        "Rejected": "Closed",
-        "Cancelled": "Closed",
-        "Ghosted": "Closed",
-        "Expired": "Closed",
-        "Offer": "Active",
-        "Accepted": "Closed"
-    }
-    disposition = disposition_map.get(status, "Apply")
+    disposition = DEFAULT_DISPOSITION_MAP.get(status, "Apply")
     
     # Existing company check
     tracker_path = "master_tracker.csv"

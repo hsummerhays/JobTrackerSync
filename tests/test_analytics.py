@@ -125,13 +125,15 @@ class TestAnalytics(unittest.TestCase):
         success_accept = handle_status_update("job_offer_test", "Accepted", "Accepted the offer!")
         self.assertTrue(success_accept)
 
-        cursor.execute("SELECT tracker_status, review_status, action, disposition FROM jobs WHERE job_id = ?", ("job_offer_test",))
-        row_accept = cursor.fetchone()
-        self.assertEqual(row_accept[0], "Accepted")
-        self.assertEqual(row_accept[1], "Applied")
-        self.assertEqual(row_accept[2], "Already Applied")
-        self.assertEqual(row_accept[3], "Closed")
-        conn.close()
+        try:
+            cursor.execute("SELECT tracker_status, review_status, action, disposition FROM jobs WHERE job_id = ?", ("job_offer_test",))
+            row_accept = cursor.fetchone()
+            self.assertEqual(row_accept[0], "Accepted")
+            self.assertEqual(row_accept[1], "Applied")
+            self.assertEqual(row_accept[2], "Already Applied")
+            self.assertEqual(row_accept[3], "Active")
+        finally:
+            conn.close()
 
 if __name__ == '__main__':
     unittest.main()

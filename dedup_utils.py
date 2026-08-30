@@ -15,10 +15,24 @@ UNREVIEWED_STATUSES = {"New", "Imported"}
 
 VALID_STATUSES = ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
 
-# A human deliberately closed the loop on these -- once set, they must not be
-# clobbered by a still-active status like "Applied" just because "Applied"
-# outranks them numerically below.
 TERMINAL_STATUSES = {"Rejected", "Ghosted", "Cancelled", "Expired", "Closed"}
+
+DEFAULT_DISPOSITION_MAP = {
+    "New": "Apply",
+    "Applied": "Waiting",
+    "Phone Screen": "Active",
+    "Technical Interview": "Active",
+    "Recruiter Submitted": "Active",
+    "Waiting": "Active",
+    "Interviewing": "Active",
+    "Interview": "Active",
+    "Rejected": "Closed",
+    "Cancelled": "Closed",
+    "Ghosted": "Closed",
+    "Expired": "Closed",
+    "Offer": "Active",
+    "Accepted": "Active",
+}
 
 STATUS_RANKS = {
     "Accepted": 100,
