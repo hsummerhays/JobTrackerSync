@@ -57,8 +57,11 @@ python parse_jobs.py --update "<company_name_or_job_id>" --append-notes "<note_t
 # Or set/replace notes:
 python parse_jobs.py --update "<company_name_or_job_id>" --notes "<new_notes>"
 
-# Update status and append notes at the same time:
-python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name> --append-notes "<note_to_append>"
+# Set or append notes from a file (safely preserves characters like $, quotes, and multiline text without shell interpolation):
+python parse_jobs.py --update "<company_name_or_job_id>" --notes-file "scratch/notes.txt" [--append]
+
+# Update status, recruiter, hiring manager, and append notes at the same time:
+python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name> --recruiter "<recruiter>" --hiring-manager "<manager>" --append-notes "<note_to_append>"
 ```
 
 ### 7. Rescoring Jobs and Preserving Manual Scores

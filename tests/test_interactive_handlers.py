@@ -322,7 +322,31 @@ class TestHandleStatusUpdate(HandlerTestBase):
         expected = "First interview note\n\nSecond interview note"
         self.assertEqual(job_row, ("Interviewing", expected))
         self.assertEqual(wf_row, ("Interviewing", expected))
+    def test_handle_status_update_recruiter_and_hiring_manager(self):
+        """Updating recruiter and hiring_manager updates both jobs table and tracker CSV."""
+        conn = self._init_db()
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, date_added, tracker_status, notes, recruiter, hiring_manager) VALUES ('id1', 'Acme Corp', 'Engineer', '2026-01-01', 'Applied', '', '', '')"
+        )
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, notes) VALUES ('id1', 'Applied', '')"
+        )
+        conn.commit()
+        conn.close()
+        self._init_tracker(rows=[{"Job ID": "id1", "Company": "Acme Corp", "Position": "Engineer", "Tracker Status": "Applied", "Notes": "", "Recruiter": "", "Hiring Manager": ""}])
 
+        self.assertTrue(handle_status_update("id1", status="Technical Interview", recruiter="Jane Recruiter", hiring_manager="Bob Manager"))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT tracker_status, recruiter, hiring_manager FROM jobs WHERE job_id='id1'").fetchone()
+        conn.close()
+        self.assertEqual(job_row, ("Technical Interview", "Jane Recruiter", "Bob Manager"))
+
+        with open(self.tracker_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+            self.assertEqual(row["Tracker Status"], "Technical Interview")
+            self.assertEqual(row["Recruiter"], "Jane Recruiter")
+            self.assertEqual(row["Hiring Manager"], "Bob Manager")
 
 class TestHandleInteractiveUpdate(HandlerTestBase):
 

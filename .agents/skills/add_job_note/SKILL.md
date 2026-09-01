@@ -30,9 +30,17 @@ To replace the entire notes field for a job with a new value:
 python parse_jobs.py --update "<company_name_or_job_id>" --notes "<new_notes_content>"
 ```
 
-### 3. Updating Status and Adding Notes Simultaneously
+### 3. Updating from a Notes File (Recommended for Special Characters & Multiline Text)
+To avoid shell escaping issues with characters like `$`, quotes, or rich formatting:
+
 ```bash
-python parse_jobs.py --update "<company_name_or_job_id>" --status "<status>" --append-notes "<note_text>"
+# Write note content to scratch/notes.txt first, then:
+python parse_jobs.py --update "<company_name_or_job_id>" --notes-file "scratch/notes.txt" [--append]
+```
+
+### 4. Updating Status, Metadata, and Adding Notes Simultaneously
+```bash
+python parse_jobs.py --update "<company_name_or_job_id>" --status "<status>" --recruiter "<recruiter>" --hiring-manager "<manager>" --append-notes "<note_text>"
 ```
 
 ## Behavior & Data Guarantees

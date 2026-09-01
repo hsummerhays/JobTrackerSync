@@ -3826,7 +3826,7 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status=None, notes=None, append_notes=False):
+def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
@@ -3839,8 +3839,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False):
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
         
-    if status is None and notes is None:
-        console.print("[red]Either status or notes must be provided for update.[/red]")
+    if status is None and notes is None and recruiter is None and hiring_manager is None:
+        console.print("[red]Either status, notes, recruiter, or hiring_manager must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
@@ -3901,18 +3901,20 @@ def handle_status_update(query, status=None, notes=None, append_notes=False):
             final_notes = notes
     
     # Update SQLite database
+    update_fields = ["tracker_status = ?", "review_status = ?", "action = ?", "disposition = ?"]
+    update_params = [effective_status, review_status, action, disposition]
     if final_notes is not None:
-        cursor.execute("""
-            UPDATE jobs 
-            SET tracker_status = ?, review_status = ?, action = ?, disposition = ?, notes = ? 
-            WHERE job_id = ?
-        """, (effective_status, review_status, action, disposition, final_notes, job_id))
-    else:
-        cursor.execute("""
-            UPDATE jobs 
-            SET tracker_status = ?, review_status = ?, action = ?, disposition = ? 
-            WHERE job_id = ?
-        """, (effective_status, review_status, action, disposition, job_id))
+        update_fields.append("notes = ?")
+        update_params.append(final_notes)
+    if recruiter is not None:
+        update_fields.append("recruiter = ?")
+        update_params.append(recruiter)
+    if hiring_manager is not None:
+        update_fields.append("hiring_manager = ?")
+        update_params.append(hiring_manager)
+
+    update_params.append(job_id)
+    cursor.execute(f"UPDATE jobs SET {', '.join(update_fields)} WHERE job_id = ?", tuple(update_params))
     
     cursor.execute("SELECT 1 FROM job_workflow WHERE job_id = ?", (job_id,))
     if cursor.fetchone():
@@ -3996,6 +3998,10 @@ def handle_status_update(query, status=None, notes=None, append_notes=False):
                     row["Disposition"] = disposition
                     if final_notes is not None:
                         row["Notes"] = final_notes
+                    if recruiter is not None:
+                        row["Recruiter"] = recruiter
+                    if hiring_manager is not None:
+                        row["Hiring Manager"] = hiring_manager
                     updated = True
                 rows.append(row)
                 
@@ -4669,6 +4675,7 @@ def main():
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--notes", required=False, help="Note to set on the job record")
     parser.add_argument("--append-notes", required=False, help="Note to append to existing job notes")
+    parser.add_argument("--notes-file", required=False, help="File path containing notes to set or append (avoids shell quoting issues)")
     parser.add_argument("--append", action="store_true", help="Append note to existing notes instead of replacing")
     parser.add_argument("--company", required=False, help="Company name for manual job addition")
     parser.add_argument("--position", required=False, help="Position title for manual job addition")
@@ -4682,8 +4689,16 @@ def main():
     parser.add_argument("--url", required=False, help="Job posting URL")
     args = parser.parse_args()
     
+    file_note_content = None
+    if args.notes_file:
+        if not os.path.exists(args.notes_file):
+            console.print(f"[red]Error: notes file '{args.notes_file}' not found[/red]")
+            return
+        with open(args.notes_file, mode='r', encoding='utf-8') as nf:
+            file_note_content = nf.read()
+
     if args.add:
-        note_val = args.append_notes if args.append_notes is not None else args.notes
+        note_val = file_note_content if file_note_content is not None else (args.append_notes if args.append_notes is not None else args.notes)
         handle_manual_add(
             company=args.company,
             position=args.position,
@@ -4705,20 +4720,25 @@ def main():
         return
         
     if args.update is not None:
-        has_notes = (args.notes is not None) or (args.append_notes is not None)
-        if args.update == "" and not args.status and not has_notes:
+        has_notes = (args.notes is not None) or (args.append_notes is not None) or (file_note_content is not None)
+        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None)
+        if args.update == "" and not args.status and not has_notes and not has_metadata:
             handle_interactive_update()
             return
-        elif args.update != "" and not args.status and not has_notes:
+        elif args.update != "" and not args.status and not has_notes and not has_metadata:
             console.print("[red]Error: --status is required when specifying a company/job ID to update[/red]")
             return
         else:
-            note_val = args.append_notes if args.append_notes is not None else args.notes
+            note_val = file_note_content if file_note_content is not None else (args.append_notes if args.append_notes is not None else args.notes)
             is_append = (args.append_notes is not None) or args.append
-            if is_append:
-                handle_status_update(args.update, args.status, note_val, append_notes=True)
-            else:
-                handle_status_update(args.update, args.status, note_val)
+            handle_status_update(
+                args.update,
+                args.status,
+                note_val,
+                append_notes=is_append,
+                recruiter=args.recruiter,
+                hiring_manager=args.hiring_manager
+            )
             return
             
     if args.dedup_physical:
