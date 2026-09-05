@@ -29,7 +29,13 @@ This skill allows the agent to add new jobs or update the status of existing job
 
 ### 1. Adding a New Job (Non-interactively)
 ```bash
-python parse_jobs.py --add --company "<company_name>" --position "<position_title>" --location "<location>" --fit-score <1-100> --status "<status>" --notes "<optional_notes>"
+python parse_jobs.py --add --company "<company_name>" --position "<position_title>" --location "<location>" --fit-score <1-100> --status "<status>" --notes "<optional_notes>" [--date "YYYY-MM-DD"]
+```
+
+### 1b. Adding a New Job from a Structured Text Block or File
+```bash
+# Ingest structured text directly (auto-extracts Company, Position, Location, Recruiter, Status, Fit, and Notes):
+python parse_jobs.py --add-from-text "scratch/opportunity.txt" [--date "YYYY-MM-DD"]
 ```
 
 ### 2. Marking a Job as Rejected
@@ -43,7 +49,7 @@ python parse_jobs.py --update "<company_name_or_job_id>" --status Cancelled
 ```
 
 ### 4. Updating to Other Statuses
-Valid statuses: `Applied`, `Phone Screen`, `Technical Interview`, `Recruiter Submitted`, `Waiting`, `Expired`, `Ghosted`, `New`, `Cancelled`, `Rejected`
+Valid statuses: `Applied`, `Phone Screen`, `Manager Interview Pending`, `Technical Interview`, `Onsite Interview Pending`, `Recruiter Submitted`, `Waiting`, `Offer`, `Accepted`, `Expired`, `Ghosted`, `New`, `Cancelled`, `Rejected`
 
 ```bash
 python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name>

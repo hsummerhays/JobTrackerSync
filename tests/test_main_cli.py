@@ -46,6 +46,14 @@ class TestMainDispatch(unittest.TestCase):
         self.assertEqual(mock_add.call_args.kwargs["company"], "Acme")
         self.assertEqual(mock_add.call_args.kwargs["position"], "Engineer")
 
+    def test_add_from_text_dispatches_to_handle_manual_add(self):
+        with patch("parse_jobs.handle_manual_add") as mock_add:
+            self._run(["parse_jobs.py", "--add-from-text", "Company: Acme\nPosition: Architect\nStatus: Technical Interview"])
+        mock_add.assert_called_once()
+        self.assertEqual(mock_add.call_args.kwargs["company"], "Acme")
+        self.assertEqual(mock_add.call_args.kwargs["position"], "Architect")
+        self.assertEqual(mock_add.call_args.kwargs["status"], "Technical Interview")
+
     def test_today_dispatches_to_print_today_queue(self):
         with patch("parse_jobs.print_today_queue") as mock_today:
             self._run(["parse_jobs.py", "--today"])
@@ -65,22 +73,22 @@ class TestMainDispatch(unittest.TestCase):
     def test_update_with_status_dispatches_handle_status_update(self):
         with patch("parse_jobs.handle_status_update") as mock_status:
             self._run(["parse_jobs.py", "--update", "Acme", "--status", "Applied", "--notes", "test note"])
-        mock_status.assert_called_once_with("Acme", "Applied", "test note", append_notes=False, recruiter=None, hiring_manager=None)
+        mock_status.assert_called_once_with("Acme", "Applied", "test note", append_notes=False, recruiter=None, hiring_manager=None, disposition=None)
 
     def test_update_with_notes_only_dispatches_handle_status_update(self):
         with patch("parse_jobs.handle_status_update") as mock_status:
             self._run(["parse_jobs.py", "--update", "Acme", "--notes", "standalone note"])
-        mock_status.assert_called_once_with("Acme", None, "standalone note", append_notes=False, recruiter=None, hiring_manager=None)
+        mock_status.assert_called_once_with("Acme", None, "standalone note", append_notes=False, recruiter=None, hiring_manager=None, disposition=None)
 
     def test_update_with_append_notes_dispatches_with_append_true(self):
         with patch("parse_jobs.handle_status_update") as mock_status:
             self._run(["parse_jobs.py", "--update", "Acme", "--append-notes", "appended note"])
-        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True, recruiter=None, hiring_manager=None)
+        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True, recruiter=None, hiring_manager=None, disposition=None)
 
     def test_update_with_notes_and_append_flag_dispatches_with_append_true(self):
         with patch("parse_jobs.handle_status_update") as mock_status:
             self._run(["parse_jobs.py", "--update", "Acme", "--notes", "appended note", "--append"])
-        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True, recruiter=None, hiring_manager=None)
+        mock_status.assert_called_once_with("Acme", None, "appended note", append_notes=True, recruiter=None, hiring_manager=None, disposition=None)
 
     def test_update_with_notes_file_dispatches_file_content(self):
         import tempfile
@@ -90,7 +98,7 @@ class TestMainDispatch(unittest.TestCase):
         try:
             with patch("parse_jobs.handle_status_update") as mock_status:
                 self._run(["parse_jobs.py", "--update", "Acme", "--notes-file", temp_name])
-            mock_status.assert_called_once_with("Acme", None, "File based notes with $65-$72 rates", append_notes=False, recruiter=None, hiring_manager=None)
+            mock_status.assert_called_once_with("Acme", None, "File based notes with $65-$72 rates", append_notes=False, recruiter=None, hiring_manager=None, disposition=None)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)

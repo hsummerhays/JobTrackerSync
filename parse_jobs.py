@@ -44,7 +44,7 @@ console = Console()
 
 # Rules and configuration constants
 CONFIG_PATH = "config.json"
-REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
+REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"}
 
 # Rule 8 Skip list (compiled regex patterns)
 SKIP_KEYWORDS = [
@@ -335,7 +335,7 @@ def is_valid_company(company, provider=None):
     # 2026-08-13 against raw source text: "Senior Software Engineering
     # Consultant / talentarchitect.com / Remote") that the generic
     # starts-with-lowercase-letter rejection below would otherwise reject.
-    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics", "fullstack", "talentarchitect.com", "cvs/aetna", "real / the real brokerage inc."}
+    whitelisted_companies = {"yapi / doctorlogic", "1872 consulting", "23andme", "7-eleven", "3m", "10x genomics", "fullstack", "talentarchitect.com", "cvs/aetna", "real / the real brokerage inc.", "66degrees"}
     if comp_lower in whitelisted_companies:
         return True
 
@@ -716,7 +716,7 @@ def clean_existing_tracker(tracker_path):
             migrated_row["Source PDF"] = row.get("Source PDF", "Unknown")
             migrated_row["Confidence"] = row.get("Confidence", "🟡 Medium")
             status = row.get("Tracker Status", row.get("Status", "New"))
-            if status not in ["New", "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]:
+            if status not in VALID_STATUSES:
                 if status == "Recruiter":
                     status = "Recruiter Submitted"
                 elif status == "Interview":
@@ -731,7 +731,7 @@ def clean_existing_tracker(tracker_path):
             
             review_status = row.get("Review Status")
             if not review_status:
-                if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+                if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                     review_status = "Applied"
                 elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     review_status = "Closed"
@@ -873,7 +873,7 @@ def clean_existing_tracker(tracker_path):
                 act = action
             else:
                 if status != "New":
-                    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
+                    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Offer", "Accepted"]:
                         action = "Already Applied"
                     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                         action = "Ignore"
@@ -1308,7 +1308,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
         try:
             today = datetime.now()
             sixty_days_ago = (today - timedelta(days=60)).strftime('%Y-%m-%d')
-            applied_statuses = ("Applied", "Interviewing", "Technical Interview", "Phone Screen", "Recruiter Contact", "Offer", "Waiting")
+            applied_statuses = ("Applied", "Interviewing", "Technical Interview", "Phone Screen", "Manager Interview Pending", "Onsite Interview Pending", "Recruiter Contact", "Offer", "Waiting")
             placeholders = ','.join(['?'] * len(applied_statuses))
 
             for job in jobs_list:
@@ -3383,7 +3383,7 @@ def _print_dashboard(tracker_path="master_tracker.csv"):
 
     p1 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P1")]
     p2 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P2")]
-    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"]]
+    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"]]
     follow_up = [r for r in rows if r.get("Tracker Status") == "Waiting"]
     recent_rejected = [r for r in rows if r.get("Tracker Status") in ["Rejected", "Ghosted"]]
 
@@ -3484,7 +3484,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     # Helper function to check if a job was applied to
     def is_applied(r):
         return r.get("tracker_status") in [
-            "Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", 
+            "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", 
             "Waiting", "Rejected", "Ghosted", "Offer", "Accepted"
         ]
 
@@ -3492,7 +3492,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     def is_interviewed(r):
         status = r.get("tracker_status")
         notes = (r.get("notes") or "").lower() + " " + (r.get("w_notes") or "").lower()
-        if status in ["Phone Screen", "Technical Interview", "Offer", "Accepted"]:
+        if status in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Offer", "Accepted"]:
             return True
         return any(kw in notes for kw in ["screen", "phone screen", "interview", "technical screen", "technical interview"])
 
@@ -3538,7 +3538,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     eligible_cnt = sum(1 for r in rows if (r.get("fit_score") or 0) >= 40)
     applied_cnt = sum(1 for r in rows if is_applied(r))
     screen_cnt = sum(1 for r in rows if is_interviewed(r))
-    tech_cnt = sum(1 for r in rows if r.get("tracker_status") in ["Technical Interview", "Offer", "Accepted"] or any(kw in ((r.get("notes") or "") + " " + (r.get("w_notes") or "")).lower() for kw in ["technical", "coding", "hackerrank", "assessment"]))
+    tech_cnt = sum(1 for r in rows if r.get("tracker_status") in ["Technical Interview", "Onsite Interview Pending", "Offer", "Accepted"] or any(kw in ((r.get("notes") or "") + " " + (r.get("w_notes") or "")).lower() for kw in ["technical", "coding", "hackerrank", "assessment"]))
     offer_cnt = sum(1 for r in rows if is_offered(r))
     accepted_cnt = sum(1 for r in rows if r.get("tracker_status") == "Accepted")
 
@@ -3750,14 +3750,16 @@ def handle_interactive_update():
         cursor.execute("""
             SELECT job_id, company, position, tracker_status, priority
             FROM jobs
-            WHERE tracker_status IN ('New', 'Phone Screen', 'Technical Interview', 'Recruiter Submitted', 'Waiting')
+            WHERE tracker_status IN ('New', 'Phone Screen', 'Manager Interview Pending', 'Technical Interview', 'Onsite Interview Pending', 'Recruiter Submitted', 'Waiting')
             ORDER BY
                 CASE tracker_status
                     WHEN 'Phone Screen' THEN 1
-                    WHEN 'Technical Interview' THEN 2
-                    WHEN 'Recruiter Submitted' THEN 3
-                    WHEN 'Waiting' THEN 4
-                    ELSE 5
+                    WHEN 'Manager Interview Pending' THEN 2
+                    WHEN 'Technical Interview' THEN 3
+                    WHEN 'Onsite Interview Pending' THEN 4
+                    WHEN 'Recruiter Submitted' THEN 5
+                    WHEN 'Waiting' THEN 6
+                    ELSE 7
                 END,
                 priority ASC,
                 company ASC
@@ -3826,7 +3828,7 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None):
+def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
@@ -3839,8 +3841,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
         
-    if status is None and notes is None and recruiter is None and hiring_manager is None:
-        console.print("[red]Either status, notes, recruiter, or hiring_manager must be provided for update.[/red]")
+    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None:
+        console.print("[red]Either status, disposition, notes, recruiter, or hiring_manager must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
@@ -3853,8 +3855,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     cursor.execute("""
         SELECT job_id, company, position, location, tracker_status, notes
         FROM jobs
-        WHERE job_id = ? OR company LIKE ? OR position LIKE ?
-    """, (query, f"%{query}%", f"%{query}%"))
+        WHERE job_id = ? OR LOWER(company) = LOWER(?) OR LOWER(company) LIKE LOWER(?)
+    """, (query, query, f"%{query}%"))
     matches = cursor.fetchall()
     
     if not matches:
@@ -3863,12 +3865,17 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         return False
         
     if len(matches) > 1:
-        console.print(f"[yellow]Multiple matches found for '{query}':[/yellow]")
-        for m in matches:
-            console.print(f"  • [bold]{m[0]}[/bold]: {m[1]} - {m[2]} ({m[3]}) [Current Status: {m[4]}]")
-        console.print("[yellow]Please specify a more precise company name or the exact Job ID.[/yellow]")
-        conn.close()
-        return False
+        # Check for exact ID match
+        exact_id_matches = [m for m in matches if m[0] == query]
+        if len(exact_id_matches) == 1:
+            matches = exact_id_matches
+        else:
+            console.print(f"[yellow]Multiple matches found for '{query}':[/yellow]")
+            for m in matches:
+                console.print(f"  • {m[0]}: {m[1]} - {m[2]} ({m[3]}) [Current Status: {m[4]}]")
+            console.print("[yellow]Please specify a more precise company name or the exact Job ID.[/yellow]")
+            conn.close()
+            return False
         
     # Single match found
     job_id, company, position, location, current_status, existing_notes = matches[0]
@@ -3877,18 +3884,19 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     
     # Determine derived fields
     review_status = "Imported"
-    if effective_status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
+    if effective_status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
         review_status = "Applied"
     elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         review_status = "Closed"
         
     action = "Apply"
-    if effective_status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
+    if effective_status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
         action = "Already Applied"
     elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
         
-    disposition = DEFAULT_DISPOSITION_MAP.get(effective_status, "Apply")
+    if disposition is None:
+        disposition = DEFAULT_DISPOSITION_MAP.get(effective_status, "Apply")
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
@@ -4031,7 +4039,145 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     return True
 
 
-def handle_manual_add(company=None, position=None, location=None, job_type=None, provider=None, recruiter=None, hiring_manager=None, url=None, fit_score=None, recommendation=None, status=None, notes=None, interactive=None):
+def parse_manual_job_block(text: str) -> dict:
+    """Parse a structured text block into kwargs suitable for handle_manual_add."""
+    extracted = {
+        "company": None,
+        "position": None,
+        "location": None,
+        "job_type": None,
+        "provider": "Manual",
+        "recruiter": None,
+        "hiring_manager": None,
+        "url": None,
+        "fit_score": None,
+        "recommendation": None,
+        "status": None,
+        "date": None,
+        "notes": None,
+    }
+
+    raw_lines = text.strip().splitlines()
+    remaining_notes = []
+    
+    status_keywords = {
+        "technical interview": "Technical Interview",
+        "phone screen": "Phone Screen",
+        "recruiter screen": "Phone Screen",
+        "recruiter submitted": "Recruiter Submitted",
+        "applied": "Applied",
+        "waiting": "Waiting",
+        "rejected": "Rejected",
+        "cancelled": "Cancelled",
+        "ghosted": "Ghosted",
+        "expired": "Expired",
+        "offer": "Offer",
+        "accepted": "Accepted",
+        "new": "New",
+    }
+
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        # Strip leading bullet/markdown indicators
+        cleaned = re.sub(r'^(?:[-*•]|\d+\.)\s*', '', line)
+
+        # Remove optional leading "Add:" prefix
+        cleaned = re.sub(r'^Add:\s*', '', cleaned, flags=re.IGNORECASE)
+
+        m = re.match(r'^([A-Za-z0-9\s/_-]+):\s*(.*)$', cleaned)
+        if m:
+            key = m.group(1).strip().lower()
+            val = m.group(2).strip()
+
+            if key in ("company", "employer"):
+                if not extracted["company"]:
+                    extracted["company"] = val
+                else:
+                    remaining_notes.append(line)
+            elif key in ("company/recruiter", "company / recruiter", "employer/recruiter"):
+                # E.g. "Inceed — Kalen Wootan, Senior Recruiter"
+                parts = re.split(r'\s*[—–-]\s*', val, maxsplit=1)
+                if not extracted["company"]:
+                    extracted["company"] = parts[0].strip()
+                if len(parts) > 1 and not extracted["recruiter"]:
+                    extracted["recruiter"] = parts[1].strip()
+                remaining_notes.append(line)
+            elif key in ("position", "title", "role", "roles"):
+                # If role contains detailed description or architect + team lead, check if position already set
+                if not extracted["position"]:
+                    extracted["position"] = val
+                else:
+                    remaining_notes.append(line)
+            elif key in ("location", "workplace"):
+                extracted["location"] = val
+            elif key in ("job type", "type", "employment"):
+                extracted["job_type"] = val
+                remaining_notes.append(line)
+            elif key in ("provider", "source"):
+                extracted["provider"] = val
+            elif key in ("recruiter", "talent partner", "recruiter name"):
+                if not extracted["recruiter"]:
+                    extracted["recruiter"] = val
+                else:
+                    remaining_notes.append(line)
+            elif key in ("hiring manager", "manager"):
+                extracted["hiring_manager"] = val
+            elif key in ("url", "link"):
+                extracted["url"] = val
+            elif key in ("date", "date added", "date contacted"):
+                extracted["date"] = val
+            elif key in ("status", "tracker status"):
+                # Determine best match for status
+                val_lower = val.lower()
+                matched_status = None
+                # Check for specific compound phrases
+                if "onsite interview" in val_lower or "in-person interview" in val_lower:
+                    matched_status = "Onsite Interview Pending"
+                elif "manager interview" in val_lower:
+                    matched_status = "Manager Interview Pending"
+                elif "technical interview" in val_lower:
+                    matched_status = "Technical Interview"
+                elif "phone screen" in val_lower or "recruiter screen" in val_lower or "recruiter call" in val_lower:
+                    matched_status = "Phone Screen"
+                elif "recruiter contact" in val_lower or "recruiter submitted" in val_lower:
+                    matched_status = "Recruiter Submitted"
+                else:
+                    for sk, sv in status_keywords.items():
+                        if sk in val_lower:
+                            matched_status = sv
+                            break
+                extracted["status"] = matched_status or val
+                remaining_notes.append(line)
+            elif key in ("fit", "fit score", "score", "priority/fit", "priority / fit"):
+                val_lower = val.lower()
+                if "high" in val_lower or "priority" in val_lower or "95" in val_lower or "100" in val_lower:
+                    extracted["fit_score"] = 95
+                    extracted["recommendation"] = "★★★★★ Apply Now"
+                elif "strong" in val_lower or "85" in val_lower or "90" in val_lower:
+                    extracted["fit_score"] = 85
+                    extracted["recommendation"] = "★★★★☆ Strong"
+                elif "maybe" in val_lower or "70" in val_lower or "75" in val_lower:
+                    extracted["fit_score"] = 70
+                    extracted["recommendation"] = "★★★☆☆ Maybe"
+                elif "low" in val_lower:
+                    extracted["fit_score"] = 50
+                    extracted["recommendation"] = "★★☆☆☆ Low"
+                remaining_notes.append(line)
+            else:
+                remaining_notes.append(line)
+        else:
+            remaining_notes.append(line)
+
+    if remaining_notes:
+        extracted["notes"] = "\n".join(remaining_notes)
+
+    return extracted
+
+
+def handle_manual_add(company=None, position=None, location=None, job_type=None, provider=None, recruiter=None, hiring_manager=None, url=None, fit_score=None, recommendation=None, status=None, notes=None, interactive=None, date_added=None):
     if interactive is None:
         interactive = not (company and position)
 
@@ -4170,13 +4316,13 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     
     # Derived values
     review_status = "Imported"
-    if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+    if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
         review_status = "Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         review_status = "Closed"
         
     action = "Apply"
-    if status in ["Applied", "Waiting", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Offer", "Accepted"]:
+    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Offer", "Accepted"]:
         action = "Already Applied"
     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         action = "Ignore"
@@ -4205,7 +4351,8 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     # company/position/location, reuse its Job ID so re-running --add for the
     # same opportunity updates that row instead of creating a duplicate --
     # otherwise mint a fresh, permanent UUID, same as the PDF-import path.
-    date_added = datetime.now().strftime("%Y-%m-%d")
+    if not date_added:
+        date_added = datetime.now().strftime("%Y-%m-%d")
     job_id = None
     target_fingerprint = canonical_job_key(company, position, location)
     if os.path.exists(tracker_path):
@@ -4334,7 +4481,7 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
             SELECT LOWER(j.company)
             FROM jobs j
             JOIN job_workflow w ON j.job_id = w.job_id
-            WHERE w.tracker_status IN ('Phone Screen', 'Technical Interview')
+            WHERE w.tracker_status IN ('Phone Screen', 'Manager Interview Pending', 'Technical Interview', 'Onsite Interview Pending')
         """).fetchall()
         prior_interview_companies = {r[0] for r in rows}
     except Exception as e:
@@ -4670,9 +4817,11 @@ def main():
     parser.add_argument("--rescore-all", action="store_true", help="Force rescoring of all active jobs, including manual score overrides")
     parser.add_argument("--clear-score-override", nargs="?", const="", required=False, help="Clear manual score override for target company/job ID (or all jobs if empty)")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
+    parser.add_argument("--add-from-text", required=False, help="Text block or file path containing structured job details to add")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
+    parser.add_argument("--disposition", required=False, help="New tracker disposition (e.g. Active, Closed, Waiting, Apply)")
     parser.add_argument("--notes", required=False, help="Note to set on the job record")
     parser.add_argument("--append-notes", required=False, help="Note to append to existing job notes")
     parser.add_argument("--notes-file", required=False, help="File path containing notes to set or append (avoids shell quoting issues)")
@@ -4697,6 +4846,60 @@ def main():
         with open(args.notes_file, mode='r', encoding='utf-8') as nf:
             file_note_content = nf.read()
 
+    if args.add_from_text:
+        text_content = args.add_from_text
+        if os.path.exists(text_content):
+            try:
+                with open(text_content, mode='r', encoding='utf-8') as tf:
+                    text_content = tf.read()
+            except Exception as e:
+                console.print(f"[red]Error reading text file '{args.add_from_text}': {e}[/red]")
+                return
+
+        parsed = parse_manual_job_block(text_content)
+        # Explicit CLI flags override parsed text values if provided
+        final_company = args.company or parsed.get("company")
+        final_position = args.position or parsed.get("position")
+        final_location = args.location or parsed.get("location") or "Remote"
+        final_job_type = args.job_type or parsed.get("job_type") or "Software Engineer"
+        final_provider = args.provider or parsed.get("provider") or "Manual"
+        final_recruiter = args.recruiter or parsed.get("recruiter")
+        final_hiring_manager = args.hiring_manager or parsed.get("hiring_manager")
+        final_url = args.url or parsed.get("url")
+        final_fit_score = args.fit_score or parsed.get("fit_score") or 70
+        final_recommendation = args.recommendation or parsed.get("recommendation") or "★★★★☆ Strong"
+        final_status = args.status or parsed.get("status") or "New"
+        final_date = args.date or parsed.get("date")
+        if final_date:
+            final_date_cleaned = final_date.strip()
+            for fmt in ("%Y-%m-%d", "%B %d, %Y", "%b %d, %Y", "%b. %d, %Y", "%m/%d/%Y", "%m-%d-%Y"):
+                try:
+                    dt = datetime.strptime(final_date_cleaned, fmt)
+                    final_date = dt.strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    pass
+
+        final_notes = file_note_content if file_note_content is not None else (args.append_notes or args.notes or parsed.get("notes"))
+
+        handle_manual_add(
+            company=final_company,
+            position=final_position,
+            location=final_location,
+            job_type=final_job_type,
+            provider=final_provider,
+            recruiter=final_recruiter,
+            hiring_manager=final_hiring_manager,
+            url=final_url,
+            fit_score=final_fit_score,
+            recommendation=final_recommendation,
+            status=final_status,
+            notes=final_notes,
+            date_added=final_date,
+            interactive=False
+        )
+        return
+
     if args.add:
         note_val = file_note_content if file_note_content is not None else (args.append_notes if args.append_notes is not None else args.notes)
         handle_manual_add(
@@ -4711,7 +4914,8 @@ def main():
             fit_score=args.fit_score,
             recommendation=args.recommendation,
             status=args.status,
-            notes=note_val
+            notes=note_val,
+            date_added=args.date
         )
         return
         
@@ -4721,7 +4925,7 @@ def main():
         
     if args.update is not None:
         has_notes = (args.notes is not None) or (args.append_notes is not None) or (file_note_content is not None)
-        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None)
+        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None)
         if args.update == "" and not args.status and not has_notes and not has_metadata:
             handle_interactive_update()
             return
@@ -4737,7 +4941,8 @@ def main():
                 note_val,
                 append_notes=is_append,
                 recruiter=args.recruiter,
-                hiring_manager=args.hiring_manager
+                hiring_manager=args.hiring_manager,
+                disposition=args.disposition
             )
             return
             
@@ -4971,7 +5176,7 @@ def main():
                             # review, never auto-merged); aggregator placeholders match only
                             # on the strict occurrence fingerprint above.
                             REAPPLY_DAYS = 60
-                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting"}
+                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"}
                             possible_duplicate_note = None
                             # Existing rows are visited with active (non-Expired) matches
                             # first. A canonical key can legitimately own more than one
@@ -5401,7 +5606,7 @@ def main():
         # Standardize Review Status
         review_status = row.get("Review Status")
         if not review_status:
-            if status in ["Applied", "Phone Screen", "Technical Interview", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+            if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                 review_status = "Applied"
             elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                 review_status = "Closed"
@@ -5561,7 +5766,9 @@ def main():
 
     # Calculate pipeline metrics
     phone_screens = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Phone Screen")
+    manager_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Manager Interview Pending")
     technical_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Technical Interview")
+    onsite_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Onsite Interview Pending")
     recruiter_contacts = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Recruiter Submitted" or row.get("Action") == "Contact Recruiter")
     waiting_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Waiting")
 
@@ -5580,7 +5787,7 @@ def main():
     health_closed = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted", "Expired"])
     health_active = health_imported - health_closed
     health_applied = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Applied")
-    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Technical Interview"])
+    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending"])
     
     health_active_apps = health_applied + health_interviewing
     health_app_rate = (health_applied / health_imported * 100) if health_imported > 0 else 0.0
@@ -5608,10 +5815,12 @@ def main():
     console.print("[bold cyan]          APPLICATION PIPELINE           [/bold cyan]")
     console.print("[bold cyan]=========================================[/bold cyan]")
     console.print("[bold underline]Active Pipeline[/bold underline]")
-    console.print(f"  Phone Screen:         [bold green]{phone_screens}[/bold green]")
-    console.print(f"  Technical Interview:  [bold green]{technical_interviews}[/bold green]")
-    console.print(f"  Recruiter Contact:    [bold green]{recruiter_contacts}[/bold green]")
-    console.print(f"  Waiting:              [bold yellow]{waiting_count}[/bold yellow]")
+    console.print(f"  Phone Screen:               [bold green]{phone_screens}[/bold green]")
+    console.print(f"  Manager Interview Pending:  [bold green]{manager_interviews}[/bold green]")
+    console.print(f"  Technical Interview:        [bold green]{technical_interviews}[/bold green]")
+    console.print(f"  Onsite Interview Pending:   [bold green]{onsite_interviews}[/bold green]")
+    console.print(f"  Recruiter Contact:          [bold green]{recruiter_contacts}[/bold green]")
+    console.print(f"  Waiting:                    [bold yellow]{waiting_count}[/bold yellow]")
     console.print("\n[bold underline]New Opportunities[/bold underline]")
     console.print(f"  P1 \u2013 Apply Today:     [bold cyan]{p1_count}[/bold cyan]")
     console.print(f"  P2 \u2013 Apply This Week:  [bold cyan]{p2_count}[/bold cyan]")
