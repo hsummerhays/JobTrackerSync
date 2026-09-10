@@ -101,7 +101,7 @@ Each job record in the main `jobs` table carries these fields:
 | `Priority` | P1 - Apply today ... P4 - Ignore |
 | `Company Type` | Recruiting Firm / Consulting / Defense / Healthcare / Financial / Enterprise / Small/Medium |
 | `Recommendation` | 1-5 stars (Skip to Apply Now) |
-| `Tracker Status` | New, Applied, Phone Screen, Technical Interview, Recruiter Submitted, Waiting, Rejected, Cancelled, Ghosted |
+| `Tracker Status` | New, Applied, Phone Screen, Manager Interview Pending, Technical Interview, Onsite Interview Pending, Assessment Pending, Reference Check, Recruiter Submitted, Waiting, Rejected, Cancelled, Ghosted, Expired, Offer, Accepted |
 | `Disposition` | Free-text outcome notes |
 | `Action` | Apply, Contact Recruiter, Review, Already Applied, Ignore |
 | `Existing Company` | Yes/No -- same employer already in tracker |

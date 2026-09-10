@@ -49,7 +49,7 @@ python parse_jobs.py --update "<company_name_or_job_id>" --status Cancelled
 ```
 
 ### 4. Updating to Other Statuses
-Valid statuses: `Applied`, `Phone Screen`, `Manager Interview Pending`, `Technical Interview`, `Onsite Interview Pending`, `Recruiter Submitted`, `Waiting`, `Offer`, `Accepted`, `Expired`, `Ghosted`, `New`, `Cancelled`, `Rejected`
+Valid statuses: `New`, `Applied`, `Phone Screen`, `Manager Interview Pending`, `Technical Interview`, `Onsite Interview Pending`, `Assessment Pending`, `Reference Check`, `Recruiter Submitted`, `Waiting`, `Offer`, `Accepted`, `Expired`, `Ghosted`, `Cancelled`, `Rejected`
 
 ```bash
 python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name>
@@ -66,8 +66,8 @@ python parse_jobs.py --update "<company_name_or_job_id>" --notes "<new_notes>"
 # Set or append notes from a file (safely preserves characters like $, quotes, and multiline text without shell interpolation):
 python parse_jobs.py --update "<company_name_or_job_id>" --notes-file "scratch/notes.txt" [--append]
 
-# Update status, recruiter, hiring manager, and append notes at the same time:
-python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name> --recruiter "<recruiter>" --hiring-manager "<manager>" --append-notes "<note_to_append>"
+# Update status, action, recruiter, hiring manager, and append notes at the same time:
+python parse_jobs.py --update "<company_name_or_job_id>" --status <status_name> --action "<action_name>" --recruiter "<recruiter>" --hiring-manager "<manager>" --append-notes "<note_to_append>"
 ```
 
 ### 7. Rescoring Jobs and Preserving Manual Scores

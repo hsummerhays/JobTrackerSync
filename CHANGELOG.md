@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## v1.3.8 — 2026-09-10
+
+### Tracker Status Expansion & Explicit Action Controls
+- **New Active Statuses (`Assessment Pending` & `Reference Check`)**: Added `Assessment Pending` and `Reference Check` to `VALID_STATUSES`, `DEFAULT_DISPOSITION_MAP` (`Active`), and `STATUS_RANKS` (ranks 91 and 94 respectively) in `dedup_utils.py` and `parse_jobs.py`. Both map to `Review Status = Applied` and default `Action = Already Applied`.
+- **Structured Text & Manual Parsing Support**: Extended `parse_manual_job_block()` in `parse_jobs.py` to recognize `assessment pending` and `reference check` phrases in structured job text blocks.
+- **Explicit `--action` CLI Argument**: Added `--action` flag to `parse_jobs.py` CLI and `handle_status_update()`, enabling users to explicitly assign actions (such as `Send References`, `Already Applied`, or `Ignore`) during status updates.
+- **Backward Compatible CLI Dispatches**: Maintained exact call signatures in `handle_status_update()` so omitted action arguments fall back smoothly to derived default actions.
+
 ## v1.3.7 — 2026-08-23
 
 ### Duplicates Indexing & Workplace Classification

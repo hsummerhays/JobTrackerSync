@@ -85,7 +85,7 @@ Action is calculated based on Company Type and Recommendation:
 | Apply | Recommendation >= 4 stars (and not a Recruiting Firm) |
 | Review | Recommendation = 3 stars |
 | Ignore | Recommendation <= 2 stars |
-| Already Applied | Tracker Status is Applied, Phone Screen, Technical Interview, Recruiter Submitted, or Waiting |
+| Already Applied | Tracker Status is Applied, Waiting, Phone Screen, Manager Interview Pending, Technical Interview, Onsite Interview Pending, Assessment Pending, Reference Check, Recruiter Submitted, Offer, or Accepted |
 
 > **Recruiting Firm detection** is intentionally strict: it checks only the company *name* (not the job description) for keywords like: recruiting, staffing, placement, navigators, personnel, robert half, binit, headhunters, search partners.
 > This prevents normal companies like CGI, Amazon, or Citi from being incorrectly labeled as recruiters.

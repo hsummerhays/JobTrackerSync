@@ -103,6 +103,11 @@ class TestMainDispatch(unittest.TestCase):
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
 
+    def test_update_with_action_dispatches_handle_status_update(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update", "Acme", "--status", "Reference Check", "--action", "Send References"])
+        mock_status.assert_called_once_with("Acme", "Reference Check", None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action="Send References")
+
     def test_dashboard_dispatches_to_print_dashboard(self):
         with patch("parse_jobs._print_dashboard") as mock_dash:
             self._run(["parse_jobs.py", "--dashboard"])
