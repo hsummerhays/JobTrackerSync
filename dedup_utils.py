@@ -13,7 +13,7 @@ FIELD_DELIMITER = "|"
 
 UNREVIEWED_STATUSES = {"New", "Imported"}
 
-VALID_STATUSES = ["New", "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
+VALID_STATUSES = ["New", "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
 
 TERMINAL_STATUSES = {"Rejected", "Ghosted", "Cancelled", "Expired", "Closed"}
 
@@ -24,6 +24,7 @@ DEFAULT_DISPOSITION_MAP = {
     "Manager Interview Pending": "Active",
     "Technical Interview": "Active",
     "Onsite Interview Pending": "Active",
+    "Final Interview Scheduled": "Active",
     "Assessment Pending": "Active",
     "Reference Check": "Active",
     "Recruiter Submitted": "Active",
@@ -42,6 +43,7 @@ STATUS_RANKS = {
     "Accepted": 100,
     "Offer": 95,
     "Reference Check": 94,
+    "Final Interview Scheduled": 93,
     "Onsite Interview Pending": 92,
     "Assessment Pending": 91,
     "Interviewing": 90,

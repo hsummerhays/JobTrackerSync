@@ -44,7 +44,7 @@ console = Console()
 
 # Rules and configuration constants
 CONFIG_PATH = "config.json"
-REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"}
+REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"}
 
 # Rule 8 Skip list (compiled regex patterns)
 SKIP_KEYWORDS = [
@@ -731,7 +731,7 @@ def clean_existing_tracker(tracker_path):
             
             review_status = row.get("Review Status")
             if not review_status:
-                if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+                if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                     review_status = "Applied"
                 elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                     review_status = "Closed"
@@ -873,7 +873,7 @@ def clean_existing_tracker(tracker_path):
                 act = action
             else:
                 if status != "New":
-                    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Offer", "Accepted"]:
+                    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted"]:
                         action = "Already Applied"
                     elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                         action = "Ignore"
@@ -3383,7 +3383,7 @@ def _print_dashboard(tracker_path="master_tracker.csv"):
 
     p1 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P1")]
     p2 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P2")]
-    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"]]
+    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"]]
     follow_up = [r for r in rows if r.get("Tracker Status") == "Waiting"]
     recent_rejected = [r for r in rows if r.get("Tracker Status") in ["Rejected", "Ghosted"]]
 
@@ -3484,7 +3484,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     # Helper function to check if a job was applied to
     def is_applied(r):
         return r.get("tracker_status") in [
-            "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", 
+            "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", 
             "Waiting", "Rejected", "Ghosted", "Offer", "Accepted"
         ]
 
@@ -3492,7 +3492,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     def is_interviewed(r):
         status = r.get("tracker_status")
         notes = (r.get("notes") or "").lower() + " " + (r.get("w_notes") or "").lower()
-        if status in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Offer", "Accepted"]:
+        if status in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Offer", "Accepted"]:
             return True
         return any(kw in notes for kw in ["screen", "phone screen", "interview", "technical screen", "technical interview"])
 
@@ -3538,7 +3538,7 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
     eligible_cnt = sum(1 for r in rows if (r.get("fit_score") or 0) >= 40)
     applied_cnt = sum(1 for r in rows if is_applied(r))
     screen_cnt = sum(1 for r in rows if is_interviewed(r))
-    tech_cnt = sum(1 for r in rows if r.get("tracker_status") in ["Technical Interview", "Onsite Interview Pending", "Offer", "Accepted"] or any(kw in ((r.get("notes") or "") + " " + (r.get("w_notes") or "")).lower() for kw in ["technical", "coding", "hackerrank", "assessment"]))
+    tech_cnt = sum(1 for r in rows if r.get("tracker_status") in ["Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Offer", "Accepted"] or any(kw in ((r.get("notes") or "") + " " + (r.get("w_notes") or "")).lower() for kw in ["technical", "coding", "hackerrank", "assessment"]))
     offer_cnt = sum(1 for r in rows if is_offered(r))
     accepted_cnt = sum(1 for r in rows if r.get("tracker_status") == "Accepted")
 
@@ -3750,16 +3750,19 @@ def handle_interactive_update():
         cursor.execute("""
             SELECT job_id, company, position, tracker_status, priority
             FROM jobs
-            WHERE tracker_status IN ('New', 'Phone Screen', 'Manager Interview Pending', 'Technical Interview', 'Onsite Interview Pending', 'Recruiter Submitted', 'Waiting')
+            WHERE tracker_status IN ('New', 'Phone Screen', 'Manager Interview Pending', 'Technical Interview', 'Assessment Pending', 'Onsite Interview Pending', 'Final Interview Scheduled', 'Reference Check', 'Recruiter Submitted', 'Waiting')
             ORDER BY
                 CASE tracker_status
                     WHEN 'Phone Screen' THEN 1
                     WHEN 'Manager Interview Pending' THEN 2
                     WHEN 'Technical Interview' THEN 3
-                    WHEN 'Onsite Interview Pending' THEN 4
-                    WHEN 'Recruiter Submitted' THEN 5
-                    WHEN 'Waiting' THEN 6
-                    ELSE 7
+                    WHEN 'Assessment Pending' THEN 4
+                    WHEN 'Onsite Interview Pending' THEN 5
+                    WHEN 'Final Interview Scheduled' THEN 6
+                    WHEN 'Reference Check' THEN 7
+                    WHEN 'Recruiter Submitted' THEN 8
+                    WHEN 'Waiting' THEN 9
+                    ELSE 10
                 END,
                 priority ASC,
                 company ASC
@@ -3828,7 +3831,7 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None):
+def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None, review_status=None, location=None, provider=None):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
@@ -3841,8 +3844,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
         
-    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None:
-        console.print("[red]Either status, disposition, action, notes, recruiter, or hiring_manager must be provided for update.[/red]")
+    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None and review_status is None and location is None and provider is None:
+        console.print("[red]Either status, review_status, disposition, action, notes, recruiter, hiring_manager, location, or provider must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
@@ -3853,7 +3856,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
 
     # Query database for matches
     cursor.execute("""
-        SELECT job_id, company, position, location, tracker_status, notes
+        SELECT job_id, company, position, location, tracker_status, notes, review_status
         FROM jobs
         WHERE job_id = ? OR LOWER(company) = LOWER(?) OR LOWER(company) LIKE LOWER(?)
     """, (query, query, f"%{query}%"))
@@ -3878,19 +3881,26 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
             return False
         
     # Single match found
-    job_id, company, position, location, current_status, existing_notes = matches[0]
+    job_id, company, position, location, current_status, existing_notes, current_review_status = matches[0]
     
     effective_status = status if status is not None else (current_status or "New")
     
     # Determine derived fields
-    review_status = "Imported"
-    if effective_status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
-        review_status = "Applied"
+    derived_review_status = "Imported"
+    if effective_status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
+        derived_review_status = "Applied"
     elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
-        review_status = "Closed"
+        derived_review_status = "Closed"
+        
+    if review_status is not None:
+        effective_review_status = review_status
+    elif status is not None:
+        effective_review_status = derived_review_status
+    else:
+        effective_review_status = current_review_status or derived_review_status
         
     derived_action = "Apply"
-    if effective_status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
+    if effective_status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
         derived_action = "Already Applied"
     elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
         derived_action = "Ignore"
@@ -3912,7 +3922,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     
     # Update SQLite database
     update_fields = ["tracker_status = ?", "review_status = ?", "action = ?", "disposition = ?"]
-    update_params = [effective_status, review_status, effective_action, disposition]
+    update_params = [effective_status, effective_review_status, effective_action, disposition]
     if final_notes is not None:
         update_fields.append("notes = ?")
         update_params.append(final_notes)
@@ -3922,6 +3932,12 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     if hiring_manager is not None:
         update_fields.append("hiring_manager = ?")
         update_params.append(hiring_manager)
+    if location is not None:
+        update_fields.append("location = ?")
+        update_params.append(location)
+    if provider is not None:
+        update_fields.append("provider = ?")
+        update_params.append(provider)
 
     update_params.append(job_id)
     cursor.execute(f"UPDATE jobs SET {', '.join(update_fields)} WHERE job_id = ?", tuple(update_params))
@@ -3933,12 +3949,12 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
             SET tracker_status = ?, review_status = ?, action = ?, disposition = ?,
                 notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system', status_source = 'user'
             WHERE job_id = ?
-        """, (effective_status, review_status, effective_action, disposition, final_notes, now_str, job_id))
+        """, (effective_status, effective_review_status, effective_action, disposition, final_notes, now_str, job_id))
     else:
         cursor.execute("""
             INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by, status_source)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'system', 'user')
-        """, (job_id, effective_status, review_status, effective_action, disposition, final_notes, now_str))
+        """, (job_id, effective_status, effective_review_status, effective_action, disposition, final_notes, now_str))
         
     # Retrieve updated row for CSV synchronization
     cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
@@ -4003,7 +4019,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
             for row in reader:
                 if row["Job ID"] == job_id:
                     row["Tracker Status"] = effective_status
-                    row["Review Status"] = review_status
+                    row["Review Status"] = effective_review_status
                     row["Action"] = effective_action
                     row["Disposition"] = disposition
                     if final_notes is not None:
@@ -4032,7 +4048,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     console.print(f"  [bold]Position:[/bold]      {position}")
     console.print("")
     console.print(f"  [bold]Tracker Status:[/bold] [cyan]{effective_status}[/cyan]")
-    console.print(f"  [bold]Review Status:[/bold]  {review_status}")
+    console.print(f"  [bold]Review Status:[/bold]  {effective_review_status}")
     console.print(f"  [bold]Action:[/bold]         {effective_action}")
     console.print(f"  [bold]Disposition:[/bold]    {disposition}")
     if final_notes:
@@ -4826,6 +4842,7 @@ def main():
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
+    parser.add_argument("--review-status", required=False, help="New review status (e.g. Applied, Recruiter Contact, Reviewed, Imported, Closed)")
     parser.add_argument("--disposition", required=False, help="New tracker disposition (e.g. Active, Closed, Waiting, Apply)")
     parser.add_argument("--action", required=False, help="New tracker action (e.g. Apply, Already Applied, Send References, Ignore)")
     parser.add_argument("--notes", required=False, help="Note to set on the job record")
@@ -4931,7 +4948,7 @@ def main():
         
     if args.update is not None:
         has_notes = (args.notes is not None) or (args.append_notes is not None) or (file_note_content is not None)
-        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None)
+        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None) or (args.review_status is not None) or (args.location is not None) or (args.provider is not None)
         if args.update == "" and not args.status and not has_notes and not has_metadata:
             handle_interactive_update()
             return
@@ -4949,6 +4966,12 @@ def main():
             }
             if args.action is not None:
                 kwargs["action"] = args.action
+            if args.review_status is not None:
+                kwargs["review_status"] = args.review_status
+            if args.location is not None:
+                kwargs["location"] = args.location
+            if args.provider is not None:
+                kwargs["provider"] = args.provider
             handle_status_update(
                 args.update,
                 args.status,
@@ -5187,7 +5210,7 @@ def main():
                             # review, never auto-merged); aggregator placeholders match only
                             # on the strict occurrence fingerprint above.
                             REAPPLY_DAYS = 60
-                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting"}
+                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"}
                             possible_duplicate_note = None
                             # Existing rows are visited with active (non-Expired) matches
                             # first. A canonical key can legitimately own more than one
@@ -5617,7 +5640,7 @@ def main():
         # Standardize Review Status
         review_status = row.get("Review Status")
         if not review_status:
-            if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+            if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
                 review_status = "Applied"
             elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
                 review_status = "Closed"
@@ -5780,6 +5803,7 @@ def main():
     manager_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Manager Interview Pending")
     technical_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Technical Interview")
     onsite_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Onsite Interview Pending")
+    final_interviews = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Final Interview Scheduled")
     recruiter_contacts = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Recruiter Submitted" or row.get("Action") == "Contact Recruiter")
     waiting_count = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Waiting")
 
@@ -5798,7 +5822,7 @@ def main():
     health_closed = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted", "Expired"])
     health_active = health_imported - health_closed
     health_applied = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Applied")
-    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending"])
+    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check"])
     
     health_active_apps = health_applied + health_interviewing
     health_app_rate = (health_applied / health_imported * 100) if health_imported > 0 else 0.0
@@ -5830,6 +5854,7 @@ def main():
     console.print(f"  Manager Interview Pending:  [bold green]{manager_interviews}[/bold green]")
     console.print(f"  Technical Interview:        [bold green]{technical_interviews}[/bold green]")
     console.print(f"  Onsite Interview Pending:   [bold green]{onsite_interviews}[/bold green]")
+    console.print(f"  Final Interview Scheduled:  [bold green]{final_interviews}[/bold green]")
     console.print(f"  Recruiter Contact:          [bold green]{recruiter_contacts}[/bold green]")
     console.print(f"  Waiting:                    [bold yellow]{waiting_count}[/bold yellow]")
     console.print("\n[bold underline]New Opportunities[/bold underline]")

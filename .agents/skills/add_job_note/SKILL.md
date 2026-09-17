@@ -40,7 +40,7 @@ python parse_jobs.py --update "<company_name_or_job_id>" --notes-file "scratch/n
 
 ### 4. Updating Status, Metadata, and Adding Notes Simultaneously
 ```bash
-python parse_jobs.py --update "<company_name_or_job_id>" --status "<status>" --recruiter "<recruiter>" --hiring-manager "<manager>" --append-notes "<note_text>"
+python parse_jobs.py --update "<company_name_or_job_id>" --status "<status>" --review-status "<review_status>" --action "<action>" --recruiter "<recruiter>" --hiring-manager "<manager>" --location "<location>" --provider "<provider>" --append-notes "<note_text>"
 ```
 
 ## Behavior & Data Guarantees

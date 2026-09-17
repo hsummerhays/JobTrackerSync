@@ -88,7 +88,7 @@ Each job record in the main `jobs` table carries these fields:
 | `Previous Job ID` | Links a newly created tracker record to an older record if re-listed outside the window |
 | `Source Index` | Deterministic extraction position (e.g., '1-5' for the 5th job in the 1st PDF) |
 | `Last Seen` | ISO date when the job was most recently observed in a parse run |
-| `Review Status` | Workflow state: New, Applied, Imported, Closed |
+| `Review Status` | Workflow state: New, Applied, Imported, Closed, Recruiter Contact, Reviewed |
 | `Job Type` | Software Engineer or Operations (drives scoring criteria) |
 | `Company` | Extracted company name (cleaned of subject/email subject formatting artifacts) |
 | `Position` | Job title |
@@ -101,7 +101,7 @@ Each job record in the main `jobs` table carries these fields:
 | `Priority` | P1 - Apply today ... P4 - Ignore |
 | `Company Type` | Recruiting Firm / Consulting / Defense / Healthcare / Financial / Enterprise / Small/Medium |
 | `Recommendation` | 1-5 stars (Skip to Apply Now) |
-| `Tracker Status` | New, Applied, Phone Screen, Manager Interview Pending, Technical Interview, Onsite Interview Pending, Assessment Pending, Reference Check, Recruiter Submitted, Waiting, Rejected, Cancelled, Ghosted, Expired, Offer, Accepted |
+| `Tracker Status` | New, Applied, Phone Screen, Manager Interview Pending, Technical Interview, Onsite Interview Pending, Final Interview Scheduled, Assessment Pending, Reference Check, Recruiter Submitted, Waiting, Rejected, Cancelled, Ghosted, Expired, Offer, Accepted |
 | `Disposition` | Free-text outcome notes |
 | `Action` | Apply, Contact Recruiter, Review, Already Applied, Ignore |
 | `Existing Company` | Yes/No -- same employer already in tracker |
