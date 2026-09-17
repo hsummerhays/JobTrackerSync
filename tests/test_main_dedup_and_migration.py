@@ -282,7 +282,7 @@ class TestReapplyAndDuplicateDetection(MainIntegrationTestBase):
         as the same employer and merged, without changing canonical_job_key()
         itself (which would recompute -- and change -- every existing row's
         stored Fingerprint on the next clean_existing_tracker() pass; see
-        dedup_utils.canonical_job_key's docstring)."""
+        utils.canonical_job_key's docstring)."""
         self._write_tracker([{
             "Job ID": "wheeler1", "Company": "Wheeler Machinery Company", "Position": "Senior Full Stack Software Engineer",
             "Location": "Salt Lake City, UT", "Tracker Status": "Applied", "Date Added": "2024-01-01",
@@ -847,7 +847,7 @@ class TestWeaveChronologyRegression(MainIntegrationTestBase):
         self._write_pdf(pdf_dir_22, name="listing22.pdf")
 
         # Force the new job to be Rejected instead of New so we can test the preference
-        with patch("dedup_utils.should_prefer_status", return_value=True):
+        with patch("utils.should_prefer_status", return_value=True):
             with patch("parse_jobs.evaluate_job", return_value=(True, "High", "dummy", 80, "P3", "Startup", "Apply", "reason", "skills", "miss", "Full-time")):
                 # Actually, parse_jobs doesn't use the mock easily here. Let's just run it. It will be "New". 
                 # Wait, Cancelled -> New will become New. 

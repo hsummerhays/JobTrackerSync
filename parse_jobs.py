@@ -13,30 +13,58 @@ import pathlib
 import tempfile
 from datetime import datetime, date, timezone, timedelta
 import pypdf
-from dedup_utils import (
-    merge_delimited_field,
-    canonical_job_key,
+from utils import (
+    FIELD_DELIMITER,
+    TRACKER_HEADERS,
     VALID_STATUSES,
     VALID_REVIEW_STATUSES,
     VALID_ACTIONS,
-    build_occurrence_fingerprint,
-    should_prefer_status,
-    normalize_string,
-    normalize_location,
-    normalize_company_for_matching,
-    normalize_title,
-    locations_compatible,
-    title_similarity,
-    classify_workplace,
+    UNREVIEWED_STATUSES,
     TERMINAL_STATUSES,
     CLOSED_TRACKER_STATUSES,
-    UNREVIEWED_STATUSES,
     INTERVIEW_STATUSES,
     APPLIED_APPLICATION_STATUSES,
     ACTIVE_PIPELINE_STATUSES,
     REAPPLY_STATUSES,
     DEFAULT_DISPOSITION_MAP,
     STATUS_RANKS,
+    AGGREGATOR_PROVIDER_NAMES,
+    MAX_OLD_BACKUPS_TO_KEEP,
+    _RUN_START_TIMESTAMP,
+    normalize_string,
+    word_boundary_pattern,
+    normalize_company_for_matching,
+    clean_company_name,
+    normalize_ocr_spacing,
+    normalize_title,
+    is_clean_location,
+    normalize_location,
+    locations_compatible,
+    title_similarity,
+    split_multivalue_field,
+    merge_delimited_field,
+    canonical_key,
+    canonical_job_key,
+    is_aggregator_placeholder,
+    build_occurrence_fingerprint,
+    get_status_rank,
+    should_prefer_status,
+    compute_priority,
+    classify_workplace,
+    classify_job_type,
+    detect_provider,
+    path_to_file_uri,
+    hash_file,
+    hash_pdf_file,
+    backup_timestamp,
+    _backup_timestamp,
+    backup_file_if_exists,
+    write_csv_atomic,
+    write_tracker_csv_atomic,
+    ensure_db_columns,
+    _ensure_columns,
+    generate_calendar_url,
+    create_vcard_entry,
 )
 from rich.console import Console
 from rich.table import Table
@@ -156,17 +184,6 @@ FAANG_COMPANIES = ["Google", "Apple", "Meta", "Facebook", "Amazon", "Netflix", "
 PARSER_VERSION = "1.3.1"
 
 
-def hash_pdf_file(pdf_path):
-    """Return a stable content hash (MD5) for a PDF file, or None on error."""
-    try:
-        hasher = hashlib.md5()
-        with open(pdf_path, "rb") as f:
-            for chunk in iter(lambda: f.read(65536), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
-    except OSError:
-        return None
-
 
 def initialize_processed_files_table(conn):
     """Create the processed_files table if it does not yet exist."""
@@ -269,43 +286,6 @@ def record_pdf_processed(conn, file_hash, parser_version, file_path, file_size, 
     ))
     conn.commit()
 
-def clean_company_name(comp):
-    if not comp: return ""
-    # Strip common email subject/notification formatting artifacts
-    # "Jobs at Brady Corporation" -> "Brady Corporation"
-    # "(Remote) at Globe Life" -> "Globe Life"
-    # "at Globe Life" -> "Globe Life"
-    cleaned = re.sub(r'(?i)^\s*Jobs\s+at\s+', '', comp)
-    cleaned = re.sub(r'(?i)^\s*\(Remote\)\s+at\s+', '', cleaned)
-    cleaned = re.sub(r'(?i)^\s*at\s+', '', cleaned)
-    cleaned = re.sub(r'(?i)\s+is\s+hiring\b.*', '', cleaned)
-    cleaned = re.sub(r'(?i)\s+is\s+looking\s+for\b.*', '', cleaned)
-    cleaned = re.sub(r'(?i)\bhas\s+an\s+open\s+position\b.*', '', cleaned)
-    cleaned = re.sub(r'\s*\.\.\.\s*$', '', cleaned)
-    return cleaned.strip()
-
-# Known aggregator/job-board brands that sometimes appear as "company" inside
-# other providers' digest emails (e.g. Ladders posts jobs on LinkedIn), or are
-# deliberately used as a placeholder "company" for digest-style postings where
-# no per-job employer can be extracted (see is_aggregator_placeholder below).
-AGGREGATOR_PROVIDER_NAMES = {
-    "ladders", "ladders-dailydigest", "theladders", "the ladders",
-    "linkedin", "indeed", "glassdoor", "ziprecruiter",
-    "jobs.utah.gov", "jobs.utah.gov-dailysummary",
-    "actively recruiting",
-}
-
-
-def is_aggregator_placeholder(company):
-    """True if `company` is an aggregator/digest placeholder rather than a real
-    employer name, e.g. "Jobs.utah.gov-DailySummary" or "Ladders-DailyDigest".
-    These placeholders must never participate in canonical-key matching --
-    two unrelated digest postings from the same aggregator would otherwise
-    look like the same "employer" and get merged or reapply-cancelled."""
-    comp_lower = (company or "").strip().lower()
-    if not comp_lower:
-        return False
-    return comp_lower in AGGREGATOR_PROVIDER_NAMES or "dailysummary" in comp_lower or "dailydigest" in comp_lower
 
 
 def is_valid_company(company, provider=None):
@@ -471,94 +451,6 @@ def is_valid_company(company, provider=None):
     return True
 
 
-def compute_priority(recommendation, action, age_days=0):
-    if recommendation in ["★☆☆☆☆ Skip", "★★☆☆☆ Low"]:
-        return "P4 – Ignore"
-    elif recommendation == "★★★☆☆ Maybe":
-        return "P3 – Investigate"
-
-    if action in ["Apply", "Already Applied"] and recommendation == "★★★★★ Apply Now":
-        priority = "P1 – Apply today"
-    elif action in ["Apply", "Already Applied", "Contact Recruiter"]:
-        priority = "P2 – Apply this week"
-    elif action == "Review":
-        priority = "P3 – Investigate"
-    else:
-        priority = "P4 – Ignore"
-        
-    if action in ["Apply", "Contact Recruiter"] and age_days > 14:
-        if priority == "P1 – Apply today":
-            priority = "P2 – Apply this week"
-        elif priority == "P2 – Apply this week":
-            priority = "P3 – Investigate"
-            
-    return priority
-
-MAX_OLD_BACKUPS_TO_KEEP = 3
-# Snapshot taken once, at import time, so every backup_file_if_exists() call
-# in this process can tell "made during this run" from "made by a past run".
-_RUN_START_TIMESTAMP = datetime.now().strftime('%Y%m%d%H%M%S%f')
-
-def _backup_timestamp(backup_path):
-    return backup_path.rsplit(".bak.", 1)[-1]
-
-def backup_file_if_exists(path):
-    """Copy `path` to a timestamped `.bak.<timestamp>` sibling before a risky
-    write, so there's a recoverable snapshot to restore from if the write is
-    interrupted partway through. No-op if `path` doesn't exist yet.
-    Prunes down to the most recent MAX_OLD_BACKUPS_TO_KEEP .bak files from
-    past runs to save space, but never removes a backup made during this
-    run -- a single run can call this multiple times (e.g. once before
-    jobs.db and once before the tracker CSV, or an extra one-time backfill
-    snapshot), and every one of those must survive until the run finishes,
-    regardless of how many calls that turns out to be."""
-    if not os.path.exists(path):
-        return None
-    backup_path = f"{path}.bak.{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
-    try:
-        shutil.copy2(path, backup_path)
-
-        import glob
-        directory = os.path.dirname(os.path.abspath(path))
-        base_name = os.path.basename(path)
-        pattern = os.path.join(directory, f"{base_name}.bak.*")
-        existing_backups = sorted(glob.glob(pattern), reverse=True)
-        older_run_backups = [b for b in existing_backups if _backup_timestamp(b) < _RUN_START_TIMESTAMP]
-        for old_backup in older_run_backups[MAX_OLD_BACKUPS_TO_KEEP:]:
-            try:
-                os.remove(old_backup)
-            except OSError:
-                pass
-
-        return backup_path
-    except OSError as e:
-        console.print(f"[dim yellow]Could not back up {path} before writing: {e}[/dim yellow]")
-        return None
-
-
-def write_tracker_csv_atomic(tracker_path, fieldnames, rows, extrasaction='raise'):
-    """Write rows to tracker_path via a temp file + atomic rename, so a crash
-    or interruption mid-write can't leave master_tracker.csv truncated."""
-    tracker_dir = os.path.dirname(os.path.abspath(tracker_path)) or "."
-    fd, tmp_path = tempfile.mkstemp(dir=tracker_dir, prefix=".tmp_tracker_", suffix=".csv")
-    try:
-        with os.fdopen(fd, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction=extrasaction)
-            writer.writeheader()
-            writer.writerows(rows)
-        # Windows-safe atomic replace with bounded retry for transient file locks
-        for attempt in range(5):
-            try:
-                os.replace(tmp_path, tracker_path)
-                break
-            except PermissionError:
-                if attempt == 4:
-                    raise
-                time.sleep(0.05 * (attempt + 1))
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
 
 
 def initialize_tracker(tracker_path):
@@ -1125,15 +1017,6 @@ def clean_existing_tracker(tracker_path):
     except Exception as e:
         console.print(f"[yellow]Failed to clean/migrate existing tracker: {e}[/yellow]")
 
-def _ensure_columns(cursor, table, columns):
-    """Idempotently add any of `columns` (list of (name, type)) missing from
-    `table`, used both for self-healing older DBs and for schema-drift
-    recovery -- additive only, never drops or recreates the table."""
-    for col, col_type in columns:
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass
 
 
 def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
@@ -1365,7 +1248,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
 
         # Update jobs in-memory with their persisted workflow state. The persisted
         # (DB) status wins unless the incoming status is a genuine improvement per
-        # should_prefer_status (dedup_utils) -- e.g. a still-"New" incoming status
+        # should_prefer_status (utils) -- e.g. a still-"New" incoming status
         # never displaces a persisted "Applied". On top of that, an active
         # application status (Applied, Interviewing, ...) can never be
         # automatically downgraded into a terminal status (Cancelled, Rejected,
@@ -2275,28 +2158,6 @@ def extract_job_urls_from_page(page):
             
     return deduped_urls
 
-def detect_provider(text, filename=""):
-    """Detect job board provider from PDF content or filename."""
-    full_text = (text + " " + filename).lower()
-    if "jobs.utah.gov" in full_text or "utah's daily job summary" in full_text:
-        return "jobs.utah.gov"
-    elif "linkedin" in full_text:
-        return "LinkedIn"
-    elif "bhe career site" in full_text or "bhe career" in full_text:
-        return "BHE"
-    elif "ladders" in full_text or "your skills are in high demand" in full_text:
-        return "Ladders"
-    elif "indeed" in full_text:
-        return "Indeed"
-    elif "glassdoor" in full_text:
-        return "Glassdoor"
-    elif "ziprecruiter" in full_text:
-        return "ZipRecruiter"
-    elif "robert half" in full_text or "roberthalf.com" in full_text:
-        return "Robert Half"
-    elif "lensa" in full_text or "lensa.com" in full_text:
-        return "Lensa"
-    return "Unknown/Other"
 
 def extract_pdf_text(pdf_path):
     """Extract embedded text from PDF. Fallback to OCR if empty."""
@@ -2386,59 +2247,6 @@ def _format_skill_lists(found_skills, resume_skills):
     missing_skills = ", ".join(dict.fromkeys(SKILL_DISPLAY_NAMES.get(s, s) for s in missing_list))
     return matched_skills, missing_skills
 
-def normalize_ocr_spacing(text):
-    if not text:
-        return ""
-    # Specific common corrections
-    text = re.sub(r'(?i)\bfourey\s+es\b', 'Foureyes', text)
-    text = re.sub(r'(?i)\bof\s+fice\b', 'office', text)
-    text = re.sub(r'(?i)\bfirs\s+t\b', 'first', text)
-    text = re.sub(r'(?i)\blak\s+e\b', 'lake', text)
-    text = re.sub(r'(?i)\bseen\s+firs\s+t\b', 'seen first', text)
-    text = re.sub(r'(?i)\bpac\s+k\s+yak\b', 'pack yak', text)
-    text = re.sub(r'(?i)\binsurance\s+of\s+fice\b', 'Insurance Office', text)
-    # Opposite artifact: some source layouts (e.g. Glassdoor's "Jobs you might
-    # like" card) render a company's two-word name with no literal space
-    # character between them at all (the visual gap is CSS-only), so text
-    # extraction sees "PorchSoftware" with nothing to split on. A general
-    # word-boundary heuristic for this direction is too failure-prone (real
-    # one-word CamelCase brand names like "DoorDash" would get mangled), so
-    # this is a targeted correction for the one confirmed case rather than a
-    # general rule.
-    text = re.sub(r'\bPorchSoftware\b', 'Porch Software', text)
-
-    # General heuristics:
-    # 1. End of word separated by space: "firs t" -> "first" (length >=2 followed by consonant, excluding C# and C++)
-    text = re.sub(r'\b([a-zA-Z]{2,})\s+([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\b(?![#+])', r'\1\2', text)
-    # 2. Start of word separated by space: "p hoto" -> "photo" (consonant followed by length >=2)
-    text = re.sub(r'\b([bcdfghjklmnpqrstvwxyzBCDFGHJKLMNPQRSTVWXYZ])\s+([a-zA-Z]{2,})\b', r'\1\2', text)
-    # These two run *after* the general heuristics above, not before: the raw
-    # extraction actually splits "West Valley" into four fragments ("W", "est",
-    # "V", "alley"), which rules 1-2 partially reassemble into "WestV alley"
-    # (joining "W"+"est"+"V" but leaving "alley" separate, since both halves
-    # are now 5-letter words and neither general rule matches word+word). A
-    # targeted fix placed *before* the general rules never sees that
-    # intermediate form and silently no-ops. Same reasoning doesn't apply to
-    # "Technolog ies" (neither fragment is a single letter, so the general
-    # rules never touch it either way) but keeping both fixes together here
-    # avoids re-splitting this logic across two places in the function.
-    text = re.sub(r'(?i)\bwestv\s+alley\b', 'West Valley', text)
-    text = re.sub(r'(?i)\btechnolog\s+ies\b', 'Technologies', text)
-    text = re.sub(r'(?i)\bcorp\s+oration\b', 'Corporation', text)
-    text = re.sub(r'(?i)\bsurg\s+e\b', 'Surge', text)
-    text = re.sub(r'(?i)\bdrap\s+er\b', 'Draper', text)
-    # State abbreviation split into two single letters by the same kerning
-    # artifact ("Seattle, W A" / "Bellevue, W A" instead of "..., WA"). Scoped
-    # to right after a comma (where a state code appears) rather than any two
-    # adjacent single capital letters, so it can't misfire on unrelated text.
-    text = re.sub(r',(\s*)([A-Z])\s+([A-Z])\b', r',\1\2\3', text)
-    # 3. Same kerning artifact hitting digit runs, most visibly a ZIP code
-    # split apart ("Draper, UT 8 4 0 2 0" instead of "84020"). Scoped to 5-9
-    # single digits (ZIP or ZIP+4) so it doesn't swallow legitimate spaced
-    # numbers like a version or a short list.
-    text = re.sub(r'\b\d(?:\s+\d){4,8}\b', lambda m: m.group(0).replace(' ', ''), text)
-
-    return text
 
 def _clean_location(location):
     location = re.sub(r'[,\sâ€¢•]+$', '', location).strip()
@@ -3000,37 +2808,6 @@ def parse_job_cards_from_text(text, provider="Unknown/Other", source_pdf="Unknow
         
     return jobs
 
-def classify_job_type(title, context):
-    """Determine if a job is a Software Engineer or Operations role."""
-    title_lower = title.lower()
-    context_lower = context.lower()
-    
-    ops_indicators = ["operations", "manufacturing", "inventory", "logistics", "repair", "production", "warehouse", "procurement", "manager", "supervisor", "coordinator", "billing", "reconciliation"]
-    swe_indicators = ["software", "developer", "engineer", "programmer", "architect", ".net", "java", "c#", "spring", "react"]
-    
-    # Check title first
-    has_ops_title = any(w in title_lower for w in ops_indicators)
-    has_swe_title = any(w in title_lower for w in swe_indicators)
-
-    # Domain-specific ops keywords override the generic "engineer" keyword
-    # e.g. "Manufacturing Engineer" or "Logistics Coordinator" → Operations
-    specific_ops = ["manufacturing", "inventory", "logistics", "production", "warehouse", "procurement"]
-    if any(w in title_lower for w in specific_ops) and not any(w in title_lower for w in ["software", "developer", "backend"]):
-        return "Operations"
-
-    if has_ops_title and not has_swe_title:
-        return "Operations"
-    if has_swe_title:
-        return "Software Engineer"
-        
-    # Check context
-    has_ops_context = any(w in context_lower for w in ops_indicators)
-    has_swe_context = any(w in context_lower for w in swe_indicators)
-    
-    if has_ops_context and not has_swe_context:
-        return "Operations"
-        
-    return "Software Engineer"
 
 def evaluate_job(job):
     """

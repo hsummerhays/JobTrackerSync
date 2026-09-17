@@ -13,7 +13,7 @@ import hashlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import parse_jobs
-from dedup_utils import canonical_job_key, normalize_string, locations_compatible, title_similarity
+from utils import canonical_job_key, normalize_string, locations_compatible, title_similarity
 
 
 class TestJobIdDeterminism(unittest.TestCase):
@@ -193,7 +193,7 @@ class TestCanonicalKeyMerging(unittest.TestCase):
         date_added = "2026-07-10"
         
         if existing_match:
-            from dedup_utils import merge_delimited_field
+            from utils import merge_delimited_field
             existing_match["Provider"] = merge_delimited_field(
                 existing_match.get("Provider", ""),
                 new_provider
@@ -247,7 +247,7 @@ class TestFuzzyTitleMatchCondition(unittest.TestCase):
     company, compatible location, title_similarity >= 0.7) instead adds a
     "possible duplicate ... needs manual review" note to the new row and
     still creates it as a separate record. This exercises that exact
-    flagging condition using the real dedup_utils helpers parse_jobs.py
+    flagging condition using the real utils helpers parse_jobs.py
     calls."""
 
     def _is_fuzzy_match(self, ej_company, ej_title, ej_location, new_company, new_title, new_location):

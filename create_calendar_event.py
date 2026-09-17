@@ -1,5 +1,4 @@
-import argparse
-import urllib.parse
+from utils import generate_calendar_url
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a Google Calendar event link")
@@ -9,19 +8,7 @@ def main():
     parser.add_argument("--end", default="", help="End date/time (YYYYMMDDTHHMMSSZ or YYYYMMDD)")
     
     args = parser.parse_args()
-    
-    params = {
-        'action': 'TEMPLATE',
-        'text': args.title
-    }
-    if args.description:
-        params['details'] = args.description
-    if args.start and args.end:
-        params['dates'] = f"{args.start}/{args.end}"
-    elif args.start:
-        params['dates'] = f"{args.start}/{args.start}"
-        
-    url = f"https://calendar.google.com/calendar/r/eventedit?{urllib.parse.urlencode(params)}"
+    url = generate_calendar_url(args.title, args.description, args.start, args.end)
     print(f"[{args.title}]({url})")
 
 if __name__ == "__main__":

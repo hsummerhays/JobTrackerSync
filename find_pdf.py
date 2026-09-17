@@ -3,7 +3,7 @@ import sys
 import os
 import csv
 import re
-from dedup_utils import path_to_file_uri
+from utils import path_to_file_uri, word_boundary_pattern
 
 # Optional debug flag for diagnosing search/URI failures
 DEBUG = False
@@ -12,16 +12,7 @@ DEBUG = False
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 
-def _word_boundary_pattern(search_term):
-    """Build a case-insensitive regex that only matches search_term when it
-    isn't embedded inside a longer alphanumeric run, so short terms don't
-    match substrings buried inside URLs/IDs. Unlike \\b, non-alphanumeric
-    separators like '_' or '-' still count as boundaries (e.g. matches
-    "Franki" in "Franki_hiring.pdf")."""
-    return re.compile(
-        r'(?<![A-Za-z0-9])' + re.escape(search_term) + r'(?![A-Za-z0-9])',
-        re.IGNORECASE,
-    )
+_word_boundary_pattern = word_boundary_pattern
 
 def _row_matches(row_dict, pattern):
     return any(isinstance(v, str) and pattern.search(v) for v in row_dict.values())

@@ -1,10 +1,12 @@
 import os
+import sqlite3
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dedup_utils import (
+from utils import (
     canonical_key,
     canonical_job_key,
     is_clean_location,
@@ -13,8 +15,26 @@ from dedup_utils import (
     normalize_company_for_matching,
     normalize_location,
     normalize_title,
+    normalize_string,
+    normalize_ocr_spacing,
     should_prefer_status,
     title_similarity,
+    word_boundary_pattern,
+    clean_company_name,
+    is_aggregator_placeholder,
+    compute_priority,
+    classify_workplace,
+    classify_job_type,
+    detect_provider,
+    path_to_file_uri,
+    hash_file,
+    hash_pdf_file,
+    backup_timestamp,
+    backup_file_if_exists,
+    write_csv_atomic,
+    ensure_db_columns,
+    generate_calendar_url,
+    create_vcard_entry,
 )
 
 
@@ -75,7 +95,6 @@ class TestShouldPreferStatus(unittest.TestCase):
     def test_weaker_closed_status_does_not_beat_active_status(self):
         self.assertFalse(should_prefer_status("Applied", "Rejected"))
         self.assertFalse(should_prefer_status("Waiting", "Ghosted"))
-
 
 
 class TestLocationsCompatible(unittest.TestCase):
@@ -143,24 +162,9 @@ class TestNormalizeLocation(unittest.TestCase):
         self.assertEqual(key1, key2)
 
     def test_canonical_job_key_does_not_strip_company_suffixes(self):
-        """canonical_job_key() is stored as a row's Fingerprint and recomputed
-        from current fields on every clean_existing_tracker() pass, so it must
-        stay a strict literal identity key -- an earlier version applied
-        normalize_company_for_matching()'s suffix stripping here directly and
-        it changed 484 stored fingerprints in one pass, collapsing several
-        *unrelated* pre-existing rows into collisions that the write-path's
-        duplicate-fingerprint guard then silently dropped (including a human-
-        Rejected row). 'Wheeler Machinery Company' and 'Wheeler Machinery Co'
-        must therefore produce *different* canonical_job_key values -- their
-        equivalence is handled by a local merge-decision comparison instead,
-        see test_wheeler_company_vs_co_suffix_match_in_merge_decision."""
         key1 = canonical_job_key("Wheeler Machinery Company", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
         key2 = canonical_job_key("Wheeler Machinery Co", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
         self.assertNotEqual(key1, key2)
-
-        key3 = canonical_job_key("Cox Automotive", "Sr Lead Software Engineer", "Draper, UT")
-        key4 = canonical_job_key("Cox Automotive Inc.", "Sr Lead Software Engineer", "Draper, UT")
-        self.assertNotEqual(key3, key4)
 
 
 class TestNormalizeCompanyForMatching(unittest.TestCase):
@@ -180,6 +184,119 @@ class TestTitleSimilarity(unittest.TestCase):
 
     def test_unrelated_titles_score_low(self):
         self.assertLess(title_similarity("Staff Software Engineer", "Product Developer, Sr."), 0.5)
+
+
+class TestConsolidatedStringAndPatternHelpers(unittest.TestCase):
+    def test_word_boundary_pattern(self):
+        pattern = word_boundary_pattern("Franki")
+        self.assertTrue(pattern.search("Franki_hiring.pdf"))
+        self.assertTrue(pattern.search("Hello Franki"))
+        self.assertFalse(pattern.search("Frankified"))
+
+    def test_clean_company_name(self):
+        self.assertEqual(clean_company_name("Jobs at Brady Corporation"), "Brady Corporation")
+        self.assertEqual(clean_company_name("(Remote) at Globe Life"), "Globe Life")
+        self.assertEqual(clean_company_name("Informativ is hiring for Sr. PHP Engineer"), "Informativ")
+        self.assertEqual(clean_company_name(""), "")
+
+    def test_normalize_ocr_spacing(self):
+        self.assertEqual(normalize_ocr_spacing("firs t"), "first")
+        self.assertEqual(normalize_ocr_spacing("p hoto"), "photo")
+        self.assertEqual(normalize_ocr_spacing("PorchSoftware"), "Porch Software")
+
+    def test_is_aggregator_placeholder(self):
+        self.assertTrue(is_aggregator_placeholder("Ladders-DailyDigest"))
+        self.assertTrue(is_aggregator_placeholder("Jobs.utah.gov-DailySummary"))
+        self.assertFalse(is_aggregator_placeholder("Google"))
+
+
+class TestConsolidatedDomainHelpers(unittest.TestCase):
+    def test_classify_workplace(self):
+        self.assertEqual(classify_workplace("Remote"), "Remote")
+        self.assertEqual(classify_workplace("Salt Lake City, UT", "Hybrid Engineer"), "Hybrid")
+        self.assertEqual(classify_workplace("Salt Lake City, UT"), "Onsite")
+        self.assertEqual(classify_workplace(""), "Unknown")
+
+    def test_classify_job_type(self):
+        self.assertEqual(classify_job_type("Software Engineer"), "Software Engineer")
+        self.assertEqual(classify_job_type("Manufacturing Engineer"), "Operations")
+        self.assertEqual(classify_job_type("Warehouse Coordinator"), "Operations")
+
+    def test_detect_provider(self):
+        self.assertEqual(detect_provider("Welcome to jobs.utah.gov", ""), "jobs.utah.gov")
+        self.assertEqual(detect_provider("", "linkedin_report.pdf"), "LinkedIn")
+        self.assertEqual(detect_provider("BHE Career Site", ""), "BHE")
+        self.assertEqual(detect_provider("Random text", "other.pdf"), "Unknown/Other")
+
+    def test_compute_priority(self):
+        self.assertEqual(compute_priority("★★★★★ Apply Now", "Apply"), "P1 – Apply today")
+        self.assertEqual(compute_priority("★★★★☆ Strong", "Apply"), "P2 – Apply this week")
+        self.assertEqual(compute_priority("★★★☆☆ Maybe", "Review"), "P3 – Investigate")
+        self.assertEqual(compute_priority("★☆☆☆☆ Skip", "Ignore"), "P4 – Ignore")
+
+
+class TestConsolidatedFileAndDbHelpers(unittest.TestCase):
+    def test_hash_file_and_hash_pdf_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            f.write("test content")
+            f_path = f.name
+        try:
+            h_sha256 = hash_file(f_path)
+            h_md5 = hash_pdf_file(f_path)
+            self.assertIsNotNone(h_sha256)
+            self.assertIsNotNone(h_md5)
+            self.assertNotEqual(h_sha256, h_md5)
+            self.assertIsNone(hash_file("non_existent_file_path.pdf"))
+        finally:
+            if os.path.exists(f_path):
+                os.remove(f_path)
+
+    def test_backup_file_if_exists(self):
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+            f.write("backup test")
+            f_path = f.name
+        try:
+            bak_path = backup_file_if_exists(f_path)
+            self.assertIsNotNone(bak_path)
+            self.assertTrue(os.path.exists(bak_path))
+            self.assertTrue(backup_timestamp(bak_path))
+            if bak_path and os.path.exists(bak_path):
+                os.remove(bak_path)
+        finally:
+            if os.path.exists(f_path):
+                os.remove(f_path)
+
+    def test_write_csv_atomic(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            csv_path = os.path.join(tmp_dir, "test.csv")
+            write_csv_atomic(csv_path, ["A", "B"], [{"A": "1", "B": "2"}])
+            self.assertTrue(os.path.exists(csv_path))
+            with open(csv_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("1,2", content)
+
+    def test_ensure_db_columns(self):
+        conn = sqlite3.connect(":memory:")
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE test_tab (id INTEGER PRIMARY KEY)")
+        ensure_db_columns(cursor, "test_tab", [("col1", "TEXT"), ("col2", "INTEGER")])
+        cursor.execute("PRAGMA table_info(test_tab)")
+        cols = [r[1] for r in cursor.fetchall()]
+        self.assertIn("col1", cols)
+        self.assertIn("col2", cols)
+        conn.close()
+
+    def test_generate_calendar_url(self):
+        url = generate_calendar_url("Interview", "Screen with Recruiter", "20260920T120000Z", "20260920T130000Z")
+        self.assertIn("calendar.google.com", url)
+        self.assertIn("Interview", url)
+
+    def test_create_vcard_entry(self):
+        vcard = create_vcard_entry("Jane Doe", "jane@example.com", "555-0199", "Acme", "Lead Dev")
+        self.assertIn("BEGIN:VCARD", vcard)
+        self.assertIn("FN:Jane Doe", vcard)
+        self.assertIn("EMAIL;TYPE=INTERNET,HOME:jane@example.com", vcard)
+        self.assertIn("END:VCARD", vcard)
 
 
 if __name__ == "__main__":

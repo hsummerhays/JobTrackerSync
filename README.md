@@ -124,7 +124,7 @@ JobTrackerSync/
 ├── find_pdf.py                # Database and CSV search utility for PDFs and jobs
 ├── query_jobs.py              # Permanent SQLite lookup utility for jobs
 ├── generate_vcf.py            # Generates standard vCard (.vcf) files for Google Contacts
-├── dedup_utils.py             # Shared status-ranking, merge, and file-URI helpers
+├── utils.py                   # Shared status-ranking, merge, and file-URI helpers
 ├── run_sql.py                 # Ad-hoc read-only SQL helper (used by db_query skill)
 ├── create_calendar_event.py   # Generates pre-filled Google Calendar event links
 ├── config.json                # Resume skills and scoring criteria (git-ignored)
@@ -288,7 +288,7 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 
 ### 1. Polish and Reliability
 
-- [x] **More unit tests** around parsing and merge logic. _(451 tests across 25 modules as of v1.3.9)_
+- [x] **More unit tests** around parsing and merge logic. _(465 tests across 25 modules as of v1.4.0)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

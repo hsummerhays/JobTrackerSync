@@ -8,35 +8,7 @@ Usage:
 import argparse
 import os
 import sys
-
-def create_vcard_entry(name: str, email: str = "", phone: str = "", org: str = "", title: str = "", notes: str = "") -> str:
-    lines = [
-        "BEGIN:VCARD",
-        "VERSION:3.0"
-    ]
-    if name:
-        parts = name.strip().split()
-        if len(parts) > 1:
-            last = parts[-1]
-            first = " ".join(parts[:-1])
-            lines.append(f"N:{last};{first};;;")
-        else:
-            lines.append(f"N:;{name.strip()};;;")
-        lines.append(f"FN:{name.strip()}")
-    
-    if org:
-        lines.append(f"ORG:{org.strip()}")
-    if title:
-        lines.append(f"TITLE:{title.strip()}")
-    if email:
-        lines.append(f"EMAIL;TYPE=INTERNET,HOME:{email.strip()}")
-    if phone:
-        lines.append(f"TEL;TYPE=CELL:{phone.strip()}")
-    if notes:
-        lines.append(f"NOTE:{notes.strip()}")
-        
-    lines.append("END:VCARD\n")
-    return "\n".join(lines)
+from utils import create_vcard_entry
 
 def main():
     parser = argparse.ArgumentParser(description="Generate vCard (.vcf) file")

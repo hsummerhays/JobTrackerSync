@@ -2,7 +2,7 @@ import sqlite3
 import argparse
 import sys
 import re
-from dedup_utils import path_to_file_uri, split_multivalue_field, TERMINAL_STATUSES
+from utils import path_to_file_uri, split_multivalue_field, TERMINAL_STATUSES
 
 # Reconfigure stdout to use utf-8
 if hasattr(sys.stdout, 'reconfigure'):

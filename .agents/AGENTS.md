@@ -30,7 +30,7 @@
     - **Same logical posting, seen again (relisting):** identical normalized company + title + location, rediscovered within the relisting window (90 days for a new sighting; 60 days for a re-apply match against an Applied/Interview row) -- merge sightings into the existing row and advance Last Seen instead of creating a new row.
     - **Physical duplicate cleanup (e.g. a one-off cleanup script re-scanning the tracker itself):** only collapse two rows automatically when they match on normalized company, normalized title, date, source PDF, *and* tracker status all at once.
     - **Similar but not identical titles** (e.g. "Senior Software Engineer" vs "...II"): never auto-merge or auto-cancel -- flag for manual review only.
-    - **Title Level Normalization (Roman Numerals)**: `dedup_utils.normalize_title()` normalizes standalone Roman numerals (`I`, `II`, `III`, `IV`, `V`) to Arabic digits (`1`, `2`, `3`, `4`, `5`) in canonical keys (e.g. `Senior Developer I` ↔ `Senior Developer 1`) while retaining original displayed titles.
+    - **Title Level Normalization (Roman Numerals)**: `utils.normalize_title()` normalizes standalone Roman numerals (`I`, `II`, `III`, `IV`, `V`) to Arabic digits (`1`, `2`, `3`, `4`, `5`) in canonical keys (e.g. `Senior Developer I` ↔ `Senior Developer 1`) while retaining original displayed titles.
 
 - **Manual Data Correction Rules:**
   - When making a manual status correction to a job (e.g., reverting a status from `Cancelled` back to `New`), you must update BOTH `master_tracker.csv` AND the SQLite database (`jobs.db` and `job_workflow` tables). If you only update the CSV, the `clean_existing_tracker` sync function will aggressively overwrite your CSV changes with the persisted state from the database.

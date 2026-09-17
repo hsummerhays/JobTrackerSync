@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here.
 
+## v1.4.0 — 2026-09-17
+
+### Consolidated Shared Utilities & Module Rename
+- **`dedup_utils` &rarr; `utils` Migration**: Renamed `dedup_utils.py` to `utils.py` and `tests/test_dedup_utils.py` to `tests/test_utils.py`, consolidating shared functions across all scripts.
+- **Unified Function Consolidation**: Consolidated recurring and similar functions into `utils.py`:
+  - **Text & Company Normalization**: `clean_company_name()`, `normalize_ocr_spacing()`, `word_boundary_pattern()`, `is_aggregator_placeholder()`, `AGGREGATOR_PROVIDER_NAMES`.
+  - **Classification & Scoring**: `classify_job_type()`, `classify_workplace()`, `detect_provider()`, `compute_priority()`.
+  - **File Operations & Backups**: `hash_file()`, `hash_pdf_file()`, `backup_timestamp()`, `backup_file_if_exists()`, `write_csv_atomic()`, `TRACKER_HEADERS`.
+  - **Database Helpers**: `ensure_db_columns()`.
+  - **Integrations & Contact Helpers**: `generate_calendar_url()`, `create_vcard_entry()`.
+- **Streamlined Scripts**: Refactored `parse_jobs.py`, `find_pdf.py`, `create_calendar_event.py`, `generate_vcf.py`, and `query_jobs.py` to import and share consolidated utilities while maintaining full backward-compatibility.
+- **Comprehensive Unit Testing**: Added comprehensive unit test coverage across all consolidated helpers in `tests/test_utils.py` (465 passing tests).
+
 ## v1.3.9 — 2026-09-17
 
 ### Final Interview Stage & Extended CLI Metadata Controls
