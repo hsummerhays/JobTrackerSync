@@ -8,6 +8,7 @@ All notable changes to this project are documented here.
 - **New Active Status (`Final Interview Scheduled`)**: Added `Final Interview Scheduled` to `VALID_STATUSES`, `DEFAULT_DISPOSITION_MAP` (`Active`), and `STATUS_RANKS` (rank 93) in `dedup_utils.py` and `parse_jobs.py`. Supported across active pipeline metrics, today queue, and analytics conversion funnel.
 - **Review Status & Metadata Flags (`--review-status`, `--location`, `--provider`)**: Added `--review-status`, `--location`, and `--provider` CLI flags to `parse_jobs.py --update` and `handle_status_update()`, enabling direct updates to review provenance (e.g. `Recruiter Contact`, `Reviewed`), job locations, and job board providers.
 - **Workflow & Sync Preservation**: `handle_status_update()` preserves current or derived review status when updating notes/recruiter metadata and synchronizes immediately to both `jobs.db` (`jobs` and `job_workflow` tables) and `master_tracker.csv`.
+- **Centralized Canonical Lists & Sets**: Centralized all workflow status definitions, review statuses, actions, and pipeline collections in `dedup_utils.py` (`VALID_STATUSES`, `VALID_REVIEW_STATUSES`, `VALID_ACTIONS`, `UNREVIEWED_STATUSES`, `TERMINAL_STATUSES`, `CLOSED_TRACKER_STATUSES`, `INTERVIEW_STATUSES`, `APPLIED_APPLICATION_STATUSES`, `ACTIVE_PIPELINE_STATUSES`, `REAPPLY_STATUSES`, `DEFAULT_DISPOSITION_MAP`, `STATUS_RANKS`), eliminating duplicate hardcoded lists across `parse_jobs.py` and downstream utilities.
 
 ## v1.3.8 — 2026-09-10
 

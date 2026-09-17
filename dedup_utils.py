@@ -11,11 +11,105 @@ from urllib.parse import quote
 # safely delimit multi-valued fields (Provider, Source PDF) stored in the CSV.
 FIELD_DELIMITER = "|"
 
+# Canonical Status Lists & Sets
+VALID_STATUSES = [
+    "New",
+    "Applied",
+    "Phone Screen",
+    "Manager Interview Pending",
+    "Technical Interview",
+    "Onsite Interview Pending",
+    "Final Interview Scheduled",
+    "Assessment Pending",
+    "Reference Check",
+    "Recruiter Submitted",
+    "Waiting",
+    "Rejected",
+    "Cancelled",
+    "Ghosted",
+    "Expired",
+    "Offer",
+    "Accepted",
+]
+
+VALID_REVIEW_STATUSES = [
+    "New",
+    "Applied",
+    "Imported",
+    "Closed",
+    "Recruiter Contact",
+    "Reviewed",
+]
+
+VALID_ACTIONS = [
+    "Apply",
+    "Contact Recruiter",
+    "Review",
+    "Already Applied",
+    "Ignore",
+    "Send References",
+]
+
 UNREVIEWED_STATUSES = {"New", "Imported"}
 
-VALID_STATUSES = ["New", "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Rejected", "Cancelled", "Ghosted", "Expired", "Offer", "Accepted"]
-
 TERMINAL_STATUSES = {"Rejected", "Ghosted", "Cancelled", "Expired", "Closed"}
+
+CLOSED_TRACKER_STATUSES = {"Rejected", "Cancelled", "Ghosted", "Expired"}
+
+INTERVIEW_STATUSES = {
+    "Phone Screen",
+    "Manager Interview Pending",
+    "Technical Interview",
+    "Assessment Pending",
+    "Onsite Interview Pending",
+    "Final Interview Scheduled",
+    "Reference Check",
+}
+
+# Statuses that count as active / in-flight applications for review status and actions
+APPLIED_APPLICATION_STATUSES = {
+    "Applied",
+    "Phone Screen",
+    "Manager Interview Pending",
+    "Technical Interview",
+    "Onsite Interview Pending",
+    "Final Interview Scheduled",
+    "Assessment Pending",
+    "Reference Check",
+    "Recruiter Submitted",
+    "Waiting",
+    "Offer",
+    "Accepted",
+    "Interviewing",
+    "Interview",
+}
+
+# Statuses representing active stages in the interview pipeline (excluding New/Applied/Terminal)
+ACTIVE_PIPELINE_STATUSES = {
+    "Phone Screen",
+    "Manager Interview Pending",
+    "Technical Interview",
+    "Assessment Pending",
+    "Onsite Interview Pending",
+    "Final Interview Scheduled",
+    "Reference Check",
+    "Recruiter Submitted",
+    "Waiting",
+}
+
+# Statuses that trigger the re-apply check on newly rediscovered job cards
+REAPPLY_STATUSES = {
+    "Applied",
+    "Phone Screen",
+    "Manager Interview Pending",
+    "Technical Interview",
+    "Onsite Interview Pending",
+    "Final Interview Scheduled",
+    "Assessment Pending",
+    "Reference Check",
+    "Recruiter Submitted",
+    "Waiting",
+}
 
 DEFAULT_DISPOSITION_MAP = {
     "New": "Apply",

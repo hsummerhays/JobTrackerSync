@@ -17,6 +17,8 @@ from dedup_utils import (
     merge_delimited_field,
     canonical_job_key,
     VALID_STATUSES,
+    VALID_REVIEW_STATUSES,
+    VALID_ACTIONS,
     build_occurrence_fingerprint,
     should_prefer_status,
     normalize_string,
@@ -27,8 +29,14 @@ from dedup_utils import (
     title_similarity,
     classify_workplace,
     TERMINAL_STATUSES,
+    CLOSED_TRACKER_STATUSES,
     UNREVIEWED_STATUSES,
+    INTERVIEW_STATUSES,
+    APPLIED_APPLICATION_STATUSES,
+    ACTIVE_PIPELINE_STATUSES,
+    REAPPLY_STATUSES,
     DEFAULT_DISPOSITION_MAP,
+    STATUS_RANKS,
 )
 from rich.console import Console
 from rich.table import Table
@@ -44,7 +52,6 @@ console = Console()
 
 # Rules and configuration constants
 CONFIG_PATH = "config.json"
-REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"}
 
 # Rule 8 Skip list (compiled regex patterns)
 SKIP_KEYWORDS = [
@@ -731,9 +738,9 @@ def clean_existing_tracker(tracker_path):
             
             review_status = row.get("Review Status")
             if not review_status:
-                if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+                if status in APPLIED_APPLICATION_STATUSES:
                     review_status = "Applied"
-                elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+                elif status in CLOSED_TRACKER_STATUSES:
                     review_status = "Closed"
                 else:
                     review_status = "Imported"
@@ -873,9 +880,9 @@ def clean_existing_tracker(tracker_path):
                 act = action
             else:
                 if status != "New":
-                    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted"]:
+                    if status in APPLIED_APPLICATION_STATUSES:
                         action = "Already Applied"
-                    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+                    elif status in CLOSED_TRACKER_STATUSES:
                         action = "Ignore"
                     else:
                         action = "Ignore"
@@ -1308,7 +1315,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
         try:
             today = datetime.now()
             sixty_days_ago = (today - timedelta(days=60)).strftime('%Y-%m-%d')
-            applied_statuses = ("Applied", "Interviewing", "Technical Interview", "Phone Screen", "Manager Interview Pending", "Onsite Interview Pending", "Recruiter Contact", "Offer", "Waiting")
+            applied_statuses = tuple(APPLIED_APPLICATION_STATUSES)
             placeholders = ','.join(['?'] * len(applied_statuses))
 
             for job in jobs_list:
@@ -3383,7 +3390,7 @@ def _print_dashboard(tracker_path="master_tracker.csv"):
 
     p1 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P1")]
     p2 = [r for r in rows if r.get("Tracker Status") == "New" and r.get("Priority","").startswith("P2")]
-    active = [r for r in rows if r.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"]]
+    active = [r for r in rows if r.get("Tracker Status") in ACTIVE_PIPELINE_STATUSES]
     follow_up = [r for r in rows if r.get("Tracker Status") == "Waiting"]
     recent_rejected = [r for r in rows if r.get("Tracker Status") in ["Rejected", "Ghosted"]]
 
@@ -3483,16 +3490,13 @@ def print_analytics(tracker_path="master_tracker.csv", db_path="jobs.db"):
 
     # Helper function to check if a job was applied to
     def is_applied(r):
-        return r.get("tracker_status") in [
-            "Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", 
-            "Waiting", "Rejected", "Ghosted", "Offer", "Accepted"
-        ]
+        return r.get("tracker_status") in (APPLIED_APPLICATION_STATUSES | CLOSED_TRACKER_STATUSES)
 
     # Helper function to check if a job was interviewed
     def is_interviewed(r):
         status = r.get("tracker_status")
         notes = (r.get("notes") or "").lower() + " " + (r.get("w_notes") or "").lower()
-        if status in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Offer", "Accepted"]:
+        if status in (INTERVIEW_STATUSES | {"Offer", "Accepted"}):
             return True
         return any(kw in notes for kw in ["screen", "phone screen", "interview", "technical screen", "technical interview"])
 
@@ -3887,9 +3891,9 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     
     # Determine derived fields
     derived_review_status = "Imported"
-    if effective_status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted", "Interviewing"]:
+    if effective_status in APPLIED_APPLICATION_STATUSES:
         derived_review_status = "Applied"
-    elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif effective_status in CLOSED_TRACKER_STATUSES:
         derived_review_status = "Closed"
         
     if review_status is not None:
@@ -3900,9 +3904,9 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         effective_review_status = current_review_status or derived_review_status
         
     derived_action = "Apply"
-    if effective_status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted", "Interviewing"]:
+    if effective_status in APPLIED_APPLICATION_STATUSES:
         derived_action = "Already Applied"
-    elif effective_status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif effective_status in CLOSED_TRACKER_STATUSES:
         derived_action = "Ignore"
     
     effective_action = action if action is not None else derived_action
@@ -4337,15 +4341,15 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     
     # Derived values
     review_status = "Imported"
-    if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+    if status in APPLIED_APPLICATION_STATUSES:
         review_status = "Applied"
-    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif status in CLOSED_TRACKER_STATUSES:
         review_status = "Closed"
         
     action = "Apply"
-    if status in ["Applied", "Waiting", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Offer", "Accepted"]:
+    if status in APPLIED_APPLICATION_STATUSES:
         action = "Already Applied"
-    elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+    elif status in CLOSED_TRACKER_STATUSES:
         action = "Ignore"
         
     disposition = DEFAULT_DISPOSITION_MAP.get(status, "Apply")
@@ -4497,13 +4501,13 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     prior_interview_companies = set()
     conn = None
     try:
-        conn = sqlite3.connect(db_path)
-        rows = conn.execute("""
+        status_placeholders = ','.join(['?'] * len(INTERVIEW_STATUSES))
+        rows = conn.execute(f"""
             SELECT LOWER(j.company)
             FROM jobs j
             JOIN job_workflow w ON j.job_id = w.job_id
-            WHERE w.tracker_status IN ('Phone Screen', 'Manager Interview Pending', 'Technical Interview', 'Onsite Interview Pending')
-        """).fetchall()
+            WHERE w.tracker_status IN ({status_placeholders})
+        """, tuple(INTERVIEW_STATUSES)).fetchall()
         prior_interview_companies = {r[0] for r in rows}
     except Exception as e:
         console.print(f"[dim yellow]Could not load prior-interview companies from {db_path}: {e}[/dim yellow]")
@@ -5210,7 +5214,6 @@ def main():
                             # review, never auto-merged); aggregator placeholders match only
                             # on the strict occurrence fingerprint above.
                             REAPPLY_DAYS = 60
-                            REAPPLY_STATUSES = {"Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting"}
                             possible_duplicate_note = None
                             # Existing rows are visited with active (non-Expired) matches
                             # first. A canonical key can legitimately own more than one
@@ -5640,9 +5643,9 @@ def main():
         # Standardize Review Status
         review_status = row.get("Review Status")
         if not review_status:
-            if status in ["Applied", "Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check", "Recruiter Submitted", "Waiting", "Offer", "Accepted"]:
+            if status in APPLIED_APPLICATION_STATUSES:
                 review_status = "Applied"
-            elif status in ["Rejected", "Cancelled", "Ghosted", "Expired"]:
+            elif status in CLOSED_TRACKER_STATUSES:
                 review_status = "Closed"
             else:
                 review_status = "Imported"
@@ -5819,10 +5822,10 @@ def main():
 
     # Calculate Pipeline Health metrics
     health_imported = len(combined_jobs)
-    health_closed = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Rejected", "Cancelled", "Ghosted", "Expired"])
+    health_closed = sum(1 for row in combined_jobs if row.get("Tracker Status") in CLOSED_TRACKER_STATUSES)
     health_active = health_imported - health_closed
     health_applied = sum(1 for row in combined_jobs if row.get("Tracker Status") == "Applied")
-    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in ["Phone Screen", "Manager Interview Pending", "Technical Interview", "Onsite Interview Pending", "Final Interview Scheduled", "Assessment Pending", "Reference Check"])
+    health_interviewing = sum(1 for row in combined_jobs if row.get("Tracker Status") in INTERVIEW_STATUSES)
     
     health_active_apps = health_applied + health_interviewing
     health_app_rate = (health_applied / health_imported * 100) if health_imported > 0 else 0.0
