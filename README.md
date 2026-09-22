@@ -243,6 +243,7 @@ This project includes built-in AI agent skills (located in `.agents/skills/`) to
 
 - **`add_contact`**: Generates a standard vCard (`.vcf`) file and direct link to import contacts into Google Contacts.
 - **`add_job_note`**: Adds or appends interview notes, recruiter details, or progress notes to an existing job in the tracker.
+- **`add_manual_opportunity`**: Ingests and tracks manually shared opportunities, recruiter messages, or interview notes from structured text blocks or files.
 - **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
 - **`sync_jobs`**: Automates the parsing pipeline (opens a folder picker or accepts `--pdf-dir`).
 - **`daily_dashboard`**: Displays formatted analytics and action queues.
@@ -288,7 +289,7 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 
 ### 1. Polish and Reliability
 
-- [x] **More unit tests** around parsing and merge logic. _(465 tests across 25 modules as of v1.4.0)_
+- [x] **More unit tests** around parsing and merge logic. _(465 tests across 26 modules as of v1.4.1)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

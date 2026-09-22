@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## v1.4.1 — 2026-09-22
+
+### Bug Fixes & Agent Skill Documentation
+- **Opportunity Highlights SQLite Connection Fix**: Fixed `print_opportunity_highlights()` in `parse_jobs.py` to open and close a connection to `db_path` before querying interview statuses from `jobs.db`, resolving `'NoneType' object has no attribute 'execute'` warning.
+- **Calendar Event CLI Fix**: Added missing `import argparse` in `create_calendar_event.py` so the standalone script runs without runtime exceptions.
+- **Documentation & Agent Skill Sync**: Added `add_manual_opportunity` to the agent skill roster in `README.md` and updated unit test metrics (465 tests across 26 test modules).
+
 ## v1.4.0 — 2026-09-17
 
 ### Consolidated Shared Utilities & Module Rename

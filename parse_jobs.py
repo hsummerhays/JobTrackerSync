@@ -4278,8 +4278,10 @@ def print_todays_highlights(new_jobs, combined_jobs, db_path="jobs.db"):
     prior_interview_companies = set()
     conn = None
     try:
-        status_placeholders = ','.join(['?'] * len(INTERVIEW_STATUSES))
-        rows = conn.execute(f"""
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path)
+            status_placeholders = ','.join(['?'] * len(INTERVIEW_STATUSES))
+            rows = conn.execute(f"""
             SELECT LOWER(j.company)
             FROM jobs j
             JOIN job_workflow w ON j.job_id = w.job_id
