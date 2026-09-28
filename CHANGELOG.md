@@ -2,6 +2,26 @@
 
 All notable changes to this project are documented here.
 
+## v1.4.2 — 2026-09-28
+
+### Permanent History Archiving & Requisition ID Architecture
+- **Permanent System of Record (`jobs.db`) vs. Operational View (`master_tracker.csv`)**:
+  - `jobs.db` is maintained as the permanent, full-history system of record. Records are never deleted from SQLite, ensuring deduplication, relisting detection, agency submission tracking, and Right-to-Represent (RTR) history remain intact.
+  - `master_tracker.csv` serves as a clean working operational spreadsheet. Older closed/expired rows marked `Archived = 'Yes'` are automatically filtered out from active spreadsheet view.
+- **Archiving Retention Rules & CLI**:
+  - Implemented `parse_jobs.py --archive` with configurable thresholds:
+    - **Expired**: Archived if `Age >= 60 days` (configurable via `--expired-days`).
+    - **Rejected / Withdrawn**: Archived if `Age >= 90 days` (configurable via `--rejected-days`).
+    - **Cancelled / Do Not Pursue**: Archived if `Age >= 30 days` or marked `Disposition = Ignore`.
+  - Added `--dry-run` preview flag to inspect candidate records before modifying data.
+  - Added `--unarchive <job_id / req_id / company>` to restore archived records back to the operational tracker.
+- **First-Class Requisition ID (`requisition_id`)**:
+  - Added `Requisition ID` column across `jobs.db`, `job_workflow`, and `master_tracker.csv`.
+  - Added `--requisition-id` to manual job addition CLI and structured text parsing (`parse_manual_job_block`).
+  - Updated `query_jobs.py` to display `Requisition ID` when present.
+- **Schema & Provenance Additions**: Added `Sighting Count`, `Archived`, and `Archive Date` to `TRACKER_HEADERS` and SQLite auto-migration.
+- **Test Suite Expansion**: Added dedicated tests in `tests/test_archive.py` covering dry-run previews, active CSV filtering, database persistence, and unarchiving (468 passing tests).
+
 ## v1.4.1 — 2026-09-22
 
 ### Bug Fixes & Agent Skill Documentation

@@ -84,10 +84,15 @@ Each job record in the main `jobs` table carries these fields:
 | Field | Description |
 |-------|-------------|
 | `Job ID` | Stable 32-char hex UUID (`uuid.uuid4().hex`) generated once and never recalculated |
+| `Requisition ID` | Employer or agency requisition ID (e.g. `J0926-1775`) for first-class tracking |
 | `Fingerprint` | Normalized canonical key (company + title + location) used for deduplication |
 | `Previous Job ID` | Links a newly created tracker record to an older record if re-listed outside the window |
 | `Source Index` | Deterministic extraction position (e.g., '1-5' for the 5th job in the 1st PDF) |
+| `Date Added` | ISO date first seen |
 | `Last Seen` | ISO date when the job was most recently observed in a parse run |
+| `Sighting Count` | Total observation count across alert runs |
+| `Archived` | Archive status flag ('Yes' or 'No') |
+| `Archive Date` | ISO date when the record was moved to archive |
 | `Review Status` | Workflow state: New, Applied, Imported, Closed, Recruiter Contact, Reviewed |
 | `Job Type` | Software Engineer or Operations (drives scoring criteria) |
 | `Company` | Extracted company name (cleaned of subject/email subject formatting artifacts) |
@@ -108,7 +113,6 @@ Each job record in the main `jobs` table carries these fields:
 | `Reason` | Short human-readable explanation of the recommendation |
 | `Matched Skills` | Resume keywords found in the posting |
 | `Missing Skills` | Desired keywords not found |
-| `Date Added` | ISO date first seen |
 | `Notes` | Parser-generated analyst comments |
 | `Score Source` | Provenance of fit score (`parser` or `manual`) to preserve intentional manual score overrides |
 
@@ -119,10 +123,13 @@ To ensure user-managed workflow state is never lost even if the main `jobs` tabl
 | Column | Type | Description |
 |--------|------|-------------|
 | `job_id` | TEXT PRIMARY KEY | Relates to the unique `Job ID` |
+| `requisition_id` | TEXT | Employer or agency requisition ID |
 | `tracker_status` | TEXT | Current workflow status (e.g. Applied, Rejected) |
 | `review_status` | TEXT | Review status (e.g. Imported, Applied, Closed) |
 | `action` | TEXT | Current action (e.g. Apply, Contact Recruiter) |
 | `disposition` | TEXT | Free-text outcome/disposition |
+| `archived` | TEXT | Archive flag ('Yes' or 'No') |
+| `archive_date` | TEXT | ISO date when archived |
 | `updated_at` | TEXT | ISO timestamp when the workflow was last changed |
 | `updated_by` | TEXT | Who changed it (e.g. `'system'` or a user name) |
 | `notes` | TEXT | Custom user notes (preserved on import) |

@@ -18,8 +18,14 @@ def main():
     try:
         c = conn.cursor()
 
+        # Check table columns
+        c.execute("PRAGMA table_info(jobs)")
+        columns = [r[1] for r in c.fetchall()]
+        has_req_id = "requisition_id" in columns
+        req_col = ", requisition_id" if has_req_id else ""
+
         # Use NOCASE and apostrophe stripping for tolerant matching (e.g. Lowes -> Lowe's)
-        query_sql = "SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added FROM jobs WHERE (company LIKE ? OR REPLACE(REPLACE(company, '''', ''), '’', '') LIKE ?) COLLATE NOCASE"
+        query_sql = f"SELECT job_id, company, position, tracker_status, notes, source_pdf, date_added{req_col} FROM jobs WHERE (company LIKE ? OR REPLACE(REPLACE(company, '''', ''), '’', '') LIKE ?) COLLATE NOCASE"
         clean_q = args.query.replace("'", "").replace("’", "")
         params = [f"%{args.query}%", f"%{clean_q}%"]
         
@@ -42,13 +48,19 @@ def main():
 
     print(f"Found {len(results)} job(s) matching '{args.query}'\n")
     for i, row in enumerate(results, start=1):
-        job_id, company, position, status, notes, source_pdf, date_added = row
+        if has_req_id:
+            job_id, company, position, status, notes, source_pdf, date_added, requisition_id = row
+        else:
+            job_id, company, position, status, notes, source_pdf, date_added = row
+            requisition_id = None
         
         # Normalize position by removing stray leading words like 'engineer'
         position = re.sub(r'(?i)^\s*engineer\s+', '', position)
         
         print(f"**{i}. {company} — {position}**\n")
         print(f"- **ID:** `{job_id}`")
+        if requisition_id:
+            print(f"- **Requisition ID:** `{requisition_id}`")
         print(f"- **Date:** {date_added}")
         print(f"- **Status:** {status}")
         

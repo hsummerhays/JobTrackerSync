@@ -30,6 +30,7 @@ FIELD_DELIMITER = "|"
 # Tracker CSV Standard Column Names
 TRACKER_HEADERS = [
     "Job ID",
+    "Requisition ID",
     "Review Status",
     "Job Type",
     "Company",
@@ -54,11 +55,15 @@ TRACKER_HEADERS = [
     "Missing Skills",
     "Date Added",
     "Last Seen",
+    "Sighting Count",
+    "Archived",
+    "Archive Date",
     "Notes",
     "Recruiter",
     "Hiring Manager",
     "Fingerprint",
     "Previous Job ID",
+    "Score Source",
 ]
 
 # Canonical Status Lists & Sets

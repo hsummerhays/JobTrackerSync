@@ -227,9 +227,25 @@ After updating `config.json` (e.g., adding a new resume skill or alias), recalcu
 python parse_jobs.py --rescore
 ```
 
-Manual fields (`Tracker Status`, `Notes`, `Recruiter`, `Hiring Manager`) are preserved.
+**10. Archiving & Operational Tracker Cleaning**
 
-**10. Running Tests**
+`jobs.db` serves as the permanent system of record, while `master_tracker.csv` serves as the active operational view. Archive older closed, expired, or rejected postings out of the active spreadsheet without losing historical context or duplicate detection:
+
+```bash
+# Preview what would be archived without making changes
+python parse_jobs.py --archive --dry-run
+
+# Archive Expired (>= 60 days) and Rejected (>= 90 days)
+python parse_jobs.py --archive
+
+# Custom retention windows
+python parse_jobs.py --archive --expired-days 45 --rejected-days 60
+
+# Unarchive a job back to the active tracker
+python parse_jobs.py --unarchive "<Job ID or Requisition ID or Company>"
+```
+
+**11. Running Tests**
 
 Run the complete test suite using `pytest`:
 
@@ -237,7 +253,7 @@ Run the complete test suite using `pytest`:
 python -m pytest tests/ -v
 ```
 
-**11. AI Agent Integration**
+**12. AI Agent Integration**
 
 This project includes built-in AI agent skills (located in `.agents/skills/`) to automate common workflows using AI assistants:
 

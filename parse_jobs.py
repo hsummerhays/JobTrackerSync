@@ -461,20 +461,31 @@ def initialize_tracker(tracker_path):
             writer.writerow(["Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider", "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type", "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company", "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager", "Fingerprint", "Previous Job ID"])
         console.print(f"[green]Initialized new tracker at {tracker_path}[/green]")
 
-def clean_existing_tracker(tracker_path):
+def clean_existing_tracker(tracker_path, db_path=None):
     """Clean up any existing rows in the tracker that fail the company name rules and migrate schema if needed."""
     if not os.path.exists(tracker_path):
         return
+    
+    if db_path is None:
+        dir_name = os.path.dirname(tracker_path)
+        candidate = os.path.join(dir_name, "jobs.db") if dir_name else "jobs.db"
+        if os.path.exists(candidate):
+            db_path = candidate
+        elif tracker_path in ("master_tracker.csv", "") and os.path.exists("jobs.db"):
+            db_path = "jobs.db"
+        else:
+            db_path = candidate
     
     rows_to_keep = []
     cleaned_any = False
     migrated_schema = False
     
     expected_headers = [
-        "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
+        "Job ID", "Requisition ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
         "Source PDF", "Source Index", "Confidence", "Fit Score", "Priority", "Company Type",
         "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
-        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager",
+        "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Sighting Count",
+        "Archived", "Archive Date", "Notes", "Recruiter", "Hiring Manager",
         "Fingerprint", "Previous Job ID", "Score Source"
     ]
 
@@ -492,9 +503,9 @@ def clean_existing_tracker(tracker_path):
 
         # Load any missing rows from jobs.db so valid DB records missing from CSV are restored
         db_by_id = {}
-        if os.path.exists("jobs.db"):
+        if os.path.exists(db_path):
             try:
-                conn = sqlite3.connect("jobs.db")
+                conn = sqlite3.connect(db_path)
                 conn.row_factory = sqlite3.Row
                 db_rows = conn.execute("SELECT * FROM jobs").fetchall()
                 conn.close()
@@ -503,9 +514,12 @@ def clean_existing_tracker(tracker_path):
                 for db_r in db_rows:
                     d = dict(db_r)
                     jid = d.get("job_id")
+                    if d.get("archived") == "Yes":
+                        continue
                     if jid and jid not in csv_ids:
                         rows.append({
                             "Job ID": d.get("job_id"),
+                            "Requisition ID": d.get("requisition_id") or "",
                             "Review Status": d.get("review_status"),
                             "Job Type": d.get("job_type"),
                             "Company": d.get("company"),
@@ -528,6 +542,9 @@ def clean_existing_tracker(tracker_path):
                             "Missing Skills": d.get("missing_skills"),
                             "Date Added": d.get("date_added"),
                             "Last Seen": d.get("last_seen"),
+                            "Sighting Count": d.get("sighting_count") or 1,
+                            "Archived": d.get("archived") or "No",
+                            "Archive Date": d.get("archive_date") or "",
                             "Notes": d.get("notes"),
                             "Recruiter": d.get("recruiter"),
                             "Hiring Manager": d.get("hiring_manager"),
@@ -833,9 +850,13 @@ def clean_existing_tracker(tracker_path):
             else:
                 migrated_row["Existing Company"] = current_val if current_val in ["Yes", "No"] else "No"
             
-            # Preserve Recruiter & Hiring Manager
+            # Preserve Recruiter, Hiring Manager, Requisition ID, Sighting Count, Archived, Archive Date
             migrated_row["Recruiter"] = (db_stored.get("recruiter") if db_stored else None) or row.get("Recruiter", "")
             migrated_row["Hiring Manager"] = (db_stored.get("hiring_manager") if db_stored else None) or row.get("Hiring Manager", "")
+            migrated_row["Requisition ID"] = (db_stored.get("requisition_id") if db_stored else None) or row.get("Requisition ID", "")
+            migrated_row["Sighting Count"] = (db_stored.get("sighting_count") if db_stored else None) or row.get("Sighting Count") or 1
+            migrated_row["Archived"] = (db_stored.get("archived") if db_stored else None) or row.get("Archived") or "No"
+            migrated_row["Archive Date"] = (db_stored.get("archive_date") if db_stored else None) or row.get("Archive Date") or ""
 
             source_index = row.get("Source Index", "")
             if not source_index and notes:
@@ -922,11 +943,17 @@ def clean_existing_tracker(tracker_path):
                 except (ValueError, TypeError):
                     pass
 
-                # Advance Last Seen.
+                # Advance Last Seen and increment Sighting Count.
                 canonical["Last Seen"] = max(
                     canonical.get("Last Seen", canonical.get("Date Added", "")),
                     mrow.get("Last Seen", mrow.get("Date Added", ""))
                 )
+                try:
+                    canonical["Sighting Count"] = int(canonical.get("Sighting Count") or 1) + int(mrow.get("Sighting Count") or 1)
+                except (ValueError, TypeError):
+                    canonical["Sighting Count"] = 1
+                if not canonical.get("Requisition ID") and mrow.get("Requisition ID"):
+                    canonical["Requisition ID"] = mrow["Requisition ID"]
                 # Prefer higher-rank status.
                 if should_prefer_status(canonical.get("Tracker Status"), mrow.get("Tracker Status")):
                     canonical["Tracker Status"] = mrow["Tracker Status"]
@@ -1002,15 +1029,16 @@ def clean_existing_tracker(tracker_path):
                 if jid and jid != survivor_id:
                     pre_collapsed_losers.append((survivor_id, jid))
 
-        # Always sync with SQLite database 'jobs.db' on launch. Snapshot both
+        # Always sync with SQLite database on launch. Snapshot both
         # files first -- these are two separate writes, not one transaction.
-        backup_file_if_exists("jobs.db")
+        backup_file_if_exists(db_path)
         backup_file_if_exists(tracker_path)
-        success = save_to_sqlite("jobs.db", rows_to_keep, pre_collapsed_losers=pre_collapsed_losers)
+        success = save_to_sqlite(db_path, rows_to_keep, pre_collapsed_losers=pre_collapsed_losers)
 
-        # Always save CSV back to disk to preserve updated skills/scores calculations
+        # Always save CSV back to disk to preserve updated skills/scores calculations (filtering out archived rows)
         if success:
-            write_tracker_csv_atomic(tracker_path, expected_headers, rows_to_keep, extrasaction='ignore')
+            active_rows_to_keep = [r for r in rows_to_keep if r.get("Archived") != "Yes"]
+            write_tracker_csv_atomic(tracker_path, expected_headers, active_rows_to_keep, extrasaction='ignore')
             console.print(f"[green]Synchronized and recalculated all tracking rows in {tracker_path}[/green]")
         else:
             console.print("[red]Database save failed, aborting CSV update in clean_existing_tracker.[/red]")
@@ -1039,6 +1067,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 job_id TEXT PRIMARY KEY,
+                requisition_id TEXT,
                 review_status TEXT,
                 job_type TEXT,
                 company TEXT,
@@ -1061,6 +1090,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                 missing_skills TEXT,
                 date_added TEXT,
                 last_seen TEXT,
+                sighting_count INTEGER DEFAULT 1,
+                archived TEXT DEFAULT 'No',
+                archive_date TEXT,
                 notes TEXT,
                 recruiter TEXT,
                 hiring_manager TEXT,
@@ -1078,10 +1110,13 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS job_workflow (
                 job_id TEXT PRIMARY KEY,
+                requisition_id TEXT,
                 tracker_status TEXT,
                 review_status TEXT,
                 action TEXT,
                 disposition TEXT,
+                archived TEXT,
+                archive_date TEXT,
                 updated_at TEXT,
                 updated_by TEXT,
                 notes TEXT,
@@ -1123,17 +1158,24 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
 
         # Add columns dynamically to jobs and job_workflow in case the tables already existed without them
         _ensure_columns(cursor, "jobs", [
+            ("requisition_id", "TEXT"),
             ("recruiter", "TEXT"),
             ("hiring_manager", "TEXT"),
             ("fingerprint", "TEXT"),
             ("previous_job_id", "TEXT"),
             ("raw_context", "TEXT"),
             ("score_source", "TEXT"),
+            ("sighting_count", "INTEGER DEFAULT 1"),
+            ("archived", "TEXT DEFAULT 'No'"),
+            ("archive_date", "TEXT"),
         ])
         _ensure_columns(cursor, "job_workflow", [
+            ("requisition_id", "TEXT"),
             ("review_status", "TEXT"),
             ("action", "TEXT"),
             ("disposition", "TEXT"),
+            ("archived", "TEXT"),
+            ("archive_date", "TEXT"),
             ("updated_at", "TEXT"),
             ("updated_by", "TEXT"),
             ("notes", "TEXT"),
@@ -1377,9 +1419,15 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
             merged_last_seen = max(owner_last_seen or "", losing_last_seen) or owner_last_seen
 
             cursor.execute(
-                "UPDATE jobs SET tracker_status=?, notes=?, provider=?, source_pdf=?, last_seen=? WHERE job_id=?",
+                "UPDATE jobs SET tracker_status=?, notes=?, provider=?, source_pdf=?, last_seen=?, sighting_count=COALESCE(sighting_count, 1) + 1 WHERE job_id=?",
                 (merged_status, merged_notes, merged_provider, merged_source_pdf, merged_last_seen, owner_jid)
             )
+            losing_req_id = job.get("Requisition ID", job.get("requisition_id"))
+            if losing_req_id:
+                cursor.execute(
+                    "UPDATE jobs SET requisition_id = COALESCE(NULLIF(requisition_id, ''), ?) WHERE job_id=?",
+                    (losing_req_id, owner_jid)
+                )
             cursor.execute(
                 "UPDATE job_workflow SET tracker_status=? WHERE job_id=?",
                 (merged_status, owner_jid)
@@ -1475,6 +1523,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                 action = job.get("Action", job.get("action"))
                 disposition = job.get("Disposition", job.get("disposition"))
                 status_source = job.get("_status_source", "parser")
+                req_id = job.get("Requisition ID", job.get("requisition_id", ""))
+                archived_val = job.get("Archived", job.get("archived", "No"))
+                archive_date_val = job.get("Archive Date", job.get("archive_date", ""))
 
                 dedup_key = (fingerprint, date_added)
                 owner_jid = fp_date_owner.get(dedup_key)
@@ -1486,8 +1537,8 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
 
                 if jid:
                     cursor.execute("""
-                        INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, updated_at, updated_by, status_source)
-                        VALUES (?, ?, ?, ?, ?, datetime('now'), 'system', ?)
+                        INSERT INTO job_workflow (job_id, requisition_id, tracker_status, review_status, action, disposition, archived, archive_date, updated_at, updated_by, status_source)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), 'system', ?)
                         ON CONFLICT(job_id) DO UPDATE SET
                             updated_at = CASE
                                 WHEN coalesce(tracker_status, '') != coalesce(excluded.tracker_status, '')
@@ -1513,22 +1564,27 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                                 THEN excluded.status_source
                                 ELSE status_source
                             END,
+                            requisition_id = COALESCE(NULLIF(excluded.requisition_id, ''), job_workflow.requisition_id),
                             tracker_status = excluded.tracker_status,
                             review_status = excluded.review_status,
                             action = excluded.action,
-                            disposition = excluded.disposition
-                    """, (jid, tracker_status, review_status, action, disposition, status_source))
+                            disposition = excluded.disposition,
+                            archived = CASE WHEN excluded.archived IS NOT NULL AND excluded.archived != '' THEN excluded.archived ELSE job_workflow.archived END,
+                            archive_date = CASE WHEN excluded.archive_date IS NOT NULL AND excluded.archive_date != '' THEN excluded.archive_date ELSE job_workflow.archive_date END
+                    """, (jid, req_id, tracker_status, review_status, action, disposition, archived_val, archive_date_val, status_source))
 
                 score_src = job.get("Score Source") or job.get("score_source") or "parser"
                 cursor.execute("""
                     INSERT INTO jobs (
-                        job_id, review_status, job_type, company, position, location, url, provider,
+                        job_id, requisition_id, review_status, job_type, company, position, location, url, provider,
                         source_pdf, confidence, fit_score, priority, company_type,
                         recommendation, tracker_status, disposition, action, existing_company,
-                        reason, matched_skills, missing_skills, date_added, last_seen, notes, recruiter, hiring_manager,
+                        reason, matched_skills, missing_skills, date_added, last_seen, sighting_count,
+                        archived, archive_date, notes, recruiter, hiring_manager,
                         fingerprint, previous_job_id, raw_context, score_source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(job_id) DO UPDATE SET
+                        requisition_id=COALESCE(NULLIF(excluded.requisition_id, ''), jobs.requisition_id),
                         review_status=excluded.review_status,
                         job_type=excluded.job_type,
                         company=excluded.company,
@@ -1551,6 +1607,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                         missing_skills=excluded.missing_skills,
                         date_added=excluded.date_added,
                         last_seen=excluded.last_seen,
+                        sighting_count=COALESCE(excluded.sighting_count, jobs.sighting_count, 1),
+                        archived=CASE WHEN excluded.archived IS NOT NULL AND excluded.archived != '' THEN excluded.archived ELSE COALESCE(jobs.archived, 'No') END,
+                        archive_date=CASE WHEN excluded.archive_date IS NOT NULL AND excluded.archive_date != '' THEN excluded.archive_date ELSE jobs.archive_date END,
                         notes=excluded.notes,
                         recruiter=excluded.recruiter,
                         hiring_manager=excluded.hiring_manager,
@@ -1560,6 +1619,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                         score_source=CASE WHEN excluded.score_source = 'manual' THEN 'manual' ELSE COALESCE(jobs.score_source, excluded.score_source) END
                 """, (
                     jid,
+                    req_id,
                     job.get("Review Status", job.get("review_status")),
                     job.get("Job Type", job.get("job_type")),
                     company,
@@ -1582,6 +1642,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                     job.get("Missing Skills", job.get("missing_skills")),
                     job.get("Date Added", job.get("date_added")),
                     job.get("Last Seen", job.get("last_seen", job.get("Date Added", job.get("date_added")))),
+                    job.get("Sighting Count", job.get("sighting_count", 1)),
+                    archived_val,
+                    archive_date_val,
                     job.get("Notes", job.get("notes")),
                     job.get("Recruiter", job.get("recruiter")),
                     job.get("Hiring Manager", job.get("hiring_manager")),
@@ -1609,6 +1672,7 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
             # run's jobs_list.
             conn.rollback()
             _ensure_columns(cursor, "jobs", [
+                ("requisition_id", "TEXT"),
                 ("review_status", "TEXT"),
                 ("job_type", "TEXT"),
                 ("company", "TEXT"),
@@ -1631,6 +1695,9 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                 ("missing_skills", "TEXT"),
                 ("date_added", "TEXT"),
                 ("last_seen", "TEXT"),
+                ("sighting_count", "INTEGER DEFAULT 1"),
+                ("archived", "TEXT DEFAULT 'No'"),
+                ("archive_date", "TEXT"),
                 ("notes", "TEXT"),
                 ("recruiter", "TEXT"),
                 ("hiring_manager", "TEXT"),
@@ -1638,9 +1705,12 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
                 ("previous_job_id", "TEXT"),
             ])
             _ensure_columns(cursor, "job_workflow", [
+                ("requisition_id", "TEXT"),
                 ("review_status", "TEXT"),
                 ("action", "TEXT"),
                 ("disposition", "TEXT"),
+                ("archived", "TEXT"),
+                ("archive_date", "TEXT"),
                 ("updated_at", "TEXT"),
                 ("updated_by", "TEXT"),
                 ("notes", "TEXT"),
@@ -3853,6 +3923,7 @@ def parse_manual_job_block(text: str) -> dict:
         "recommendation": None,
         "status": None,
         "date": None,
+        "requisition_id": None,
         "notes": None,
     }
 
@@ -3915,12 +3986,19 @@ def parse_manual_job_block(text: str) -> dict:
                     remaining_notes.append(line)
             elif key in ("location", "workplace"):
                 extracted["location"] = val
+            elif key in ("requisition", "requisition id", "requisition #", "req id", "req #", "req", "req no", "req number", "job id (requisition)", "job requisition"):
+                extracted["requisition_id"] = val
+                remaining_notes.append(line)
+            elif key == "job id":
+                if not re.match(r'^[a-f0-9]{32}$', val):
+                    extracted["requisition_id"] = val
+                remaining_notes.append(line)
             elif key in ("job type", "type", "employment"):
                 extracted["job_type"] = val
                 remaining_notes.append(line)
             elif key in ("provider", "source"):
                 extracted["provider"] = val
-            elif key in ("recruiter", "talent partner", "recruiter name"):
+            elif key in ("recruiter", "talent partner", "recruiter name", "recruiter/agency", "recruiter / agency"):
                 if not extracted["recruiter"]:
                     extracted["recruiter"] = val
                 else:
@@ -3944,7 +4022,7 @@ def parse_manual_job_block(text: str) -> dict:
                     matched_status = "Technical Interview"
                 elif "phone screen" in val_lower or "recruiter screen" in val_lower or "recruiter call" in val_lower:
                     matched_status = "Phone Screen"
-                elif "recruiter contact" in val_lower or "recruiter submitted" in val_lower:
+                elif "recruiter contact" in val_lower or "recruiter submitted" in val_lower or "submission" in val_lower or "prescreen" in val_lower:
                     matched_status = "Recruiter Submitted"
                 else:
                     for sk, sv in status_keywords.items():
@@ -3971,6 +4049,13 @@ def parse_manual_job_block(text: str) -> dict:
             else:
                 remaining_notes.append(line)
         else:
+            # Handle "Company — Position" line
+            if not extracted["company"] and ("—" in cleaned or " - " in cleaned or " – " in cleaned):
+                parts = re.split(r'\s*[—–]\s*|\s+-\s+', cleaned, maxsplit=1)
+                if len(parts) == 2:
+                    extracted["company"] = parts[0].strip()
+                    extracted["position"] = parts[1].strip()
+                    continue
             remaining_notes.append(line)
 
     if remaining_notes:
@@ -3979,7 +4064,7 @@ def parse_manual_job_block(text: str) -> dict:
     return extracted
 
 
-def handle_manual_add(company=None, position=None, location=None, job_type=None, provider=None, recruiter=None, hiring_manager=None, url=None, fit_score=None, recommendation=None, status=None, notes=None, interactive=None, date_added=None):
+def handle_manual_add(company=None, position=None, location=None, job_type=None, provider=None, recruiter=None, hiring_manager=None, url=None, fit_score=None, recommendation=None, status=None, notes=None, interactive=None, date_added=None, requisition_id=None):
     if interactive is None:
         interactive = not (company and position)
 
@@ -4176,6 +4261,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
     # Create the job dictionary
     job = {
         "Job ID": job_id,
+        "Requisition ID": requisition_id or "",
         "Review Status": review_status,
         "Job Type": job_type,
         "Company": company,
@@ -4199,6 +4285,9 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
         "Missing Skills": "",
         "Date Added": date_added,
         "Last Seen": date_added,
+        "Sighting Count": 1,
+        "Archived": "No",
+        "Archive Date": "",
         "Notes": notes,
         "Recruiter": recruiter,
         "Hiring Manager": hiring_manager,
@@ -4226,6 +4315,7 @@ def handle_manual_add(company=None, position=None, location=None, job_type=None,
             for row in reader:
                 if row["Job ID"] == job_id:
                     # Update row fields
+                    row["Requisition ID"] = requisition_id or row.get("Requisition ID", "")
                     row["Tracker Status"] = status
                     row["Review Status"] = review_status
                     row["Action"] = action
@@ -4610,6 +4700,146 @@ def handle_clear_score_override(target=None, db_path="jobs.db", csv_path="master
     handle_rescore(db_path=db_path, csv_path=csv_path, rescore_all=True, job_ids=job_ids)
 
 
+def handle_archive(expired_days=60, rejected_days=90, dry_run=False, target=None, unarchive=False, db_path="jobs.db", csv_path="master_tracker.csv", tracker_csv=None):
+    if tracker_csv:
+        csv_path = tracker_csv
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    _ensure_columns(cursor, "jobs", [
+        ("requisition_id", "TEXT"),
+        ("sighting_count", "INTEGER DEFAULT 1"),
+        ("archived", "TEXT DEFAULT 'No'"),
+        ("archive_date", "TEXT"),
+    ])
+    _ensure_columns(cursor, "job_workflow", [
+        ("requisition_id", "TEXT"),
+        ("archived", "TEXT"),
+        ("archive_date", "TEXT"),
+    ])
+
+    today = date.today()
+    today_str = today.isoformat()
+
+    if unarchive:
+        target_val = target if target else (unarchive if isinstance(unarchive, str) else None)
+        if not target_val:
+            console.print("[red]Error: Please specify a Job ID, Requisition ID, or company name to unarchive.[/red]")
+            conn.close()
+            return 1
+        cursor.execute("SELECT job_id, company, position, requisition_id FROM jobs WHERE archived = 'Yes' AND (job_id = ? OR requisition_id = ? OR company LIKE ?)", (target_val, target_val, f"%{target_val}%"))
+        matches = cursor.fetchall()
+        if not matches:
+            console.print(f"[yellow]No archived jobs found matching '{target_val}'.[/yellow]")
+            conn.close()
+            return 0
+        for m in matches:
+            cursor.execute("UPDATE jobs SET archived = 'No', archive_date = '' WHERE job_id = ?", (m["job_id"],))
+            cursor.execute("UPDATE job_workflow SET archived = 'No', archive_date = '' WHERE job_id = ?", (m["job_id"],))
+        conn.commit()
+        conn.close()
+        console.print(f"[green]Successfully unarchived {len(matches)} job(s). Syncing working tracker...[/green]")
+        clean_existing_tracker(csv_path, db_path=db_path)
+        return 0
+
+    cursor.execute("""
+        SELECT job_id, requisition_id, company, position, location, tracker_status, date_added, last_seen, notes, disposition
+        FROM jobs
+        WHERE (archived IS NULL OR archived != 'Yes')
+    """)
+    rows = cursor.fetchall()
+
+    candidates = []
+    for r in rows:
+        jid = r["job_id"]
+        status = r["tracker_status"] or "New"
+        disposition = r["disposition"] or ""
+        notes = (r["notes"] or "").lower()
+        last_seen_str = r["last_seen"] or r["date_added"] or ""
+
+        age = 0
+        if last_seen_str:
+            try:
+                dt = date.fromisoformat(last_seen_str[:10])
+                age = (today - dt).days
+            except (ValueError, TypeError):
+                pass
+
+        reason = None
+        # Rule 1: Expired > expired_days
+        if status == "Expired" and age >= expired_days:
+            reason = f"Expired ({age}d >= {expired_days}d)"
+        # Rule 2: Rejected / Withdrawn > rejected_days
+        elif status in ("Rejected", "Withdrawn") and age >= rejected_days:
+            reason = f"Rejected/Withdrawn ({age}d >= {rejected_days}d)"
+        # Rule 3: Cancelled / Do Not Pursue
+        elif status == "Cancelled" and ("do not pursue" in notes or age >= 30 or disposition == "Ignore"):
+            reason = f"Cancelled/Do Not Pursue ({age}d)"
+        elif disposition == "Ignore" and status in CLOSED_TRACKER_STATUSES and age >= 30:
+            reason = f"Closed & Ignored ({age}d)"
+
+        if reason:
+            candidates.append({
+                "job_id": jid,
+                "requisition_id": r["requisition_id"] or "",
+                "company": r["company"] or "",
+                "position": r["position"] or "",
+                "status": status,
+                "last_seen": last_seen_str,
+                "age": age,
+                "archive_reason": reason
+            })
+
+    if not candidates:
+        console.print(f"[green]No jobs meet the criteria for archiving (Expired >= {expired_days}d, Rejected >= {rejected_days}d).[/green]")
+        conn.close()
+        return 0
+
+    if dry_run:
+        from rich.table import Table
+        table = Table(title=f"Archive Candidates Preview ({len(candidates)} total)", show_lines=False)
+        table.add_column("Job ID", style="dim")
+        table.add_column("Req ID", style="cyan")
+        table.add_column("Company", style="bold")
+        table.add_column("Position", style="white")
+        table.add_column("Status", style="magenta")
+        table.add_column("Last Seen", style="yellow")
+        table.add_column("Age (days)", justify="right")
+        table.add_column("Reason", style="green")
+
+        for c in candidates[:50]:
+            table.add_row(
+                c["job_id"][:12],
+                c["requisition_id"][:15],
+                c["company"][:25],
+                c["position"][:25],
+                c["status"],
+                c["last_seen"][:10],
+                str(c["age"]),
+                c["archive_reason"]
+            )
+        console.print(table)
+        if len(candidates) > 50:
+            console.print(f"[dim]... and {len(candidates) - 50} more candidate records.[/dim]")
+        console.print(f"\n[bold yellow]Dry-run mode: {len(candidates)} records would be archived from {os.path.basename(csv_path)} (permanently kept in {os.path.basename(db_path)}).[/bold yellow]")
+        conn.close()
+        return 0
+
+    backup_file_if_exists(db_path)
+    backup_file_if_exists(csv_path)
+
+    for c in candidates:
+        cursor.execute("UPDATE jobs SET archived = 'Yes', archive_date = ? WHERE job_id = ?", (today_str, c["job_id"]))
+        cursor.execute("UPDATE job_workflow SET archived = 'Yes', archive_date = ? WHERE job_id = ?", (today_str, c["job_id"]))
+
+    conn.commit()
+    conn.close()
+
+    console.print(f"[green]Successfully archived {len(candidates)} jobs in {os.path.basename(db_path)}.[/green]")
+    clean_existing_tracker(csv_path, db_path=db_path)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Parse PDF Job cards and apply Job Review Rules v1.0")
     parser.add_argument("--pdf-dir", required=False, help="Directory containing PDF job lists")
@@ -4620,6 +4850,11 @@ def main():
     parser.add_argument("--rescore", action="store_true", help="Recalculate skills and fit scores for all active jobs (preserves manual score overrides)")
     parser.add_argument("--rescore-all", action="store_true", help="Force rescoring of all active jobs, including manual score overrides")
     parser.add_argument("--clear-score-override", nargs="?", const="", required=False, help="Clear manual score override for target company/job ID (or all jobs if empty)")
+    parser.add_argument("--archive", action="store_true", help="Archive closed/expired tracker rows based on retention rules")
+    parser.add_argument("--dry-run", action="store_true", help="Preview actions (e.g. for --archive) without modifying database or CSV")
+    parser.add_argument("--expired-days", type=int, default=60, help="Days threshold for archiving Expired jobs (default: 60)")
+    parser.add_argument("--rejected-days", type=int, default=90, help="Days threshold for archiving Rejected jobs (default: 90)")
+    parser.add_argument("--unarchive", required=False, help="Unarchive a job by Job ID, Requisition ID, or company name")
     parser.add_argument("--add", action="store_true", help="Manually add a job to the tracker")
     parser.add_argument("--add-from-text", required=False, help="Text block or file path containing structured job details to add")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
@@ -4635,6 +4870,7 @@ def main():
     parser.add_argument("--company", required=False, help="Company name for manual job addition")
     parser.add_argument("--position", required=False, help="Position title for manual job addition")
     parser.add_argument("--location", required=False, help="Location for manual job addition")
+    parser.add_argument("--requisition-id", required=False, help="Requisition ID for manual job addition")
     parser.add_argument("--job-type", required=False, help="Job Type (Software Engineer or Operations)")
     parser.add_argument("--fit-score", required=False, type=int, help="Fit score (1-100)")
     parser.add_argument("--recommendation", required=False, help="Recommendation (e.g. ★★★★☆ Strong)")
@@ -4651,6 +4887,24 @@ def main():
             return
         with open(args.notes_file, mode='r', encoding='utf-8') as nf:
             file_note_content = nf.read()
+
+    if args.archive:
+        handle_archive(
+            expired_days=args.expired_days,
+            rejected_days=args.rejected_days,
+            dry_run=args.dry_run,
+            target=args.update,
+            unarchive=False
+        )
+        return
+
+    if args.unarchive:
+        handle_archive(
+            dry_run=args.dry_run,
+            target=args.unarchive,
+            unarchive=True
+        )
+        return
 
     if args.add_from_text:
         text_content = args.add_from_text
@@ -4675,6 +4929,7 @@ def main():
         final_fit_score = args.fit_score or parsed.get("fit_score") or 70
         final_recommendation = args.recommendation or parsed.get("recommendation") or "★★★★☆ Strong"
         final_status = args.status or parsed.get("status") or "New"
+        final_requisition_id = args.requisition_id or parsed.get("requisition_id")
         final_date = args.date or parsed.get("date")
         if final_date:
             final_date_cleaned = final_date.strip()
@@ -4702,6 +4957,7 @@ def main():
             status=final_status,
             notes=final_notes,
             date_added=final_date,
+            requisition_id=final_requisition_id,
             interactive=False
         )
         return
@@ -4721,7 +4977,8 @@ def main():
             recommendation=args.recommendation,
             status=args.status,
             notes=note_val,
-            date_added=args.date
+            date_added=args.date,
+            requisition_id=args.requisition_id
         )
         return
         
