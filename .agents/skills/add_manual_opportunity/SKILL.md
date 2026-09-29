@@ -25,6 +25,7 @@ python parse_jobs.py --add-from-text "scratch/opportunity.txt" [--status "Techni
 - **Company / Employer**
 - **Position / Title**
 - **Location**
+- **Requisition ID / Dice Position ID / Job ID** (extracts and retains multiple internal and agency identifiers)
 - **Recruiter / Hiring Manager**
 - **Status** (intelligently matches phrases like `Recruiter Screen Completed — Technical Interview Pending` to valid tracker statuses)
 - **Fit / Score / Recommendation** (e.g. `High / Priority` -> 95 / `★★★★★ Apply Now`)
