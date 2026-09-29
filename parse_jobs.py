@@ -3758,7 +3758,7 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None, review_status=None, location=None, provider=None):
+def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None, review_status=None, location=None, provider=None, requisition_id=None):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
@@ -3771,15 +3771,16 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
         
-    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None and review_status is None and location is None and provider is None:
-        console.print("[red]Either status, review_status, disposition, action, notes, recruiter, hiring_manager, location, or provider must be provided for update.[/red]")
+    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None and review_status is None and location is None and provider is None and requisition_id is None:
+        console.print("[red]Either status, review_status, disposition, action, notes, recruiter, hiring_manager, location, provider, or requisition_id must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     # A human is issuing this update -- make sure status_source exists before
     # the writes below stamp it, in case this DB predates that column.
-    _ensure_columns(cursor, "job_workflow", [("status_source", "TEXT")])
+    _ensure_columns(cursor, "job_workflow", [("status_source", "TEXT"), ("requisition_id", "TEXT")])
+    _ensure_columns(cursor, "jobs", [("requisition_id", "TEXT")])
 
     # Query database for matches
     cursor.execute("""
@@ -3865,6 +3866,9 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     if provider is not None:
         update_fields.append("provider = ?")
         update_params.append(provider)
+    if requisition_id is not None:
+        update_fields.append("requisition_id = ?")
+        update_params.append(requisition_id)
 
     update_params.append(job_id)
     cursor.execute(f"UPDATE jobs SET {', '.join(update_fields)} WHERE job_id = ?", tuple(update_params))
@@ -3874,14 +3878,16 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         cursor.execute("""
             UPDATE job_workflow
             SET tracker_status = ?, review_status = ?, action = ?, disposition = ?,
-                notes = COALESCE(?, notes), updated_at = ?, updated_by = 'system', status_source = 'user'
+                notes = COALESCE(?, notes),
+                requisition_id = COALESCE(?, requisition_id),
+                updated_at = ?, updated_by = 'system', status_source = 'user'
             WHERE job_id = ?
-        """, (effective_status, effective_review_status, effective_action, disposition, final_notes, now_str, job_id))
+        """, (effective_status, effective_review_status, effective_action, disposition, final_notes, requisition_id, now_str, job_id))
     else:
         cursor.execute("""
-            INSERT INTO job_workflow (job_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by, status_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'system', 'user')
-        """, (job_id, effective_status, effective_review_status, effective_action, disposition, final_notes, now_str))
+            INSERT INTO job_workflow (job_id, requisition_id, tracker_status, review_status, action, disposition, notes, updated_at, updated_by, status_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'system', 'user')
+        """, (job_id, requisition_id, effective_status, effective_review_status, effective_action, disposition, final_notes, now_str))
         
     # Retrieve updated row for CSV synchronization
     cursor.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
@@ -3890,6 +3896,7 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     # Map DB row keys to CSV headers
     db_to_csv_mapping = {
         "job_id": "Job ID",
+        "requisition_id": "Requisition ID",
         "review_status": "Review Status",
         "job_type": "Job Type",
         "company": "Company",
@@ -3955,6 +3962,12 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
                         row["Recruiter"] = recruiter
                     if hiring_manager is not None:
                         row["Hiring Manager"] = hiring_manager
+                    if requisition_id is not None:
+                        row["Requisition ID"] = requisition_id
+                    if location is not None:
+                        row["Location"] = location
+                    if provider is not None:
+                        row["Provider"] = provider
                     updated = True
                 rows.append(row)
                 
@@ -5072,7 +5085,7 @@ def main():
         
     if args.update is not None:
         has_notes = (args.notes is not None) or (args.append_notes is not None) or (file_note_content is not None)
-        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None) or (args.review_status is not None) or (args.location is not None) or (args.provider is not None)
+        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None) or (args.review_status is not None) or (args.location is not None) or (args.provider is not None) or (args.requisition_id is not None)
         if args.update == "" and not args.status and not has_notes and not has_metadata:
             handle_interactive_update()
             return
@@ -5096,6 +5109,8 @@ def main():
                 kwargs["location"] = args.location
             if args.provider is not None:
                 kwargs["provider"] = args.provider
+            if args.requisition_id is not None:
+                kwargs["requisition_id"] = args.requisition_id
             handle_status_update(
                 args.update,
                 args.status,

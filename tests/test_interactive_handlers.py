@@ -12,7 +12,7 @@ import parse_jobs
 from parse_jobs import handle_manual_add, handle_status_update, handle_interactive_update
 
 TRACKER_HEADERS = [
-    "Job ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
+    "Job ID", "Requisition ID", "Review Status", "Job Type", "Company", "Position", "Location", "URL", "Provider",
     "Source PDF", "Confidence", "Fit Score", "Priority", "Company Type",
     "Recommendation", "Tracker Status", "Disposition", "Action", "Existing Company",
     "Age (days)", "Reason", "Matched Skills", "Missing Skills", "Date Added", "Last Seen", "Notes", "Recruiter", "Hiring Manager"
@@ -42,7 +42,7 @@ class HandlerTestBase(unittest.TestCase):
         conn = sqlite3.connect(self.db_path)
         conn.execute("""
             CREATE TABLE jobs (
-                job_id TEXT PRIMARY KEY, review_status TEXT, job_type TEXT, company TEXT, position TEXT, location TEXT,
+                job_id TEXT PRIMARY KEY, requisition_id TEXT, review_status TEXT, job_type TEXT, company TEXT, position TEXT, location TEXT,
                 url TEXT, provider TEXT, source_pdf TEXT, confidence TEXT, fit_score INTEGER, priority TEXT,
                 company_type TEXT, recommendation TEXT, tracker_status TEXT, disposition TEXT, action TEXT,
                 existing_company TEXT, reason TEXT, matched_skills TEXT, missing_skills TEXT, date_added TEXT, last_seen TEXT,
@@ -51,7 +51,7 @@ class HandlerTestBase(unittest.TestCase):
         """)
         conn.execute("""
             CREATE TABLE job_workflow (
-                job_id TEXT PRIMARY KEY, tracker_status TEXT, review_status TEXT, action TEXT, disposition TEXT,
+                job_id TEXT PRIMARY KEY, requisition_id TEXT, tracker_status TEXT, review_status TEXT, action TEXT, disposition TEXT,
                 notes TEXT, updated_at TEXT, updated_by TEXT, follow_up_date TEXT, last_contact_date TEXT
             )
         """)
@@ -347,6 +347,33 @@ class TestHandleStatusUpdate(HandlerTestBase):
             self.assertEqual(row["Tracker Status"], "Technical Interview")
             self.assertEqual(row["Recruiter"], "Jane Recruiter")
             self.assertEqual(row["Hiring Manager"], "Bob Manager")
+
+    def test_handle_status_update_requisition_id(self):
+        """Updating requisition_id updates jobs and job_workflow tables and master_tracker.csv."""
+        conn = self._init_db()
+        conn.execute(
+            "INSERT INTO jobs (job_id, company, position, date_added, tracker_status, notes, requisition_id) VALUES ('id1', 'InEight', 'Engineer', '2026-09-25', 'New', '', '')"
+        )
+        conn.execute(
+            "INSERT INTO job_workflow (job_id, tracker_status, notes) VALUES ('id1', 'New', '')"
+        )
+        conn.commit()
+        conn.close()
+        self._init_tracker(rows=[{"Job ID": "id1", "Company": "InEight", "Position": "Engineer", "Tracker Status": "New", "Notes": "", "Requisition ID": ""}])
+
+        self.assertTrue(handle_status_update("id1", requisition_id="11350", notes="Custom resume"))
+        conn = sqlite3.connect(self.db_path)
+        job_row = conn.execute("SELECT requisition_id, notes FROM jobs WHERE job_id='id1'").fetchone()
+        wf_row = conn.execute("SELECT requisition_id, notes FROM job_workflow WHERE job_id='id1'").fetchone()
+        conn.close()
+        self.assertEqual(job_row, ("11350", "Custom resume"))
+        self.assertEqual(wf_row, ("11350", "Custom resume"))
+
+        with open(self.tracker_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            row = next(reader)
+            self.assertEqual(row["Requisition ID"], "11350")
+            self.assertEqual(row["Notes"], "Custom resume")
 
 class TestHandleInteractiveUpdate(HandlerTestBase):
 
