@@ -15,7 +15,10 @@ All notable changes to this project are documented here.
 - **Closed / Rejected Opportunity Policy Engine**:
   - **Cool-Down Window (<= 180 days)**: Sightings of roles previously marked `Rejected`, `Cancelled`, `Ghosted`, or `Withdrawn` within 180 days merge sightings into the historical record (advancing `Last Seen`, merging `Provider` / `Source PDF`, and updating relisting notes) while strictly preserving `Tracker Status = Rejected`, `Review Status = Closed`, `Disposition = Closed`, and `Action = Ignore`.
   - **Re-Opening Window (> 180 days)**: Opportunities resurfacing after 6+ months in a new hiring cycle are treated as actionable relistings (`New` / `Apply`), linked back to the prior rejection via `previous_job_id` and an audit note.
-- **Test Suite Expansion**: Added unit tests in `tests/test_utils.py` and `tests/test_main_dedup_and_migration.py` covering relaxed canonical matching, remote location normalization, cool-down window preservation, and ancient relisting minting (457 passing tests).
+- **Multi-Key Requisition & Position ID Retention**:
+  - Enhanced `parse_manual_job_block`, `save_to_sqlite`, and the deduplication loop to combine and retain distinct requisition identifiers (such as internal `Req ID: 391199` and agency `Dice Position ID: 26-02245`) using ` / ` delimiters rather than overwriting either key.
+  - Implemented tokenized Requisition ID identity matching in deduplication across incoming listings, raw collected jobs, and historical tracker records so third-party/recruiter submissions sharing requisition tokens are matched even when titles or locations vary.
+- **Test Suite Expansion**: Added unit tests in `tests/test_utils.py`, `tests/test_main_dedup_and_migration.py`, and `tests/test_archive.py` covering relaxed canonical matching, remote location normalization, cool-down window preservation, multi-key requisition ID retention, and ancient relisting minting (458 passing tests).
 
 ## v1.4.2 — 2026-09-28
 

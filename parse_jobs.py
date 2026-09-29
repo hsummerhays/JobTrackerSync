@@ -1431,9 +1431,15 @@ def save_to_sqlite(db_path, jobs_list, pre_collapsed_losers=None):
             )
             losing_req_id = job.get("Requisition ID", job.get("requisition_id"))
             if losing_req_id:
+                owner_req = owner_dict.get("requisition_id") or ""
+                merged_req = merge_delimited_field(owner_req, losing_req_id, delimiter=" / ")
                 cursor.execute(
-                    "UPDATE jobs SET requisition_id = COALESCE(NULLIF(requisition_id, ''), ?) WHERE job_id=?",
-                    (losing_req_id, owner_jid)
+                    "UPDATE jobs SET requisition_id=? WHERE job_id=?",
+                    (merged_req, owner_jid)
+                )
+                cursor.execute(
+                    "UPDATE job_workflow SET requisition_id=? WHERE job_id=?",
+                    (merged_req, owner_jid)
                 )
             cursor.execute(
                 "UPDATE job_workflow SET tracker_status=? WHERE job_id=?",
@@ -4056,12 +4062,20 @@ def parse_manual_job_block(text: str) -> dict:
                     remaining_notes.append(line)
             elif key in ("location", "workplace"):
                 extracted["location"] = val
-            elif key in ("requisition", "requisition id", "requisition #", "req id", "req #", "req", "req no", "req number", "job id (requisition)", "job requisition"):
-                extracted["requisition_id"] = val
+            elif key in ("requisition", "requisition id", "requisition #", "req id", "req #", "req", "req no", "req number", "job id (requisition)", "job requisition", "dice position id", "position id", "dice id", "job number"):
+                if extracted["requisition_id"]:
+                    if val.lower() not in extracted["requisition_id"].lower():
+                        extracted["requisition_id"] = f"{extracted['requisition_id']} / {val}"
+                else:
+                    extracted["requisition_id"] = val
                 remaining_notes.append(line)
             elif key == "job id":
                 if not re.match(r'^[a-f0-9]{32}$', val):
-                    extracted["requisition_id"] = val
+                    if extracted["requisition_id"]:
+                        if val.lower() not in extracted["requisition_id"].lower():
+                            extracted["requisition_id"] = f"{extracted['requisition_id']} / {val}"
+                    else:
+                        extracted["requisition_id"] = val
                 remaining_notes.append(line)
             elif key in ("job type", "type", "employment"):
                 extracted["job_type"] = val
@@ -5334,9 +5348,20 @@ def main():
                                 else:
                                     ej_canonical = canonical_job_key(ej_company, ej_title, ej_location)
                                     ej_canonical_relaxed = canonical_job_key_relaxed(ej_company, ej_title, ej_location)
+                                    # Identity matching: exact canonical, relaxed canonical, or explicit matching Requisition / Position IDs
+                                    ej_req = (ej.get("Requisition ID") or ej.get("requisition_id") or "").strip()
+                                    job_req = (job.get("Requisition ID") or job.get("requisition_id") or "").strip()
+                                    req_id_match = False
+                                    if ej_req and job_req:
+                                        ej_tokens = {t.strip().lower() for t in re.split(r'[/,;\s]+', ej_req) if len(t.strip()) >= 3}
+                                        job_tokens = {t.strip().lower() for t in re.split(r'[/,;\s]+', job_req) if len(t.strip()) >= 3}
+                                        if ej_tokens & job_tokens:
+                                            req_id_match = True
+
                                     canonical_match = (
                                         ej_canonical == current_canonical
                                         or ej_canonical_relaxed == current_canonical_relaxed
+                                        or req_id_match
                                     )
 
                                     # Require stronger identity matching: if titles match but explicit URLs/Req IDs conflict, treat as distinct
@@ -5478,7 +5503,16 @@ def main():
                                     rj_job = rj_item["job"]
                                     rj_canonical = canonical_job_key(rj_job['company'], rj_job['title'], rj_job['location'])
                                     rj_canonical_relaxed = canonical_job_key_relaxed(rj_job['company'], rj_job['title'], rj_job['location'])
-                                    if rj_canonical == current_canonical or rj_canonical_relaxed == current_canonical_relaxed:
+                                    rj_req = (rj_job.get("Requisition ID") or rj_job.get("requisition_id") or "").strip()
+                                    job_req = (job.get("Requisition ID") or job.get("requisition_id") or "").strip()
+                                    rj_req_match = False
+                                    if rj_req and job_req:
+                                        rj_tokens = {t.strip().lower() for t in re.split(r'[/,;\s]+', rj_req) if len(t.strip()) >= 3}
+                                        job_tokens = {t.strip().lower() for t in re.split(r'[/,;\s]+', job_req) if len(t.strip()) >= 3}
+                                        if rj_tokens & job_tokens:
+                                            rj_req_match = True
+
+                                    if rj_canonical == current_canonical or rj_canonical_relaxed == current_canonical_relaxed or rj_req_match:
                                         # Merge into the raw_collected_job
                                         is_duplicate = True
                                         run_stats["jobs_merged"] += 1
@@ -5490,6 +5524,12 @@ def main():
                                         rj_job["source_pdf"] = merge_delimited_field(
                                             rj_job.get("source_pdf", ""),
                                             job.get("source_pdf", ""),
+                                        )
+
+                                        rj_job["requisition_id"] = merge_delimited_field(
+                                            rj_job.get("requisition_id", "") or rj_job.get("Requisition ID", ""),
+                                            job.get("requisition_id", "") or job.get("Requisition ID", ""),
+                                            delimiter=" / "
                                         )
                                         break
 
@@ -5504,6 +5544,12 @@ def main():
                                 existing_match["Source PDF"] = merge_delimited_field(
                                     existing_match.get("Source PDF", ""),
                                     job.get("source_pdf", ""),
+                                )
+
+                                existing_match["Requisition ID"] = merge_delimited_field(
+                                    existing_match.get("Requisition ID", ""),
+                                    job.get("requisition_id", "") or job.get("Requisition ID", ""),
+                                    delimiter=" / "
                                 )
 
                                 # This is a fresh sighting of the existing record.

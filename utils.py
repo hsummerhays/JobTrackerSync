@@ -436,15 +436,15 @@ def split_multivalue_field(value: str) -> list[str]:
     return [chunk.strip() for chunk in chunks if chunk.strip()]
 
 
-def merge_delimited_field(base_value: Any, other_value: Any) -> str:
-    """Merge a multi-valued field stored with FIELD_DELIMITER, skipping dupes."""
+def merge_delimited_field(base_value: Any, other_value: Any, delimiter: str = FIELD_DELIMITER) -> str:
+    """Merge a multi-valued field stored with delimiter, skipping dupes."""
     items = []
     for v in split_multivalue_field(str(base_value or "")) + split_multivalue_field(
         str(other_value or "")
     ):
         if v not in items:
             items.append(v)
-    return f"{FIELD_DELIMITER}".join(items)
+    return delimiter.join(items)
 
 
 def canonical_key(company: Any, position: Any, date_added: Any) -> str:

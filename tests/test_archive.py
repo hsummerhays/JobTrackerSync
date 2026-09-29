@@ -175,3 +175,18 @@ def test_archive_targeted(tmp_path):
     res_err = handle_archive(unarchive=True, target=None, db_path=str(db_file), tracker_csv=str(csv_file))
     assert res_err == 1
 
+
+def test_parse_manual_job_block_multi_key_requisition_ids():
+    text = """
+Company: NTT DATA Americas, Inc
+Position: Senior .NET Full Stack Lead - US REMOTE
+Req ID: 391199
+Dice Position ID: 26-02245
+Location: Remote
+"""
+    result = parse_manual_job_block(text)
+    assert result["company"] == "NTT DATA Americas, Inc"
+    assert "391199" in result["requisition_id"]
+    assert "26-02245" in result["requisition_id"]
+
+
