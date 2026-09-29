@@ -9,11 +9,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import (
     canonical_key,
     canonical_job_key,
+    canonical_job_key_relaxed,
     is_clean_location,
     locations_compatible,
     merge_delimited_field,
     normalize_company_for_matching,
     normalize_location,
+    normalize_location_for_matching,
     normalize_title,
     normalize_string,
     normalize_ocr_spacing,
@@ -64,6 +66,34 @@ class TestCanonicalKey(unittest.TestCase):
         self.assertEqual(normalize_title("Developer III"), "Developer 3")
         self.assertEqual(normalize_title("Analyst IV"), "Analyst 4")
         self.assertEqual(normalize_title("Engineer V"), "Engineer 5")
+
+    def test_normalize_location_for_matching_remote_variations(self):
+        """All remote variations must resolve to 'remote' for relaxed identity matching."""
+        self.assertEqual(normalize_location_for_matching("Remote"), "remote")
+        self.assertEqual(normalize_location_for_matching("OR Remote"), "remote")
+        self.assertEqual(normalize_location_for_matching("US Remote"), "remote")
+        self.assertEqual(normalize_location_for_matching("USA Remote"), "remote")
+        self.assertEqual(normalize_location_for_matching("Remote - US"), "remote")
+        self.assertEqual(normalize_location_for_matching("Remote (US)"), "remote")
+        self.assertEqual(normalize_location_for_matching("Remote, UT"), "remote")
+        self.assertEqual(normalize_location_for_matching("Lehi, UT (Remote)"), "remote")
+
+    def test_canonical_job_key_relaxed_matches_remote_and_corporate_variations(self):
+        """Lone Wolf 'Remote' vs 'OR Remote' and 'Wheeler Machinery Company' vs 'Wheeler Machinery Co'
+        must produce identical relaxed keys."""
+        k1 = canonical_job_key_relaxed("Lone Wolf Technologies", "Software Engineering Manager .NET", "Remote")
+        k2 = canonical_job_key_relaxed("Lone Wolf Technologies", "Software Engineering Manager .NET", "OR Remote")
+        self.assertEqual(k1, k2)
+
+        k3 = canonical_job_key_relaxed("Wheeler Machinery Company", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
+        k4 = canonical_job_key_relaxed("Wheeler Machinery Co", "Senior Full Stack Software Engineer", "Salt Lake City, UT")
+        self.assertEqual(k3, k4)
+
+    def test_corporate_suffix_normalization_preserves_substantive_company_words(self):
+        """Meaningful words like Technologies, Consulting, Solutions must NOT be stripped."""
+        self.assertEqual(normalize_company_for_matching("Lone Wolf Technologies"), "Lone Wolf Technologies")
+        self.assertEqual(normalize_company_for_matching("CapTech Consulting"), "CapTech Consulting")
+        self.assertEqual(normalize_company_for_matching("Acme Solutions"), "Acme Solutions")
 
 
 class TestShouldPreferStatus(unittest.TestCase):

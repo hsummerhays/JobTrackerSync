@@ -166,6 +166,9 @@ REAPPLY_STATUSES = {
     "Waiting",
 }
 
+# Cooling-off window (in days) for recently closed/rejected opportunities before allowing reconsideration
+CLOSED_REAPPLY_WINDOW_DAYS = 180
+
 DEFAULT_DISPOSITION_MAP = {
     "New": "Apply",
     "Applied": "Waiting",
@@ -449,9 +452,35 @@ def canonical_key(company: Any, position: Any, date_added: Any) -> str:
     return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{date_added}"
 
 
+def normalize_location_for_matching(loc: Any) -> str:
+    """Canonicalize location specifically for identity matching and deduplication.
+    Normalizes remote variations (e.g. 'OR Remote', 'US Remote', 'Remote (US)',
+    'Remote, UT') to 'remote' while preserving distinct physical locations."""
+    if not loc:
+        return "unknown"
+    s = str(loc).strip().lower()
+    if not s or s == "unknown":
+        return "unknown"
+    
+    # Check if location indicates remote work
+    if re.search(r"\bremote\b", s):
+        return "remote"
+    
+    return normalize_string(normalize_location(loc))
+
+
 def canonical_job_key(company: Any, position: Any, location: Any) -> str:
     """Group parsed jobs by company + position + location (strict literal identity)."""
     return f"{normalize_string(company)}|{normalize_string(normalize_title(position))}|{normalize_string(normalize_location(location))}"
+
+
+def canonical_job_key_relaxed(company: Any, position: Any, location: Any) -> str:
+    """Group parsed jobs by normalized corporate identity + normalized title + relaxed location.
+    - Strips legal suffixes (LLC, Inc, Corp, Co, etc.) via normalize_company_for_matching
+    - Normalizes Roman numeral level indicators (I, II, III -> 1, 2, 3) via normalize_title
+    - Normalizes remote location variations (OR Remote, US Remote -> remote) via normalize_location_for_matching
+    Used for multi-tiered identity matching before generating a new Job ID."""
+    return f"{normalize_string(normalize_company_for_matching(company))}|{normalize_string(normalize_title(position))}|{normalize_location_for_matching(location)}"
 
 
 def is_aggregator_placeholder(company: Any) -> bool:

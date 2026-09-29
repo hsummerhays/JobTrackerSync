@@ -26,6 +26,7 @@ from utils import (
     APPLIED_APPLICATION_STATUSES,
     ACTIVE_PIPELINE_STATUSES,
     REAPPLY_STATUSES,
+    CLOSED_REAPPLY_WINDOW_DAYS,
     DEFAULT_DISPOSITION_MAP,
     STATUS_RANKS,
     AGGREGATOR_PROVIDER_NAMES,
@@ -39,12 +40,14 @@ from utils import (
     normalize_title,
     is_clean_location,
     normalize_location,
+    normalize_location_for_matching,
     locations_compatible,
     title_similarity,
     split_multivalue_field,
     merge_delimited_field,
     canonical_key,
     canonical_job_key,
+    canonical_job_key_relaxed,
     is_aggregator_placeholder,
     build_occurrence_fingerprint,
     get_status_rank,
@@ -677,6 +680,10 @@ def clean_existing_tracker(tracker_path, db_path=None):
                 action = db_stored.get("action") or row.get("Action", "")
                 migrated_row["Tracker Status"] = status
                 migrated_row["Review Status"] = review_status
+                if db_stored.get("last_seen"):
+                    migrated_row["Last Seen"] = max(migrated_row.get("Last Seen") or "", db_stored.get("last_seen"))
+                if db_stored.get("date_added"):
+                    migrated_row["Date Added"] = min(migrated_row.get("Date Added") or db_stored.get("date_added"), db_stored.get("date_added"))
 
             notes = (db_stored.get("notes") if db_stored.get("notes") else None) or row.get("Notes", "")
             migrated_row["Notes"] = notes
@@ -879,7 +886,7 @@ def clean_existing_tracker(tracker_path, db_path=None):
                 migrated_row["Fingerprint"] = row["Fingerprint"]
             else:
                 migrated_row["Fingerprint"] = canonical_job_key(company, position, location)
-            migrated_row["Previous Job ID"] = row.get("Previous Job ID", "")
+            migrated_row["Previous Job ID"] = (db_stored.get("previous_job_id") if db_stored else None) or row.get("Previous Job ID", "")
 
             rows_to_keep.append(migrated_row)
 
@@ -2058,10 +2065,72 @@ def merge_application_events_into_tracker(db_conn, existing_jobs, job_ids):
             existing_keys_by_id.setdefault(job_id, []).append(new_key)
 
 
-def load_tracker(tracker_path):
-    """Load existing jobs from tracker to prevent duplicates."""
+def load_tracker(tracker_path, db_path="jobs.db"):
+    """Load complete history of tracked jobs from jobs.db (including archived
+    records) augmented by any active tracker records in master_tracker.csv.
+    This ensures institutional memory (past rejections, applications, sightings)
+    is never lost during deduplication."""
     existing_jobs = {}
-    if os.path.exists(tracker_path):
+    if db_path and os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            db_rows = cursor.execute("""
+                SELECT j.*, w.tracker_status as wf_status, w.review_status as wf_review_status,
+                       w.action as wf_action, w.disposition as wf_disposition, w.notes as wf_notes,
+                       w.score_source as wf_score_source, w.archived as wf_archived, w.archive_date as wf_archive_date
+                FROM jobs j
+                LEFT JOIN job_workflow w ON j.job_id = w.job_id
+            """).fetchall()
+            conn.close()
+            for r in db_rows:
+                d = dict(r)
+                jid = d.get("job_id")
+                if not jid:
+                    continue
+                date_added = d.get("date_added") or ""
+                row = {
+                    "Job ID": jid,
+                    "Requisition ID": d.get("requisition_id") or "",
+                    "Review Status": d.get("wf_review_status") or d.get("review_status") or "Imported",
+                    "Job Type": d.get("job_type") or "",
+                    "Company": d.get("company") or "",
+                    "Position": d.get("position") or "",
+                    "Location": d.get("location") or "",
+                    "URL": d.get("url") or "",
+                    "Provider": d.get("provider") or "",
+                    "Source PDF": d.get("source_pdf") or "",
+                    "Confidence": d.get("confidence") or "",
+                    "Fit Score": d.get("fit_score") or 0,
+                    "Priority": d.get("priority") or "",
+                    "Company Type": d.get("company_type") or "",
+                    "Recommendation": d.get("recommendation") or "",
+                    "Tracker Status": d.get("wf_status") or d.get("tracker_status") or "New",
+                    "Disposition": d.get("wf_disposition") or d.get("disposition") or "Apply",
+                    "Action": d.get("wf_action") or d.get("action") or "Apply",
+                    "Existing Company": d.get("existing_company") or "No",
+                    "Reason": d.get("reason") or "",
+                    "Matched Skills": d.get("matched_skills") or "",
+                    "Missing Skills": d.get("missing_skills") or "",
+                    "Date Added": date_added,
+                    "Last Seen": d.get("last_seen") or date_added,
+                    "Notes": d.get("wf_notes") if d.get("wf_notes") is not None else (d.get("notes") or ""),
+                    "Recruiter": d.get("recruiter") or "",
+                    "Hiring Manager": d.get("hiring_manager") or "",
+                    "Fingerprint": d.get("fingerprint") or "",
+                    "Previous Job ID": d.get("previous_job_id") or "",
+                    "Raw Context": d.get("raw_context") or "",
+                    "Score Source": d.get("wf_score_source") or d.get("score_source") or "parser",
+                    "Sighting Count": d.get("sighting_count") or 1,
+                    "Archived": d.get("wf_archived") or d.get("archived") or "No",
+                    "Archive Date": d.get("wf_archive_date") or d.get("archive_date") or "",
+                }
+                existing_jobs[(jid, date_added)] = row
+        except Exception:
+            pass
+
+    if tracker_path and os.path.exists(tracker_path):
         with open(tracker_path, mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -2071,7 +2140,8 @@ def load_tracker(tracker_path):
                     pos = row.get("Position", "").strip().lower()
                     loc = row.get("Location", "").strip().lower()
                     job_id = hashlib.md5(f"{comp}|{pos}|{loc}".encode('utf-8')).hexdigest()
-                existing_jobs[(job_id, row.get("Date Added", ""))] = row
+                date_added = row.get("Date Added", "")
+                existing_jobs[(job_id, date_added)] = row
     return existing_jobs
 
 
@@ -5206,17 +5276,7 @@ def main():
 
                             # Deduplicate before review using Canonical Key
                             current_canonical = canonical_job_key(job['company'], job['title'], job['location'])
-                            # A second, corporate-suffix-relaxed key ("Wheeler Machinery
-                            # Company" vs "Wheeler Machinery Co") used only as an additional
-                            # match test below -- never stored as a Fingerprint. Baking the
-                            # suffix stripping into canonical_job_key() itself once changed
-                            # every stored fingerprint in the dataset in one pass and silently
-                            # dropped unrelated pre-existing rows that collided as a result
-                            # (see canonical_job_key()'s docstring), so this stays local to
-                            # the merge decision instead.
-                            current_canonical_relaxed = canonical_job_key(
-                                normalize_company_for_matching(job['company']), job['title'], job['location']
-                            )
+                            current_canonical_relaxed = canonical_job_key_relaxed(job['company'], job['title'], job['location'])
                             is_aggregator = is_aggregator_placeholder(job['company'])
 
                             # Aggregator/digest placeholder "companies" (e.g.
@@ -5246,21 +5306,16 @@ def main():
                             existing_match = None
 
                             # 1. Check existing_jobs for a match. Real employers match on
-                            # canonical key (with a fuzzy-title fallback flagged for manual
-                            # review, never auto-merged); aggregator placeholders match only
-                            # on the strict occurrence fingerprint above.
+                            # canonical key (with relaxed location/corporate-suffix matching
+                            # and fuzzy-title fallback flagged for manual review, never auto-merged);
+                            # aggregator placeholders match only on the strict occurrence fingerprint above.
                             REAPPLY_DAYS = 60
                             possible_duplicate_note = None
                             # Existing rows are visited with active (non-Expired) matches
                             # first. A canonical key can legitimately own more than one
                             # existing row -- an original posting that already Expired, and
                             # a since-created re-listing row for its rediscovery -- and the
-                            # loop below `break`s on the first match it accepts. Without this
-                            # ordering, dict/CSV insertion order can put the Expired original
-                            # first, which takes the "Expired jobs resurface immediately"
-                            # branch and mints *another* new re-listing row every time the
-                            # source PDF is rescanned, instead of recognizing the posting is
-                            # already actively tracked (the Utah Mammoth exact-duplicate bug).
+                            # loop below `break`s on the first match it accepts.
                             existing_items = sorted(
                                 existing_jobs.items(),
                                 key=lambda kv: 0 if kv[1].get("Tracker Status") != "Expired" else 1
@@ -5278,9 +5333,7 @@ def main():
                                         continue
                                 else:
                                     ej_canonical = canonical_job_key(ej_company, ej_title, ej_location)
-                                    ej_canonical_relaxed = canonical_job_key(
-                                        normalize_company_for_matching(ej_company), ej_title, ej_location
-                                    )
+                                    ej_canonical_relaxed = canonical_job_key_relaxed(ej_company, ej_title, ej_location)
                                     canonical_match = (
                                         ej_canonical == current_canonical
                                         or ej_canonical_relaxed == current_canonical_relaxed
@@ -5321,7 +5374,7 @@ def main():
                                     age_days = (true_last_date - true_first_date).days
                                     ej_status = ej.get("Tracker Status", "New")
 
-                                    # Re-apply window: if job was applied to
+                                    # Re-apply window: if job was applied to / active in interview pipeline
                                     if ej_status in REAPPLY_STATUSES:
                                         added_date = date.fromisoformat(ej.get("Date Added", staleness_date_str[:10]))
                                         true_first_added = min(current_date, added_date)
@@ -5330,14 +5383,7 @@ def main():
                                         if age_from_added <= REAPPLY_DAYS:
                                             # Still within the reapply window -- merge into
                                             # the existing Applied/Interview record instead
-                                            # of creating a duplicate row. This used to
-                                            # delete the existing row's workflow entirely,
-                                            # which lost real application history. Always
-                                            # strip any stale/backward/same-day relisting note
-                                            # first (same reasoning as the general age_days<=90
-                                            # branch below) so a same-day rediscovery doesn't
-                                            # leave a previous run's stale note sitting there
-                                            # forever.
+                                            # of creating a duplicate row.
                                             import re as _re
                                             existing_notes = _re.sub(
                                                 r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
@@ -5362,7 +5408,7 @@ def main():
                                             job["previous_job_id"] = ej_job_id
                                         break
 
-                                    # Expired jobs can resurface immediately (no 30-day wait like
+                                    # Expired jobs can resurface immediately (no wait like
                                     # active applications) since the user never acted on them.
                                     # Treated as a genuinely new opportunity, linked back to the
                                     # expired posting via Previous Job ID -- the old row is kept
@@ -5374,18 +5420,38 @@ def main():
                                         job["previous_job_id"] = ej_job_id
                                         break
 
+                                    # Closed / Rejected / Withdrawn / Cancelled / Ghosted
+                                    if ej_status in CLOSED_TRACKER_STATUSES and ej_status != "Expired":
+                                        if age_days <= CLOSED_REAPPLY_WINDOW_DAYS:
+                                            # Sighting of a recently closed/rejected opportunity:
+                                            # Merge sighting into existing closed record, preserving
+                                            # closed disposition without resurrecting as New/Apply.
+                                            import re as _re
+                                            existing_notes = _re.sub(
+                                                r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
+                                                '',
+                                                ej.get("Notes", "")
+                                            )
+                                            existing_notes = _re.sub(r'(?:\s*;\s*)+', '; ', existing_notes).strip().strip(';').strip()
+                                            if true_last_date > true_first_date:
+                                                relisting_note = f"Re-listed on {true_last_date.isoformat()}; originally seen {true_first_date.isoformat()}."
+                                                ej["Notes"] = (existing_notes + "; " + relisting_note).lstrip("; ")
+                                            else:
+                                                ej["Notes"] = existing_notes
+                                            existing_match = ej
+                                            is_duplicate = True
+                                        else:
+                                            # Outside cool-down window (>180 days / 6 months):
+                                            # Genuinely reopened position eligible for reconsideration.
+                                            if true_last_date > true_first_date:
+                                                reapply_note = f"Re-opened position ({true_last_date.isoformat()}); previously {ej_status} on {true_first_date.isoformat()}."
+                                                job["notes"] = (job.get("notes", "") + "; " + reapply_note).lstrip("; ")
+                                            job["previous_job_id"] = ej_job_id
+                                        break
+
                                     if age_days <= 90:
                                         existing_match = ej
                                         is_duplicate = True
-                                        # Always strip any stale/backward/same-day relisting note
-                                        # first, regardless of whether *this* rediscovery has a
-                                        # real date gap -- otherwise a same-day rediscovery (no
-                                        # gap, so no new note added) leaves a previous run's
-                                        # already-stale note sitting there forever, since the old
-                                        # code only ever stripped inside the "different dates"
-                                        # branch. Record a chronologically correct new note only
-                                        # if seen on different dates -- a same-day rediscovery has
-                                        # no real gap to report.
                                         import re as _re
                                         existing_notes = _re.sub(
                                             r'Re-listed.*?originally seen \d{4}-\d{2}-\d{2}[^;.]*[;.]?\s*',
@@ -5411,9 +5477,7 @@ def main():
                                 for rj_id, rj_item in raw_collected_jobs.items():
                                     rj_job = rj_item["job"]
                                     rj_canonical = canonical_job_key(rj_job['company'], rj_job['title'], rj_job['location'])
-                                    rj_canonical_relaxed = canonical_job_key(
-                                        normalize_company_for_matching(rj_job['company']), rj_job['title'], rj_job['location']
-                                    )
+                                    rj_canonical_relaxed = canonical_job_key_relaxed(rj_job['company'], rj_job['title'], rj_job['location'])
                                     if rj_canonical == current_canonical or rj_canonical_relaxed == current_canonical_relaxed:
                                         # Merge into the raw_collected_job
                                         is_duplicate = True

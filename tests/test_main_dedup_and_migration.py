@@ -346,6 +346,52 @@ class TestReapplyAndDuplicateDetection(MainIntegrationTestBase):
         matching = [r for r in rows if r["Company"] == "Acme Corp"]
         self.assertEqual(len(matching), 1)
 
+    def test_recent_rejected_job_sighting_with_remote_variant_merges_and_preserves_closed(self):
+        """Recent sighting of a rejected role (even with remote location variation
+        like 'OR Remote' vs 'Remote') must merge into the existing rejected record
+        and stay Closed/Rejected, not resurrect as New/Apply."""
+        self._write_tracker([{
+            "Job ID": "lonewolf1", "Company": "Lone Wolf Technologies", "Position": "Software Engineering Manager .NET",
+            "Location": "Remote", "Tracker Status": "Rejected", "Review Status": "Closed",
+            "Disposition": "Closed", "Action": "Ignore", "Date Added": "2024-01-01", "Last Seen": "2024-01-01",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-02-01")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir, pages_text=(
+            "Software Engineering Manager .NET\nLone Wolf Technologies\nOR Remote\n",
+        ))
+
+        rows = self._read_tracker()
+        lonewolf_rows = [r for r in rows if "Lone Wolf" in r["Company"]]
+        self.assertEqual(len(lonewolf_rows), 1)
+        self.assertEqual(lonewolf_rows[0]["Tracker Status"], "Rejected")
+        self.assertEqual(lonewolf_rows[0]["Disposition"], "Closed")
+        self.assertEqual(lonewolf_rows[0]["Action"], "Ignore")
+        self.assertEqual(lonewolf_rows[0]["Last Seen"], "2024-02-01")
+        self.assertIn("Re-listed on 2024-02-01", lonewolf_rows[0]["Notes"])
+
+    def test_ancient_rejected_job_resurfaces_as_actionable_new_row(self):
+        """A role rejected >180 days ago that resurfaces in a new hiring cycle
+        is treated as a new opportunity eligible for reconsideration, linked
+        back to the previous rejection history."""
+        self._write_tracker([{
+            "Job ID": "old_reject1", "Company": "Acme Corp", "Position": "Senior Software Engineer",
+            "Location": "Salt Lake City, UT", "Tracker Status": "Rejected", "Review Status": "Closed",
+            "Disposition": "Closed", "Action": "Ignore", "Date Added": "2023-01-01", "Last Seen": "2023-01-01",
+        }])
+        pdf_dir = os.path.join(self.tmp_dir.name, "2024-01-01")
+        self._write_pdf(pdf_dir)
+
+        self._run_main(pdf_dir)
+
+        rows = self._read_tracker()
+        acme_rows = [r for r in rows if r["Company"] == "Acme Corp"]
+        self.assertEqual(len(acme_rows), 2)
+        new_row = next(r for r in acme_rows if r["Tracker Status"] == "New")
+        self.assertEqual(new_row["Previous Job ID"], "old_reject1")
+        self.assertIn("Re-opened position", new_row["Notes"])
+
     def test_duplicate_across_pages_in_same_run_merges(self):
         pdf_dir = os.path.join(self.tmp_dir.name, "pdfs")
         self._write_pdf(pdf_dir)

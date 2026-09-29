@@ -26,9 +26,14 @@
 - **Deduplication / Cleanup Rules:**
   - Never automatically cancel or merge jobs based on similarity alone.
   - Generic aggregator names (e.g., `Jobs.utah.gov-DailySummary`, `Ladders`, `Actively recruiting`) should never be trusted as employers for deduplication or merging.
+  - **Full Institutional Memory**: `jobs.db` holds complete history across active and archived records (`archived = 'Yes'`); `load_tracker()` loads all records from SQLite so historical rejections, applications, and sightings are never lost during deduplication.
+  - **Two-Stage Identity Matching**: Matching evaluates both exact literal `canonical_job_key` and `canonical_job_key_relaxed` (stripping purely legal corporate suffixes like `LLC`, `Inc`, `Corp`, `Co`, `Ltd` and normalizing remote location variations such as `OR Remote` ↔ `Remote`). Meaningful corporate words like `Consulting` or `Technologies` are never stripped.
   - Three distinct cases, not one rule:
-    - **Same logical posting, seen again (relisting):** identical normalized company + title + location, rediscovered within the relisting window (90 days for a new sighting; 60 days for a re-apply match against an Applied/Interview row) -- merge sightings into the existing row and advance Last Seen instead of creating a new row.
-    - **Physical duplicate cleanup (e.g. a one-off cleanup script re-scanning the tracker itself):** only collapse two rows automatically when they match on normalized company, normalized title, date, source PDF, *and* tracker status all at once.
+    - **Same logical posting, seen again (relisting):** identical normalized company + title + location:
+      - If matched against an active/applied posting within 60 days: merge sightings into existing row and advance Last Seen.
+      - If matched against a closed/rejected posting within 180 days: suppress resurrection, retain closed/rejected status, and update Last Seen/sightings.
+      - If matched against a closed/rejected posting older than 180 days: treat as a legitimate re-opening (`New`/`Apply`), create a new row, and link to prior record via `previous_job_id`.
+    - **Physical duplicate cleanup (e.g. a one-off cleanup script re-scanning the tracker itself):** only collapse two rows automatically when they match on normalized company, normalized title, date, source PDF, *and* tracker status all at once (`python parse_jobs.py --dedup-physical`).
     - **Similar but not identical titles** (e.g. "Senior Software Engineer" vs "...II"): never auto-merge or auto-cancel -- flag for manual review only.
     - **Title Level Normalization (Roman Numerals)**: `utils.normalize_title()` normalizes standalone Roman numerals (`I`, `II`, `III`, `IV`, `V`) to Arabic digits (`1`, `2`, `3`, `4`, `5`) in canonical keys (e.g. `Senior Developer I` ↔ `Senior Developer 1`) while retaining original displayed titles.
 

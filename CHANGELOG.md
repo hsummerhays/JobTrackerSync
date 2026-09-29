@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here.
 
+## v1.4.3 — 2026-09-29
+
+### Two-Stage Identity Matching & Deduplication History Architecture
+- **Full Historical Memory in Deduplication (`load_tracker`)**:
+  - `load_tracker()` now queries the complete `jobs.db` database history (including all active and archived records where `archived = 'Yes'`) before augmenting with working tracker CSV records.
+  - Archiving a stale record no longer blinds the parser to its historical existence, eliminating duplicate resurrection of previously archived roles.
+- **Two-Stage Identity Matching & Relaxed Canonical Keys**:
+  - Separated **Identity Matching** (who is this posting?) from **Business Policy** (what should we do about it, given historical state and elapsed time?).
+  - Added `normalize_location_for_matching(location)` to map remote variations (`OR Remote`, `US Remote`, `Remote (US)`, `Remote, UT`, etc.) to a canonical `'remote'` representation for identity comparison.
+  - Added `canonical_job_key_relaxed(company, position, location)` to resolve corporate suffix variants (e.g. `Wheeler Machinery Company` vs `Wheeler Machinery Co`) and remote location variants without altering the permanently stored literal `Fingerprint`.
+- **Closed / Rejected Opportunity Policy Engine**:
+  - **Cool-Down Window (<= 180 days)**: Sightings of roles previously marked `Rejected`, `Cancelled`, `Ghosted`, or `Withdrawn` within 180 days merge sightings into the historical record (advancing `Last Seen`, merging `Provider` / `Source PDF`, and updating relisting notes) while strictly preserving `Tracker Status = Rejected`, `Review Status = Closed`, `Disposition = Closed`, and `Action = Ignore`.
+  - **Re-Opening Window (> 180 days)**: Opportunities resurfacing after 6+ months in a new hiring cycle are treated as actionable relistings (`New` / `Apply`), linked back to the prior rejection via `previous_job_id` and an audit note.
+- **Test Suite Expansion**: Added unit tests in `tests/test_utils.py` and `tests/test_main_dedup_and_migration.py` covering relaxed canonical matching, remote location normalization, cool-down window preservation, and ancient relisting minting (457 passing tests).
+
 ## v1.4.2 — 2026-09-28
 
 ### Permanent History Archiving & Requisition ID Architecture
