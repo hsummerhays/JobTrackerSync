@@ -4,7 +4,9 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-### Agent Skills & Automation
+## v1.4.4 — 2026-10-01
+
+### Agent Skills & Workflow Improvements
 - **`parse` Agent Skill (`.agents/skills/parse/`)**:
   - Added dedicated `parse` skill to parse job postings from daily PDF alert directories (`D:\Current\Personal\New Job 2026\Resume 2026\Job Postings\<YYYY-MM-DD>`) or custom folders.
   - Supports natural relative workflows (`parse today`, `parse yesterday`, `parse yesterday and today`), specific date matching, and automated summaries.
@@ -16,6 +18,8 @@ All notable changes to this project are documented here.
   - Updated workspace rules in [AGENTS.md](file:///c:/HughApps/JobTrackerSync/.agents/AGENTS.md) and [README.md](file:///c:/HughApps/JobTrackerSync/README.md) to preserve this default behavior.
 - **Enhanced Multi-PDF URI Resolution (`find_pdf.py` & `query_jobs.py`)**:
   - Enhanced `_extract_and_resolve_uri()` in `find_pdf.py` and source PDF selection in `query_jobs.py` to inspect multi-value fields and resolve valid existing filesystem paths when multiple paths or URIs are present.
+- **CLI Requisition ID Update Flag (`parse_jobs.py --requisition-id`)**:
+  - Added `--requisition-id` flag to `parse_jobs.py --update` workflow to record and update requisition identifiers for existing opportunities.
 
 ### Test Suite
 - Expanded test suite to **478 tests across 27 modules**, including new unit tests for default filtering and `--all` flag behavior in `tests/test_query_jobs.py`.
