@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Agent Skills & Automation
+- **`parse` Agent Skill (`.agents/skills/parse/`)**:
+  - Added dedicated `parse` skill to parse job postings from daily PDF alert directories (`D:\Current\Personal\New Job 2026\Resume 2026\Job Postings\<YYYY-MM-DD>`) or custom folders.
+  - Supports natural relative workflows (`parse today`, `parse yesterday`, `parse yesterday and today`), specific date matching, and automated summaries.
+
+### Query & Lookup Enhancements
+- **Active Job Default Filtering (`query_jobs.py`)**:
+  - `query_jobs.py` now excludes old listings (terminal statuses: `Rejected`, `Ghosted`, `Cancelled`, `Expired`, `Closed` and records where `archived = 'Yes'`) by default when querying by company name or listing jobs.
+  - Added `--all` / `--include-old` flags to query and display historical, terminal, and archived postings when specifically requested.
+  - Updated workspace rules in [AGENTS.md](file:///c:/HughApps/JobTrackerSync/.agents/AGENTS.md) and [README.md](file:///c:/HughApps/JobTrackerSync/README.md) to preserve this default behavior.
+- **Enhanced Multi-PDF URI Resolution (`find_pdf.py` & `query_jobs.py`)**:
+  - Enhanced `_extract_and_resolve_uri()` in `find_pdf.py` and source PDF selection in `query_jobs.py` to inspect multi-value fields and resolve valid existing filesystem paths when multiple paths or URIs are present.
+
+### Test Suite
+- Expanded test suite to **478 tests across 27 modules**, including new unit tests for default filtering and `--all` flag behavior in `tests/test_query_jobs.py`.
+
 ## v1.4.3 — 2026-09-29
 
 ### Two-Stage Identity Matching & Deduplication History Architecture

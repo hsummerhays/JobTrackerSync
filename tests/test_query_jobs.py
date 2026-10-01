@@ -28,7 +28,8 @@ class TestQueryJobs(unittest.TestCase):
                 tracker_status TEXT,
                 notes TEXT,
                 source_pdf TEXT,
-                date_added TEXT
+                date_added TEXT,
+                archived TEXT
             )
         """)
         conn.commit()
@@ -39,18 +40,18 @@ class TestQueryJobs(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def _insert_job(self, job_id, company, position, status="New", notes=None,
-                     source_pdf=None, date_added="2024-01-01"):
+                     source_pdf=None, date_added="2024-01-01", archived="No"):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
-            "INSERT INTO jobs (job_id, company, position, tracker_status, notes, source_pdf, date_added) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (job_id, company, position, status, notes, source_pdf, date_added)
+            "INSERT INTO jobs (job_id, company, position, tracker_status, notes, source_pdf, date_added, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (job_id, company, position, status, notes, source_pdf, date_added, archived)
         )
         conn.commit()
         conn.close()
 
-    def _run(self, query_arg=None):
-        argv = ["query_jobs.py"] if query_arg is None else ["query_jobs.py", query_arg]
+    def _run(self, *query_args):
+        argv = ["query_jobs.py"] + list(query_args)
         buf = io.StringIO()
         with patch.object(sys, "argv", argv):
             with redirect_stdout(buf):
@@ -131,6 +132,33 @@ class TestQueryJobs(unittest.TestCase):
         self._insert_job("id2", "Other Corp", "Engineer", date_added="2024-01-02")
         out = self._run()
         self.assertIn("Found 2 job(s)", out)
+
+    def test_default_excludes_terminal_and_archived_jobs(self):
+        self._insert_job("id1", "Acme Corp", "Active Dev", status="Applied", date_added="2024-01-01", archived="No")
+        self._insert_job("id2", "Acme Corp", "Rejected Dev", status="Rejected", date_added="2024-01-02", archived="No")
+        self._insert_job("id3", "Acme Corp", "Expired Dev", status="Expired", date_added="2024-01-03", archived="No")
+        self._insert_job("id4", "Acme Corp", "Archived Active Dev", status="Applied", date_added="2024-01-04", archived="Yes")
+
+        # Default run excludes rejected, expired, and archived
+        out = self._run("Acme")
+        self.assertIn("Found 1 job(s)", out)
+        self.assertIn("Active Dev", out)
+        self.assertNotIn("Rejected Dev", out)
+        self.assertNotIn("Expired Dev", out)
+        self.assertNotIn("Archived Active Dev", out)
+
+    def test_include_old_flag_shows_all_listings(self):
+        self._insert_job("id1", "Acme Corp", "Active Dev", status="Applied", date_added="2024-01-01", archived="No")
+        self._insert_job("id2", "Acme Corp", "Rejected Dev", status="Rejected", date_added="2024-01-02", archived="No")
+        self._insert_job("id3", "Acme Corp", "Expired Dev", status="Expired", date_added="2024-01-03", archived="No")
+        self._insert_job("id4", "Acme Corp", "Archived Active Dev", status="Applied", date_added="2024-01-04", archived="Yes")
+
+        out = self._run("Acme", "--all")
+        self.assertIn("Found 4 job(s)", out)
+        self.assertIn("Active Dev", out)
+        self.assertIn("Rejected Dev", out)
+        self.assertIn("Expired Dev", out)
+        self.assertIn("Archived Active Dev", out)
 
 
 if __name__ == "__main__":

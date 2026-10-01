@@ -199,10 +199,13 @@ python find_pdf.py "<search_term>"
 You can query the SQLite database directly for jobs matching a specific company using the `query_jobs.py` utility. This provides a quick, human-readable summary of matched jobs directly in your terminal. If you omit the query string, it will list all tracked jobs:
 
 ```bash
-# Query for a specific company
+# Query for active jobs at a specific company (excludes old/terminal/archived listings by default)
 python query_jobs.py "Company Name"
 
-# List all tracked jobs
+# Include old listings (archived or terminal status: Rejected, Ghosted, Cancelled, Expired, Closed)
+python query_jobs.py --all "Company Name"
+
+# List all active tracked jobs
 python query_jobs.py
 ```
 
@@ -261,6 +264,7 @@ This project includes built-in AI agent skills (located in `.agents/skills/`) to
 - **`add_job_note`**: Adds or appends interview notes, recruiter details, or progress notes to an existing job in the tracker.
 - **`add_manual_opportunity`**: Ingests and tracks manually shared opportunities, recruiter messages, or interview notes from structured text blocks or files.
 - **`git_manager`**: Streamlines daily git commits, squashing, and pushing. Always runs `pytest` before committing.
+- **`parse`**: Parses and syncs job postings from daily alert directories (`D:\Current\Personal\New Job 2026\Resume 2026\Job Postings\<YYYY-MM-DD>`) or custom folders.
 - **`sync_jobs`**: Automates the parsing pipeline (opens a folder picker or accepts `--pdf-dir`).
 - **`daily_dashboard`**: Displays formatted analytics and action queues.
 - **`db_query`**: Looks up jobs via `query_jobs.py`; falls back to raw SQL for ad-hoc analysis.
@@ -305,7 +309,7 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 
 ### 1. Polish and Reliability
 
-- [x] **More unit tests** around parsing and merge logic. _(474 tests across 26 modules as of v1.4.3)_
+- [x] **More unit tests** around parsing and merge logic. _(478 tests across 27 modules)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.

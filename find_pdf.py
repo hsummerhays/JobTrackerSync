@@ -3,7 +3,7 @@ import sys
 import os
 import csv
 import re
-from utils import path_to_file_uri, word_boundary_pattern
+from utils import path_to_file_uri, word_boundary_pattern, split_multivalue_field
 
 # Optional debug flag for diagnosing search/URI failures
 DEBUG = False
@@ -16,6 +16,24 @@ _word_boundary_pattern = word_boundary_pattern
 
 def _row_matches(row_dict, pattern):
     return any(isinstance(v, str) and pattern.search(v) for v in row_dict.values())
+
+def _extract_and_resolve_uri(val: str) -> str | None:
+    if not isinstance(val, str):
+        return None
+    chunks = split_multivalue_field(val)
+    if not chunks:
+        chunks = [val.strip()]
+    for c in chunks:
+        if os.path.exists(c):
+            return path_to_file_uri(c)
+    for c in chunks:
+        if re.match(r"^[A-Za-z]:[\\/]", c):
+            return path_to_file_uri(c)
+    for c in chunks:
+        uri = path_to_file_uri(c)
+        if uri:
+            return uri
+    return None
 
 def find_matches(db_path, search_term):
     """Search all columns of all tables in the SQLite database for the search_term."""
@@ -52,8 +70,8 @@ def find_matches(db_path, search_term):
                             continue
                         # Output a nice file:/// link if we find a file path
                         for k, v in list(row_dict.items()):
-                            if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v) and (v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
-                                uri = path_to_file_uri(v)
+                            if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v or v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
+                                uri = _extract_and_resolve_uri(v)
                                 if uri:
                                     row_dict[k + "_uri"] = uri
                         results.setdefault(table, []).append(row_dict)
@@ -78,8 +96,8 @@ def find_csv_matches(csv_path, search_term):
                     row_dict = dict(row)
                     # Generate file:/// links if we find file paths in values
                     for k, v in list(row_dict.items()):
-                        if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v) and (v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
-                            uri = path_to_file_uri(v)
+                        if isinstance(v, str) and (v.startswith("D:\\") or v.startswith("C:\\") or "/" in v or "\\" in v or v.endswith(".pdf") or v.endswith(".csv") or v.endswith(".db")):
+                            uri = _extract_and_resolve_uri(v)
                             if uri:
                                 row_dict[k + "_uri"] = uri
                     matches.append(row_dict)

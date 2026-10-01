@@ -1,6 +1,7 @@
 import sqlite3
 import argparse
 import sys
+import os
 import re
 from utils import path_to_file_uri, split_multivalue_field, TERMINAL_STATUSES
 
@@ -12,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description="Query the jobs database by company name.")
     parser.add_argument("query", type=str, nargs="?", default="", help="Company name (or part of it) to search for")
     parser.add_argument("--active", action="store_true", help="Only show active (non-terminal) jobs like those not Expired or Closed")
+    parser.add_argument("--all", "--include-old", dest="all", action="store_true", help="Include old listings (archived or terminal status jobs)")
     args = parser.parse_args()
 
     conn = sqlite3.connect('jobs.db')
@@ -22,6 +24,7 @@ def main():
         c.execute("PRAGMA table_info(jobs)")
         columns = [r[1] for r in c.fetchall()]
         has_req_id = "requisition_id" in columns
+        has_archived = "archived" in columns
         req_col = ", requisition_id" if has_req_id else ""
 
         # Use NOCASE and apostrophe stripping for tolerant matching (e.g. Lowes -> Lowe's)
@@ -29,7 +32,14 @@ def main():
         clean_q = args.query.replace("'", "").replace("’", "")
         params = [f"%{args.query}%", f"%{clean_q}%"]
         
-        if args.active:
+        # By default, do not show old listings unless explicitly requested via --all / --include-old
+        if not args.all:
+            placeholders = ', '.join(['?'] * len(TERMINAL_STATUSES))
+            query_sql += f" AND tracker_status NOT IN ({placeholders})"
+            params.extend(TERMINAL_STATUSES)
+            if has_archived:
+                query_sql += " AND (archived IS NULL OR LOWER(archived) != 'yes')"
+        elif args.active:
             placeholders = ', '.join(['?'] * len(TERMINAL_STATUSES))
             query_sql += f" AND tracker_status NOT IN ({placeholders})"
             params.extend(TERMINAL_STATUSES)
@@ -72,9 +82,21 @@ def main():
             
         if source_pdf:
             values = split_multivalue_field(source_pdf)
-            first_pdf = values[0] if values else source_pdf.strip()
-            filename = first_pdf.split('/')[-1].split('\\')[-1]
-            uri = path_to_file_uri(first_pdf)
+            chosen_pdf = None
+            for candidate in values:
+                if os.path.exists(candidate):
+                    chosen_pdf = candidate
+                    break
+            if not chosen_pdf:
+                for candidate in values:
+                    if re.match(r"^[A-Za-z]:[\\/]", candidate):
+                        chosen_pdf = candidate
+                        break
+            if not chosen_pdf:
+                chosen_pdf = values[0] if values else source_pdf.strip()
+
+            filename = chosen_pdf.split('/')[-1].split('\\')[-1]
+            uri = path_to_file_uri(chosen_pdf)
 
             if uri:
                 print(f"- **Source PDF:**\n  📄 [{filename}]({uri})\n")

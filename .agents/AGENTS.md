@@ -4,6 +4,10 @@
   ```bash
   python query_jobs.py "<Company Name>"
   ```
+  Only include old/terminal/archived listings if the user specifically asks for them (e.g. `List all <Company>` or asking for old listings), by adding `--all`:
+  ```bash
+  python query_jobs.py --all "<Company Name>"
+  ```
   Return the command output exactly as produced. Do not add commentary, bolding, headings, or alter its spacing or layout.
 
 - The only permitted change to `query_jobs.py` output is on a `Source PDF:` line: replace the displayed filename with a clickable Markdown link using its `file:///` URL. Keep the visible filename unchanged.
