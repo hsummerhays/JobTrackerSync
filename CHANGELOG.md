@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here.
 
-## Unreleased
+## v1.4.5 — 2026-10-03
 
 ### Structured Job Updates & Text Ingestion
 - **Structured Job Update Parsing (`parse_update_job_block`)**:
@@ -14,7 +14,7 @@ All notable changes to this project are documented here.
   - Added `position` disambiguation and update support to `handle_status_update()` so queries matching multiple company roles can target specific positions.
 - **Agent Skills & Workspace Rules**:
   - Updated `manage_jobs` and `add_job_note` skills with `--update-from-text` and pipe-delimited update workflows.
-  - Added workspace rule in `.agents/AGENTS.md` guiding agents to write pipe-delimited updates to `scratch/update.txt` and execute `python parse_jobs.py --update-from-text "scratch/update.txt"`.
+  - Updated workspace rules in `.agents/AGENTS.md` to establish the One-Command Rule and the Tier A / Tier B hierarchy (direct CLI arguments preferred; inline structured CLI for safe direct inputs; `scratch/update.txt` reserved for complex multiline input).
 
 ### Canonical Enum Invariants & Hardening
 - **Strict Canonical Enum Validation**:
