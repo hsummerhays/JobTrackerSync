@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+### Structured Job Updates & Text Ingestion
+- **Structured Job Update Parsing (`parse_update_job_block`)**:
+  - Implemented `parse_update_job_block()` in `parse_jobs.py` to parse pipe-delimited one-liners (e.g. `Update: Company | Position | Location | Comp | Employment | Resume tailored | Ready to Apply`) and key-value multiline text blocks into update kwargs.
+  - Automatically identifies target Company or Job ID, disambiguates roles by Position title, extracts location, maps workflow status phrases (`Ready to Apply` -> `Review Status = Reviewed`, `Action = Apply`, preserving `Tracker Status = New`), and aggregates compensation, employment type, and tailoring dates into structured note blocks.
+- **CLI Flags `--update-from-text` and Pipe-Delimited `--update`**:
+  - Added `--update-from-text <file_or_text>` to `parse_jobs.py` for direct file or text block job updates (safely avoiding PowerShell escaping issues with `$`, quotes, and multiline text).
+  - Extended `--update` to automatically detect pipe-delimited strings or `Update:` prefixes and route through `parse_update_job_block()`.
+  - Added `position` disambiguation and update support to `handle_status_update()` so queries matching multiple company roles can target specific positions.
+- **Agent Skills & Workspace Rules**:
+  - Updated `manage_jobs` and `add_job_note` skills with `--update-from-text` and pipe-delimited update workflows.
+  - Added workspace rule in `.agents/AGENTS.md` guiding agents to write pipe-delimited updates to `scratch/update.txt` and execute `python parse_jobs.py --update-from-text "scratch/update.txt"`.
+
+### Canonical Enum Invariants & Hardening
+- **Strict Canonical Enum Validation**:
+  - Enforced `VALID_STATUSES`, `VALID_REVIEW_STATUSES`, and `VALID_ACTIONS` as single sources of truth imported from `utils.py`.
+  - Audited `parse_update_job_block()` to ensure natural-language phrases normalize to canonical tracker and review statuses. Specifically:
+    - `"Recruiter Contact"` is parsed and persisted strictly as a `Review Status`, never as a `Tracker Status`.
+    - Generic `"Interview"` does not become a new tracker status; it fails safely if provided as an unmapped status.
+    - `"Ready to Apply"` sets `Review Status = "Reviewed"` and `Action = "Apply"` while preserving `Tracker Status = "New"`.
+    - Guarded database persistence so that no update path can persist an invalid status, review status, or action.
+
+### Test Suite
+- Expanded test suite to **504 tests across 28 modules**, adding comprehensive tests for enum invariants, fail-closed validation, and structured update idempotency in `tests/test_parse_update_job_block.py` and `tests/test_cli_handlers.py`.
+
 ## v1.4.4 — 2026-10-01
 
 ### Agent Skills & Workflow Improvements

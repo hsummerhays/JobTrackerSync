@@ -113,6 +113,28 @@ class TestMainDispatch(unittest.TestCase):
             self._run(["parse_jobs.py", "--update", "Acme", "--requisition-id", "11350"])
         mock_status.assert_called_once_with("Acme", None, None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, requisition_id="11350")
 
+    def test_update_from_text_dispatches_handle_status_update(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update-from-text", "Update: AlignRx LLC | Software Developer II | Remote | $86,400/year | Full-time | Resume tailored 2026-10-03 | Ready to Apply"])
+        mock_status.assert_called_once()
+        self.assertEqual(mock_status.call_args.kwargs["query"], "AlignRx LLC")
+        self.assertEqual(mock_status.call_args.kwargs["position"], "Software Developer II")
+        self.assertEqual(mock_status.call_args.kwargs["location"], "Remote")
+        self.assertEqual(mock_status.call_args.kwargs["review_status"], "Reviewed")
+        self.assertEqual(mock_status.call_args.kwargs["action"], "Apply")
+        self.assertTrue(mock_status.call_args.kwargs["append_notes"])
+        self.assertTrue(mock_status.call_args.kwargs["structured_update"])
+        self.assertIn("Comp: $86,400/year", mock_status.call_args.kwargs["notes"])
+
+    def test_update_with_pipe_dispatches_handle_status_update(self):
+        with patch("parse_jobs.handle_status_update") as mock_status:
+            self._run(["parse_jobs.py", "--update", "Acme Corp | Applied | Submitted via Portal"])
+        mock_status.assert_called_once()
+        self.assertEqual(mock_status.call_args.kwargs["query"], "Acme Corp")
+        self.assertEqual(mock_status.call_args.kwargs["status"], "Applied")
+        self.assertTrue(mock_status.call_args.kwargs["structured_update"])
+        self.assertIn("Submitted via Portal", mock_status.call_args.kwargs["notes"])
+
     def test_dashboard_dispatches_to_print_dashboard(self):
         with patch("parse_jobs._print_dashboard") as mock_dash:
             self._run(["parse_jobs.py", "--dashboard"])

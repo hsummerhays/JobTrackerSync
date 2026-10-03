@@ -41,8 +41,20 @@
     - **Similar but not identical titles** (e.g. "Senior Software Engineer" vs "...II"): never auto-merge or auto-cancel -- flag for manual review only.
     - **Title Level Normalization (Roman Numerals)**: `utils.normalize_title()` normalizes standalone Roman numerals (`I`, `II`, `III`, `IV`, `V`) to Arabic digits (`1`, `2`, `3`, `4`, `5`) in canonical keys (e.g. `Senior Developer I` ↔ `Senior Developer 1`) while retaining original displayed titles.
 
-- **Manual Data Correction Rules:**
-  - When making a manual status correction to a job (e.g., reverting a status from `Cancelled` back to `New`), you must update BOTH `master_tracker.csv` AND the SQLite database (`jobs.db` and `job_workflow` tables). If you only update the CSV, the `clean_existing_tracker` sync function will aggressively overwrite your CSV changes with the persisted state from the database.
+- **Tracker Mutation Rules & One-Command Rule:**
+  - `jobs.db` is the authoritative system of record. Supported `parse_jobs.py` mutation commands (`--update`, `--update-from-text`, `--add`, `--add-from-text`) maintain all required persistent state, updating `jobs.db` and updating `master_tracker.csv` automatically. Never edit `master_tracker.csv` manually.
+  - **One-Command Rule**: For ordinary add/update/note operations, execute the appropriate `parse_jobs.py` mutation command. A successful mutation updates all required persistent state. Stop after success unless the user explicitly requests verification or the command reports an error or ambiguity.
+  - Do not run a second synchronization (`clean_existing_tracker()`, `sync_jobs`), cleanup, rescore, database inspection, CSV comparison, PDF reparse, or verification query merely "to be safe." The command's own successful completion/output is sufficient verification for deterministic updates.
+  - If the Job ID is already known, resolve to exactly one mutation command:
+    ```bash
+    python parse_jobs.py --update "<job-id>" --status <Status> [--append-notes "<notes>"]
+    ```
+    After that command succeeds, stop. If the Job ID is not known, query once first (`python query_jobs.py "<Company Name>"`) to identify the correct opportunity, then perform one mutation command and stop.
+  - **Structured Job Updates**: When the user provides a structured or pipe-delimited update (e.g. `Update: <Company> | <Position> | <Location> | <Comp> | ...` or a key-value update block), write the text to `scratch/update.txt` (to avoid PowerShell special-character interpolation like `$`), execute:
+    ```bash
+    python parse_jobs.py --update-from-text "scratch/update.txt"
+    ```
+    clean up `scratch/update.txt`, and stop after success.
 
 - **Workspace Cleanup:**
   - Do not place temporary text files (like `wgu_list2.txt`), intermediate data dumps, or one-off python scripts in the main project folder. All temporary work must be done inside the `scratch/` directory and should ideally be deleted when no longer needed.

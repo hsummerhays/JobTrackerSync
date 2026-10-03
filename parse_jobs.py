@@ -3758,7 +3758,59 @@ def handle_interactive_update():
     return handle_status_update(job_id, status, notes)
 
 
-def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None, review_status=None, location=None, provider=None, requisition_id=None):
+def merge_structured_notes(existing_notes: str, new_notes: str) -> str:
+    """Merge automatically generated structured notes idempotently into existing notes."""
+    if not existing_notes or not existing_notes.strip():
+        return (new_notes or "").strip()
+    if not new_notes or not new_notes.strip():
+        return existing_notes.strip()
+
+    existing = existing_notes.strip()
+    new_stripped = new_notes.strip()
+
+    # Exact duplicate block check
+    if new_stripped in existing:
+        return existing
+
+    structured_key_pattern = re.compile(r'^(Comp|Compensation|Employment|Resume|Status):\s*(.*)$', re.IGNORECASE)
+    
+    existing_lines = existing.splitlines()
+    new_lines = [line.strip() for line in new_stripped.splitlines() if line.strip()]
+
+    prefix_to_index = {}
+    for idx, eline in enumerate(existing_lines):
+        m = structured_key_pattern.match(eline.strip())
+        if m:
+            prefix = m.group(1).lower()
+            if prefix in ("comp", "compensation"):
+                prefix = "comp"
+            prefix_to_index[prefix] = idx
+
+    additions = []
+    updated_lines = list(existing_lines)
+
+    for nline in new_lines:
+        m = structured_key_pattern.match(nline)
+        if m:
+            prefix = m.group(1).lower()
+            if prefix in ("comp", "compensation"):
+                prefix = "comp"
+            if prefix in prefix_to_index:
+                updated_lines[prefix_to_index[prefix]] = nline
+            else:
+                additions.append(nline)
+        else:
+            if nline not in existing:
+                additions.append(nline)
+
+    res = "\n".join(updated_lines).strip()
+    if additions:
+        res = res + "\n\n" + "\n".join(additions)
+
+    return res
+
+
+def handle_status_update(query, status=None, notes=None, append_notes=False, recruiter=None, hiring_manager=None, disposition=None, action=None, review_status=None, location=None, provider=None, requisition_id=None, position=None, structured_update=False):
     db_path = "jobs.db"
     tracker_path = "master_tracker.csv"
     
@@ -3770,9 +3822,17 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     if status is not None and status not in valid_statuses:
         console.print(f"[red]Invalid status '{status}'. Valid statuses: {', '.join(valid_statuses)}[/red]")
         return False
+
+    if review_status is not None and review_status not in VALID_REVIEW_STATUSES:
+        console.print(f"[red]Invalid review status '{review_status}'. Valid review statuses: {', '.join(VALID_REVIEW_STATUSES)}[/red]")
+        return False
+
+    if action is not None and action not in VALID_ACTIONS:
+        console.print(f"[red]Invalid action '{action}'. Valid actions: {', '.join(VALID_ACTIONS)}[/red]")
+        return False
         
-    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None and review_status is None and location is None and provider is None and requisition_id is None:
-        console.print("[red]Either status, review_status, disposition, action, notes, recruiter, hiring_manager, location, provider, or requisition_id must be provided for update.[/red]")
+    if status is None and notes is None and recruiter is None and hiring_manager is None and disposition is None and action is None and review_status is None and location is None and provider is None and requisition_id is None and position is None:
+        console.print("[red]Either status, review_status, disposition, action, notes, recruiter, hiring_manager, location, provider, requisition_id, or position must be provided for update.[/red]")
         return False
         
     conn = sqlite3.connect(db_path)
@@ -3800,16 +3860,31 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         exact_id_matches = [m for m in matches if m[0] == query]
         if len(exact_id_matches) == 1:
             matches = exact_id_matches
-        else:
+        elif position:
+            pos_clean = position.strip().lower()
+            filtered = [m for m in matches if pos_clean in m[2].lower() or m[2].lower() in pos_clean]
+            if len(filtered) == 1:
+                matches = filtered
+            elif len(filtered) > 1:
+                matches = filtered
+        if len(matches) > 1:
             console.print(f"[yellow]Multiple matches found for '{query}':[/yellow]")
             for m in matches:
                 console.print(f"  • {m[0]}: {m[1]} - {m[2]} ({m[3]}) [Current Status: {m[4]}]")
-            console.print("[yellow]Please specify a more precise company name or the exact Job ID.[/yellow]")
+            console.print("[yellow]Please specify a more precise company name, position, or the exact Job ID.[/yellow]")
+            conn.close()
+            return False
+
+    if position and matches:
+        pos_clean = position.strip().lower()
+        match_title = matches[0][2].lower()
+        if pos_clean not in match_title and match_title not in pos_clean:
+            console.print(f"[yellow]Job found for '{query}' has position '{matches[0][2]}', which does not match requested position '{position}'.[/yellow]")
             conn.close()
             return False
         
     # Single match found
-    job_id, company, position, location, current_status, existing_notes, current_review_status = matches[0]
+    job_id, company, position_val, location_val, current_status, existing_notes, current_review_status = matches[0]
     
     effective_status = status if status is not None else (current_status or "New")
     
@@ -3837,12 +3912,29 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         
     if disposition is None:
         disposition = DEFAULT_DISPOSITION_MAP.get(effective_status, "Apply")
+
+    if status is not None and effective_status not in VALID_STATUSES:
+        console.print(f"[red]Cannot persist invalid tracker status '{effective_status}'. Valid statuses: {', '.join(VALID_STATUSES)}[/red]")
+        conn.close()
+        return False
+
+    if effective_review_status not in VALID_REVIEW_STATUSES:
+        console.print(f"[red]Cannot persist invalid review status '{effective_review_status}'. Valid review statuses: {', '.join(VALID_REVIEW_STATUSES)}[/red]")
+        conn.close()
+        return False
+
+    if effective_action not in VALID_ACTIONS:
+        console.print(f"[red]Cannot persist invalid action '{effective_action}'. Valid actions: {', '.join(VALID_ACTIONS)}[/red]")
+        conn.close()
+        return False
     
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     final_notes = None
     if notes is not None:
-        if append_notes:
+        if structured_update:
+            final_notes = merge_structured_notes(existing_notes or "", notes)
+        elif append_notes:
             curr = (existing_notes or "").strip()
             final_notes = (curr + "\n\n" + notes.strip()) if curr else notes.strip()
         else:
@@ -3869,6 +3961,9 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
     if requisition_id is not None:
         update_fields.append("requisition_id = ?")
         update_params.append(requisition_id)
+    if position is not None:
+        update_fields.append("position = ?")
+        update_params.append(position)
 
     update_params.append(job_id)
     cursor.execute(f"UPDATE jobs SET {', '.join(update_fields)} WHERE job_id = ?", tuple(update_params))
@@ -4157,6 +4252,247 @@ def parse_manual_job_block(text: str) -> dict:
 
     if remaining_notes:
         extracted["notes"] = "\n".join(remaining_notes)
+
+    return extracted
+
+
+def parse_update_job_block(text: str) -> dict:
+    """Parse a structured update block (pipe-delimited string or multiline text) into kwargs for handle_status_update."""
+    extracted = {
+        "query": None,
+        "company": None,
+        "job_id": None,
+        "position": None,
+        "location": None,
+        "status": None,
+        "review_status": None,
+        "action": None,
+        "disposition": None,
+        "recruiter": None,
+        "hiring_manager": None,
+        "requisition_id": None,
+        "provider": None,
+        "notes": None,
+        "append_notes": True,
+    }
+
+    if not text or not text.strip():
+        return extracted
+
+    raw_text = text.strip()
+
+    # Check if the block is pipe-delimited
+    if "|" in raw_text:
+        raw_segments = [s.strip() for s in re.split(r'\s*\|\s*', raw_text) if s.strip()]
+    else:
+        raw_segments = [s.strip() for s in raw_text.splitlines() if s.strip()]
+
+    status_phrase_to_canonical = {
+        "technical interview": "Technical Interview",
+        "tech interview": "Technical Interview",
+        "phone screen": "Phone Screen",
+        "phone interview": "Phone Screen",
+        "recruiter screen": "Phone Screen",
+        "recruiter call": "Phone Screen",
+        "manager interview pending": "Manager Interview Pending",
+        "manager interview": "Manager Interview Pending",
+        "onsite interview pending": "Onsite Interview Pending",
+        "onsite interview": "Onsite Interview Pending",
+        "in-person interview": "Onsite Interview Pending",
+        "final interview scheduled": "Final Interview Scheduled",
+        "final interview": "Final Interview Scheduled",
+        "assessment pending": "Assessment Pending",
+        "assessment": "Assessment Pending",
+        "reference check": "Reference Check",
+        "recruiter submitted": "Recruiter Submitted",
+        "applied": "Applied",
+        "waiting": "Waiting",
+        "rejected": "Rejected",
+        "cancelled": "Cancelled",
+        "ghosted": "Ghosted",
+        "expired": "Expired",
+        "offer": "Offer",
+        "accepted": "Accepted",
+        "new": "New",
+    }
+
+    structured_notes = []
+
+    for idx, seg in enumerate(raw_segments):
+        # Strip leading bullet/markdown indicators
+        seg_clean = re.sub(r'^(?:[-*•]|\d+\.)\s*', '', seg).strip()
+
+        # If first segment, check for leading "Update:" or "Job:"
+        if idx == 0:
+            seg_clean = re.sub(r'^(?:update|job):\s*', '', seg_clean, flags=re.IGNORECASE).strip()
+
+        # Check if segment matches Key: Value
+        m_kv = re.match(r'^([A-Za-z0-9\s/_-]+):\s*(.*)$', seg_clean)
+        if m_kv:
+            k = m_kv.group(1).strip().lower()
+            v = m_kv.group(2).strip()
+
+            if k in ("company", "employer"):
+                if not extracted["company"]:
+                    extracted["company"] = v
+                    extracted["query"] = v
+                else:
+                    structured_notes.append(seg_clean)
+            elif k == "job id":
+                if re.match(r'^[a-f0-9]{32}$', v, re.IGNORECASE):
+                    extracted["job_id"] = v
+                    extracted["query"] = v
+                else:
+                    extracted["requisition_id"] = v
+                    structured_notes.append(seg_clean)
+            elif k in ("position", "title", "role"):
+                extracted["position"] = v
+            elif k in ("location", "workplace"):
+                extracted["location"] = v
+            elif k in ("comp", "compensation", "salary", "pay", "rate"):
+                structured_notes.append(f"Comp: {v}")
+            elif k in ("employment", "job type", "type"):
+                structured_notes.append(f"Employment: {v}")
+            elif k in ("resume", "resume tailored", "tailored"):
+                if v.lower().startswith("tailored"):
+                    structured_notes.append(f"Resume: {v.capitalize()}")
+                else:
+                    structured_notes.append(f"Resume: Tailored {v}" if re.match(r'^\d{4}-\d{2}-\d{2}', v) else f"Resume: {v}")
+            elif k in ("recruiter", "talent partner", "recruiter name"):
+                extracted["recruiter"] = v
+            elif k in ("hiring manager", "manager"):
+                extracted["hiring_manager"] = v
+            elif k in ("requisition", "requisition id", "requisition #", "req id", "req #", "req"):
+                extracted["requisition_id"] = v
+                structured_notes.append(seg_clean)
+            elif k in ("status", "tracker status"):
+                v_lower = v.lower()
+                if "ready to apply" in v_lower:
+                    extracted["review_status"] = "Reviewed"
+                    extracted["action"] = "Apply"
+                    structured_notes.append("Status: Ready to Apply")
+                elif "recruiter contact" in v_lower:
+                    extracted["review_status"] = "Recruiter Contact"
+                    structured_notes.append("Review Status: Recruiter Contact" if v_lower == "recruiter contact" else seg_clean)
+                else:
+                    matched = False
+                    for sk, canonical in status_phrase_to_canonical.items():
+                        if sk == v_lower or (len(sk) >= 6 and sk in v_lower):
+                            extracted["status"] = canonical
+                            if v_lower != sk:
+                                structured_notes.append(seg_clean)
+                            matched = True
+                            break
+                    if not matched:
+                        canon = next((s for s in VALID_STATUSES if s.lower() == v_lower), None)
+                        if canon:
+                            extracted["status"] = canon
+                        else:
+                            extracted["status"] = v
+                            structured_notes.append(seg_clean)
+            elif k in ("review status", "review_status"):
+                v_lower = v.lower()
+                canon = next((s for s in VALID_REVIEW_STATUSES if s.lower() == v_lower), None)
+                extracted["review_status"] = canon or v
+            elif k in ("action", "tracker action"):
+                v_lower = v.lower()
+                canon = next((s for s in VALID_ACTIONS if s.lower() == v_lower), None)
+                extracted["action"] = canon or v
+            elif k in ("disposition",):
+                extracted["disposition"] = v
+            elif k in ("notes", "note"):
+                structured_notes.append(v)
+            else:
+                structured_notes.append(seg_clean)
+            continue
+
+        # Non-KV segment:
+        # If first segment, it's the target query (Company or Job ID)
+        if idx == 0:
+            if re.match(r'^[a-f0-9]{32}$', seg_clean, re.IGNORECASE):
+                extracted["job_id"] = seg_clean
+                extracted["query"] = seg_clean
+            elif " — " in seg_clean or " - " in seg_clean or " – " in seg_clean:
+                parts = re.split(r'\s*[—–]\s*|\s+-\s+', seg_clean, maxsplit=1)
+                extracted["company"] = parts[0].strip()
+                extracted["query"] = parts[0].strip()
+                extracted["position"] = parts[1].strip()
+            else:
+                extracted["company"] = seg_clean
+                extracted["query"] = seg_clean
+            continue
+
+        # Detect compensation (e.g. $86,400/year, $100k, $65/hr)
+        if re.search(r'[\$£€]|\b\d+k\b|/\s*(?:year|yr|hr|hour|mo|month)\b', seg_clean, re.IGNORECASE):
+            comp_val = seg_clean
+            if not comp_val.lower().startswith("comp"):
+                comp_val = f"Comp: {comp_val}"
+            structured_notes.append(comp_val)
+            continue
+
+        # Detect employment type
+        if seg_clean.lower() in ("full-time", "full time", "part-time", "part time", "contract", "contractor", "c2c", "w2", "fte", "direct hire", "c2h", "contract-to-hire"):
+            formatted_emp = seg_clean.capitalize()
+            if "-" in formatted_emp:
+                formatted_emp = "-".join([p.capitalize() for p in formatted_emp.split("-")])
+            structured_notes.append(f"Employment: {formatted_emp}")
+            continue
+
+        # Detect location (Remote, Hybrid, Onsite, or City, ST)
+        if seg_clean.lower() in ("remote", "hybrid", "onsite", "on-site", "remote (us)", "remote - us", "remote / us") or re.search(r',\s*[A-Z]{2}\b', seg_clean):
+            extracted["location"] = seg_clean
+            continue
+
+        # Detect resume tailoring
+        if "resume" in seg_clean.lower() or "tailor" in seg_clean.lower():
+            res_val = seg_clean
+            m_res = re.match(r'^resume\s+tailored\s*(.*)$', seg_clean, re.IGNORECASE)
+            if m_res:
+                date_part = m_res.group(1).strip()
+                res_val = f"Resume: Tailored {date_part}" if date_part else "Resume: Tailored"
+            elif not res_val.lower().startswith("resume"):
+                res_val = f"Resume: {res_val}"
+            structured_notes.append(res_val)
+            continue
+
+        # Detect status phrases
+        seg_lower = seg_clean.lower()
+        if "ready to apply" in seg_lower:
+            extracted["review_status"] = "Reviewed"
+            extracted["action"] = "Apply"
+            structured_notes.append("Status: Ready to Apply")
+            continue
+
+        if seg_lower in ("recruiter contact", "contact recruiter"):
+            extracted["review_status"] = "Recruiter Contact"
+            structured_notes.append("Review Status: Recruiter Contact")
+            continue
+
+        status_matched = False
+        for sk, canonical in status_phrase_to_canonical.items():
+            if sk == seg_lower or (len(sk) >= 6 and sk in seg_lower):
+                extracted["status"] = canonical
+                if seg_lower != sk:
+                    structured_notes.append(seg_clean)
+                status_matched = True
+                break
+        if status_matched:
+            continue
+
+        # Detect job position if not yet set
+        title_words = r'\b(?:developer|engineer|architect|lead|manager|specialist|analyst|director|consultant|programmer|designer|devops|sre|qa|admin|administrator|technician)\b'
+        if not extracted["position"] and re.search(title_words, seg_clean, re.IGNORECASE):
+            extracted["position"] = seg_clean
+            continue
+
+        # Otherwise, generic note segment
+        structured_notes.append(seg_clean)
+
+    if structured_notes:
+        extracted["notes"] = "\n".join(structured_notes)
+
+    if not extracted["query"]:
+        extracted["query"] = extracted["company"] or extracted["job_id"]
 
     return extracted
 
@@ -4956,6 +5292,7 @@ def main():
     parser.add_argument("--add-from-text", required=False, help="Text block or file path containing structured job details to add")
     parser.add_argument("--date", help="Optional date override for manual addition (YYYY-MM-DD)")
     parser.add_argument("--update", nargs="?", const="", required=False, help="Company name, Job ID, or substring to update status (launches interactive menu if no company passed)")
+    parser.add_argument("--update-from-text", required=False, help="Text block or file path containing structured job update details")
     parser.add_argument("--status", required=False, help="New tracker status (e.g. Applied, Closed, Rejected, Cancelled, Expired)")
     parser.add_argument("--review-status", required=False, help="New review status (e.g. Applied, Recruiter Contact, Reviewed, Imported, Closed)")
     parser.add_argument("--disposition", required=False, help="New tracker disposition (e.g. Active, Closed, Waiting, Apply)")
@@ -5083,9 +5420,95 @@ def main():
         print_today_queue()
         return
         
+    if args.update_from_text:
+        text_content = args.update_from_text
+        if os.path.exists(text_content):
+            try:
+                with open(text_content, mode='r', encoding='utf-8') as tf:
+                    text_content = tf.read()
+            except Exception as e:
+                console.print(f"[red]Error reading update file '{args.update_from_text}': {e}[/red]")
+                return
+
+        parsed = parse_update_job_block(text_content)
+        query = args.update or parsed.get("query")
+        if not query:
+            console.print("[red]Error: could not determine company name or job ID from update text[/red]")
+            return
+
+        final_status = args.status or parsed.get("status")
+        final_review_status = args.review_status or parsed.get("review_status")
+        final_action = args.action or parsed.get("action")
+        final_disposition = args.disposition or parsed.get("disposition")
+        final_location = args.location or parsed.get("location")
+        final_position = args.position or parsed.get("position")
+        final_recruiter = args.recruiter or parsed.get("recruiter")
+        final_hiring_manager = args.hiring_manager or parsed.get("hiring_manager")
+        final_requisition_id = args.requisition_id or parsed.get("requisition_id")
+        final_provider = args.provider or parsed.get("provider")
+
+        note_val = file_note_content if file_note_content is not None else (args.append_notes or args.notes or parsed.get("notes"))
+        is_append = args.append or (args.append_notes is not None) or parsed.get("append_notes", True)
+
+        handle_status_update(
+            query=query,
+            status=final_status,
+            notes=note_val,
+            append_notes=is_append,
+            recruiter=final_recruiter,
+            hiring_manager=final_hiring_manager,
+            disposition=final_disposition,
+            action=final_action,
+            review_status=final_review_status,
+            location=final_location,
+            provider=final_provider,
+            requisition_id=final_requisition_id,
+            position=final_position,
+            structured_update=True
+        )
+        return
+
     if args.update is not None:
+        if "|" in args.update or args.update.strip().lower().startswith("update:"):
+            parsed = parse_update_job_block(args.update)
+            query = parsed.get("query")
+            if not query:
+                console.print("[red]Error: could not determine company name or job ID from update text[/red]")
+                return
+            final_status = args.status or parsed.get("status")
+            final_review_status = args.review_status or parsed.get("review_status")
+            final_action = args.action or parsed.get("action")
+            final_disposition = args.disposition or parsed.get("disposition")
+            final_location = args.location or parsed.get("location")
+            final_position = args.position or parsed.get("position")
+            final_recruiter = args.recruiter or parsed.get("recruiter")
+            final_hiring_manager = args.hiring_manager or parsed.get("hiring_manager")
+            final_requisition_id = args.requisition_id or parsed.get("requisition_id")
+            final_provider = args.provider or parsed.get("provider")
+
+            note_val = file_note_content if file_note_content is not None else (args.append_notes or args.notes or parsed.get("notes"))
+            is_append = args.append or (args.append_notes is not None) or parsed.get("append_notes", True)
+
+            handle_status_update(
+                query=query,
+                status=final_status,
+                notes=note_val,
+                append_notes=is_append,
+                recruiter=final_recruiter,
+                hiring_manager=final_hiring_manager,
+                disposition=final_disposition,
+                action=final_action,
+                review_status=final_review_status,
+                location=final_location,
+                provider=final_provider,
+                requisition_id=final_requisition_id,
+                position=final_position,
+                structured_update=True
+            )
+            return
+
         has_notes = (args.notes is not None) or (args.append_notes is not None) or (file_note_content is not None)
-        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None) or (args.review_status is not None) or (args.location is not None) or (args.provider is not None) or (args.requisition_id is not None)
+        has_metadata = (args.recruiter is not None) or (args.hiring_manager is not None) or (args.disposition is not None) or (args.action is not None) or (args.review_status is not None) or (args.location is not None) or (args.provider is not None) or (args.requisition_id is not None) or (args.position is not None)
         if args.update == "" and not args.status and not has_notes and not has_metadata:
             handle_interactive_update()
             return
@@ -5111,6 +5534,8 @@ def main():
                 kwargs["provider"] = args.provider
             if args.requisition_id is not None:
                 kwargs["requisition_id"] = args.requisition_id
+            if args.position is not None:
+                kwargs["position"] = args.position
             handle_status_update(
                 args.update,
                 args.status,

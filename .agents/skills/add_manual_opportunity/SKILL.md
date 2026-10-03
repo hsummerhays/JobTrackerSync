@@ -43,8 +43,9 @@ If the opportunity provides recruiter details (name, title, email, or phone):
 
 ### 3. Verification & Output
 
-1. Confirm addition by running:
+1. For free-form / unstructured additions, confirm that parsing and field extraction produced the expected record by running:
    ```bash
    python query_jobs.py "<Company Name>"
    ```
+   *(Note: For deterministic updates on known jobs via `manage_jobs` or `add_job_note`, follow the One-Command Rule and do not run verification queries).*
 2. Clean up any temporary files in `scratch/`.

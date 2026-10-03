@@ -16,6 +16,7 @@ from parse_jobs import (
     detect_provider,
     extract_job_urls_from_page
 )
+from utils import VALID_STATUSES, VALID_REVIEW_STATUSES, VALID_ACTIONS
 
 class TestCliHandlers(unittest.TestCase):
 
@@ -137,6 +138,345 @@ class TestCliHandlers(unittest.TestCase):
         self.assertEqual(row_w[0], "Applied")
         self.assertEqual(row_w[1], "Updated through CLI")
         conn.close()
+
+    def test_handle_status_update_with_position_disambiguation(self):
+        # Insert two jobs from same company with different titles
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status)
+            VALUES ('job1', 'Acme Corp', 'Frontend Engineer', 'Remote', 'New'),
+                   ('job2', 'Acme Corp', 'Backend Engineer', 'Remote', 'New')
+        """)
+        conn.commit()
+        conn.close()
+
+        # Update specifying position to disambiguate
+        success = handle_status_update(
+            query="Acme Corp",
+            position="Backend Engineer",
+            status="Phone Screen",
+            notes="Screen scheduled"
+        )
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT job_id, tracker_status FROM jobs WHERE company = 'Acme Corp' ORDER BY job_id")
+        rows = cursor.fetchall()
+        self.assertEqual(rows[0], ('job1', 'New'))
+        self.assertEqual(rows[1], ('job2', 'Phone Screen'))
+        conn.close()
+
+    def test_structured_update_idempotency_does_not_duplicate_notes(self):
+        job_id = "idem_job_1"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status, notes)
+            VALUES (?, 'AlignRx LLC', 'Software Developer II', 'Remote', 'New', 'Source Index: 40-11; Tech matches: .net')
+        """, (job_id,))
+        conn.commit()
+        conn.close()
+
+        structured_notes = "Comp: $86,400/year\nEmployment: Full-Time\nResume: Tailored 2026-10-03\nStatus: Ready to Apply"
+
+        # First execution
+        success1 = handle_status_update(
+            query=job_id,
+            notes=structured_notes,
+            review_status="Reviewed",
+            action="Apply",
+            append_notes=True,
+            structured_update=True
+        )
+        self.assertTrue(success1)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT notes FROM jobs WHERE job_id = ?", (job_id,))
+        notes_after_run1 = cursor.fetchone()[0]
+        conn.close()
+
+        self.assertIn("Comp: $86,400/year", notes_after_run1)
+        self.assertIn("Source Index: 40-11", notes_after_run1)
+        self.assertEqual(notes_after_run1.count("Comp:"), 1)
+        self.assertEqual(notes_after_run1.count("Resume:"), 1)
+
+        # Second execution (identical structured update)
+        success2 = handle_status_update(
+            query=job_id,
+            notes=structured_notes,
+            review_status="Reviewed",
+            action="Apply",
+            append_notes=True,
+            structured_update=True
+        )
+        self.assertTrue(success2)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT notes FROM jobs WHERE job_id = ?", (job_id,))
+        notes_after_run2 = cursor.fetchone()[0]
+        conn.close()
+
+        # Must be strictly identical: no duplicated paragraphs or fields
+        self.assertEqual(notes_after_run1, notes_after_run2)
+        self.assertEqual(notes_after_run2.count("Comp:"), 1)
+        self.assertEqual(notes_after_run2.count("Resume:"), 1)
+        self.assertEqual(notes_after_run2.count("Status:"), 1)
+
+    def test_structured_update_idempotency_updates_comp_in_place(self):
+        job_id = "idem_job_2"
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status, notes)
+            VALUES (?, 'AlignRx LLC', 'Software Developer II', 'Remote', 'New',
+                    'Source Index: 40-11\n\nComp: $80,000/year\nEmployment: Full-Time\nResume: Tailored 2026-10-03\nStatus: Ready to Apply')
+        """, (job_id,))
+        conn.commit()
+        conn.close()
+
+        # Update with new compensation
+        updated_notes = "Comp: $86,400/year\nEmployment: Full-Time\nResume: Tailored 2026-10-03\nStatus: Ready to Apply"
+        success = handle_status_update(
+            query=job_id,
+            notes=updated_notes,
+            review_status="Reviewed",
+            action="Apply",
+            append_notes=True,
+            structured_update=True
+        )
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT notes FROM jobs WHERE job_id = ?", (job_id,))
+        notes = cursor.fetchone()[0]
+        conn.close()
+
+        self.assertIn("Comp: $86,400/year", notes)
+        self.assertNotIn("Comp: $80,000/year", notes)
+        self.assertEqual(notes.count("Comp:"), 1)
+        self.assertEqual(notes.count("Employment:"), 1)
+
+    def test_ambiguous_company_without_position_fails_closed(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status)
+            VALUES ('j_a1', 'Multi Corp', 'Software Engineer', 'Remote', 'New'),
+                   ('j_a2', 'Multi Corp', 'Product Manager', 'Remote', 'New')
+        """)
+        conn.commit()
+        conn.close()
+
+        # Update without specifying position must fail closed
+        success = handle_status_update(
+            query="Multi Corp",
+            status="Applied"
+        )
+        self.assertFalse(success)
+
+        # Neither job should have been modified
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status FROM jobs WHERE company = 'Multi Corp'")
+        statuses = [r[0] for r in cursor.fetchall()]
+        self.assertEqual(statuses, ['New', 'New'])
+        conn.close()
+
+    def test_ambiguous_company_with_undiscriminating_position_fails_closed(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status)
+            VALUES ('j_b1', 'Split Corp', 'Senior Software Engineer', 'Remote', 'New'),
+                   ('j_b2', 'Split Corp', 'Staff Software Engineer', 'Remote', 'New')
+        """)
+        conn.commit()
+        conn.close()
+
+        # Position "Software Engineer" matches BOTH jobs and is undiscriminating -> must fail closed
+        success = handle_status_update(
+            query="Split Corp",
+            position="Software Engineer",
+            status="Applied"
+        )
+        self.assertFalse(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status FROM jobs WHERE company = 'Split Corp'")
+        statuses = [r[0] for r in cursor.fetchall()]
+        self.assertEqual(statuses, ['New', 'New'])
+        conn.close()
+
+    def test_company_with_conflicting_position_fails_closed(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO jobs (job_id, company, position, location, tracker_status)
+            VALUES ('j_c1', 'Solo Corp', 'Frontend Engineer', 'Remote', 'New')
+        """)
+        conn.commit()
+        conn.close()
+
+        # Conflicting position "Data Scientist" on Solo Corp must fail closed and not mutate
+        success = handle_status_update(
+            query="Solo Corp",
+            position="Data Scientist",
+            status="Applied"
+        )
+        self.assertFalse(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status FROM jobs WHERE company = 'Solo Corp'")
+        self.assertEqual(cursor.fetchone()[0], 'New')
+        conn.close()
+
+    def test_phone_screen_produces_canonical_tracker_status(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('ps_job', 'Initech', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        success = handle_status_update(query="ps_job", status="Phone Screen")
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status, review_status, action, disposition FROM jobs WHERE job_id = 'ps_job'")
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "Phone Screen")
+        self.assertIn(row[0], VALID_STATUSES)
+        self.assertIn(row[1], VALID_REVIEW_STATUSES)
+        self.assertIn(row[2], VALID_ACTIONS)
+        conn.close()
+
+    def test_technical_interview_produces_canonical_tracker_status(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('ti_job', 'Hooli', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        success = handle_status_update(query="ti_job", status="Technical Interview")
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status, review_status, action, disposition FROM jobs WHERE job_id = 'ti_job'")
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "Technical Interview")
+        self.assertIn(row[0], VALID_STATUSES)
+        self.assertIn(row[1], VALID_REVIEW_STATUSES)
+        self.assertIn(row[2], VALID_ACTIONS)
+        conn.close()
+
+    def test_generic_interview_does_not_become_status_and_fails_safely(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('int_job', 'Pied Piper', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        # Generic 'Interview' is not a canonical status and must fail safely without mutating
+        success = handle_status_update(query="int_job", status="Interview")
+        self.assertFalse(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status FROM jobs WHERE job_id = 'int_job'")
+        self.assertEqual(cursor.fetchone()[0], "New")
+        conn.close()
+
+    def test_recruiter_contact_handled_as_review_status_not_tracker_status(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status, review_status) VALUES ('rc_job', 'Dunder Mifflin', 'Dev', 'Remote', 'New', 'Imported')")
+        conn.commit()
+        conn.close()
+
+        # Setting review_status = 'Recruiter Contact' succeeds and leaves tracker_status as 'New'
+        success = handle_status_update(query="rc_job", review_status="Recruiter Contact")
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status, review_status FROM jobs WHERE job_id = 'rc_job'")
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "New")
+        self.assertEqual(row[1], "Recruiter Contact")
+        self.assertIn(row[0], VALID_STATUSES)
+        self.assertIn(row[1], VALID_REVIEW_STATUSES)
+
+        # Attempting to supply 'Recruiter Contact' as a Tracker Status must fail closed
+        fail_success = handle_status_update(query="rc_job", status="Recruiter Contact")
+        self.assertFalse(fail_success)
+        conn.close()
+
+    def test_ready_to_apply_preserves_new_tracker_status(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status, review_status, action) VALUES ('rta_job', 'Stark Industries', 'Dev', 'Remote', 'New', 'Imported', 'Review')")
+        conn.commit()
+        conn.close()
+
+        # 'Ready to Apply' sets review_status='Reviewed', action='Apply', and preserves status='New'
+        success = handle_status_update(query="rta_job", review_status="Reviewed", action="Apply")
+        self.assertTrue(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status, review_status, action, disposition FROM jobs WHERE job_id = 'rta_job'")
+        row = cursor.fetchone()
+        self.assertEqual(row[0], "New")
+        self.assertEqual(row[1], "Reviewed")
+        self.assertEqual(row[2], "Apply")
+        self.assertIn(row[0], VALID_STATUSES)
+        self.assertIn(row[1], VALID_REVIEW_STATUSES)
+        self.assertIn(row[2], VALID_ACTIONS)
+        conn.close()
+
+    def test_cannot_persist_tracker_status_outside_valid_statuses(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('inv_s_job', 'Wayne Ent', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        success = handle_status_update(query="inv_s_job", status="NonExistentStatus")
+        self.assertFalse(success)
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT tracker_status FROM jobs WHERE job_id = 'inv_s_job'")
+        self.assertEqual(cursor.fetchone()[0], "New")
+        conn.close()
+
+    def test_cannot_persist_review_status_outside_valid_review_statuses(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('inv_r_job', 'Wayne Ent', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        success = handle_status_update(query="inv_r_job", review_status="NonExistentReviewStatus")
+        self.assertFalse(success)
+
+    def test_cannot_persist_action_outside_valid_actions(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO jobs (job_id, company, position, location, tracker_status) VALUES ('inv_a_job', 'Wayne Ent', 'Dev', 'Remote', 'New')")
+        conn.commit()
+        conn.close()
+
+        success = handle_status_update(query="inv_a_job", action="NonExistentAction")
+        self.assertFalse(success)
 
     def test_detect_provider(self):
         self.assertEqual(detect_provider("", "linkedin_report.pdf"), "LinkedIn")

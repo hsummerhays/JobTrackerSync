@@ -32,5 +32,5 @@ python parse_jobs.py --rescore
 
 - The script skips PDFs whose content hasn't changed since the last run (incremental sync).
 - After parsing, it automatically syncs `master_tracker.csv` and `jobs.db`.
-- **Never manually edit only the CSV** — always sync both the CSV and the database together via `parse_jobs.clean_existing_tracker('master_tracker.csv')`.
+- **Never manually edit master_tracker.csv** — always use CLI mutation commands (`--update`, `--add`, `--update-from-text`) which maintain `jobs.db` as the authoritative store and update `master_tracker.csv` automatically. `clean_existing_tracker()` is an internal synchronization mechanism invoked during PDF parsing, not a command to run after ordinary mutations.
 

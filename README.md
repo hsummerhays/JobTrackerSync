@@ -164,12 +164,22 @@ cp config.json.example config.json
 python parse_jobs.py --pdf-dir "C:\Path\To\Your\PDF\Folder"
 ```
 
-**4. Update Job Status**
+**4. Update Job Status & Structured Details**
 
 You can update any job's tracking status directly from the command line by providing the company name (or a unique substring/Job ID) and the new status:
 
 ```bash
 python parse_jobs.py --update "Hire Feed" --status "Expired"
+```
+
+You can also update jobs directly from pipe-delimited one-liners or structured text files, which automatically extracts and sets company/position, location, review statuses (such as `Ready to Apply` -> `Review Status = Reviewed`), and formats compensation, employment type, and tailoring notes:
+
+```bash
+# Update via pipe-delimited string
+python parse_jobs.py --update "AlignRx LLC | Software Developer II | Remote | $86,400/year | Full-time | Resume tailored 2026-10-03 | Ready to Apply"
+
+# Update via structured text file (safe from shell quoting and $ interpolation)
+python parse_jobs.py --update-from-text "scratch/update.txt"
 ```
 
 This will automatically find the matching job, update the database and CSV, and recalculate all derived fields (such as `Review Status`, `Action`, and `Disposition`).
@@ -309,7 +319,7 @@ The roadmap focuses on making parsed data more actionable and improving workflow
 
 ### 1. Polish and Reliability
 
-- [x] **More unit tests** around parsing and merge logic. _(478 tests across 27 modules)_
+- [x] **More unit tests** around parsing and merge logic. _(486 tests across 28 modules)_
 - [ ] **Better logging** for unexpected PDFs.
 - [ ] **Continue reducing edge cases** and normalizing layout extraction.
 - [ ] **Batch Database Writes**: Wrap updates in single, large transactions to speed up SQLite updates on large directory trees.
