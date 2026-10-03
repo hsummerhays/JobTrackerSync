@@ -3861,8 +3861,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
         if len(exact_id_matches) == 1:
             matches = exact_id_matches
         elif position:
-            pos_clean = position.strip().lower()
-            filtered = [m for m in matches if pos_clean in m[2].lower() or m[2].lower() in pos_clean]
+            pos_clean = re.sub(r'\s+', ' ', position.strip().lower())
+            filtered = [m for m in matches if pos_clean in re.sub(r'\s+', ' ', m[2].lower()) or re.sub(r'\s+', ' ', m[2].lower()) in pos_clean]
             if len(filtered) == 1:
                 matches = filtered
             elif len(filtered) > 1:
@@ -3876,8 +3876,8 @@ def handle_status_update(query, status=None, notes=None, append_notes=False, rec
             return False
 
     if position and matches:
-        pos_clean = position.strip().lower()
-        match_title = matches[0][2].lower()
+        pos_clean = re.sub(r'\s+', ' ', position.strip().lower())
+        match_title = re.sub(r'\s+', ' ', matches[0][2].lower())
         if pos_clean not in match_title and match_title not in pos_clean:
             console.print(f"[yellow]Job found for '{query}' has position '{matches[0][2]}', which does not match requested position '{position}'.[/yellow]")
             conn.close()
@@ -4491,8 +4491,10 @@ def parse_update_job_block(text: str) -> dict:
     if structured_notes:
         extracted["notes"] = "\n".join(structured_notes)
 
-    if not extracted["query"]:
-        extracted["query"] = extracted["company"] or extracted["job_id"]
+    if extracted["job_id"]:
+        extracted["query"] = extracted["job_id"]
+    elif not extracted["query"]:
+        extracted["query"] = extracted["company"]
 
     return extracted
 

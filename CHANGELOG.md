@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+### Fixes & Improvements
+- **Position Disambiguation Spacing**: Normalized whitespace when comparing position titles in `handle_status_update()` so multi-space titles (e.g. `Developer--NAOP        (...)`) match cleanly against single-space user input.
+- **Job ID Query Prioritization**: In `parse_update_job_block()`, prioritized explicit 32-char hex `job_id` over company name for the target query to prevent company names from clobbering exact Job ID targets.
+
 ## v1.4.5 — 2026-10-03
 
 ### Structured Job Updates & Text Ingestion
