@@ -50,11 +50,18 @@
     python parse_jobs.py --update "<job-id>" --status <Status> [--append-notes "<notes>"]
     ```
     After that command succeeds, stop. If the Job ID is not known, query once first (`python query_jobs.py "<Company Name>"`) to identify the correct opportunity, then perform one mutation command and stop.
-  - **Structured Job Updates**: When the user provides a structured or pipe-delimited update (e.g. `Update: <Company> | <Position> | <Location> | <Comp> | ...` or a key-value update block), write the text to `scratch/update.txt` (to avoid PowerShell special-character interpolation like `$`), execute:
-    ```bash
-    python parse_jobs.py --update-from-text "scratch/update.txt"
-    ```
-    clean up `scratch/update.txt`, and stop after success.
+  - **Structured Job Updates**: Follow the established Tier A / Tier B hierarchy:
+    - Prefer direct CLI arguments for simple deterministic updates (e.g. `python parse_jobs.py --update "<job-id>" --status Applied --append-notes "..."`).
+    - For structured or pipe-delimited updates that can safely be supplied directly, use the supported inline structured CLI form:
+      ```bash
+      python parse_jobs.py --update "<Company> | <Position> | <Location> | <Comp> | ..."
+      ```
+    - Use `scratch/update.txt` only for complex multiline input or input where shell quoting/interpolation would make direct invocation cumbersome or unsafe:
+      ```bash
+      python parse_jobs.py --update-from-text "scratch/update.txt"
+      ```
+      Clean up `scratch/update.txt` and stop after success.
+    - Do not create a scratch file merely because input is pipe-delimited or contains structured fields.
 
 - **Workspace Cleanup:**
   - Do not place temporary text files (like `wgu_list2.txt`), intermediate data dumps, or one-off python scripts in the main project folder. All temporary work must be done inside the `scratch/` directory and should ideally be deleted when no longer needed.
